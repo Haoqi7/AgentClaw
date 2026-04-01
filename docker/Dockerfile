@@ -6,27 +6,24 @@ ENV DEBIAN_FRONTEND=noninteractive \
 
 RUN apt-get update && apt-get install -y \
     python3 python3-pip python3-venv \
-    build-essential git curl ca-certificates \
+    build-essential git curl ca-certificates bash \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
 
-# Install OpenClaw CLI (per README requirement)
+# OpenClaw CLI
 RUN npm install -g @qingchencloud/openclaw-zh@latest
 
-# Copy project
+# Project
 COPY . /app/AgentClaw
 WORKDIR /app/AgentClaw
 
-# Python deps (if provided)
+# deps
 RUN if [ -f requirements.txt ]; then pip3 install -r requirements.txt; fi
-
-# Frontend deps (if provided)
 RUN if [ -f package.json ]; then npm install; fi
 
-# Entrypoint
 COPY docker/entrypoint.sh /entrypoint.sh
 RUN chmod +x /entrypoint.sh
 
-EXPOSE 7891
+EXPOSE 7891 18789
 ENTRYPOINT ["/entrypoint.sh"]
