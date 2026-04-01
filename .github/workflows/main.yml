@@ -1,0 +1,107 @@
+name: Build and Release Multi-Arch Docker Image (Manual)
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Release tag (e.g. v1.0.0). If empty, auto-generate."
+        required: false
+        default: ""
+      image_name:
+        description: "Image name (without owner)."
+        required: false
+        default: "agentclaw-all-in-one"
+
+permissions:
+  contents: write
+
+jobs:
+  build-and-release:
+    runs-on: ubuntu-22.04
+    env:
+      DEFAULT_IMAGE_NAME: agentclaw-all-in-one
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Resolve release tag
+        id: meta
+        shell: bash
+        run: |
+          set -euo pipefail
+          INPUT_TAG="${{ github.event.inputs.tag }}"
+          if [ -n "$INPUT_TAG" ]; then
+            TAG="$INPUT_TAG"
+          else
+            TAG="v$(date +'%Y.%m.%d')-${GITHUB_RUN_NUMBER}"
+          fi
+          IMAGE_NAME="${{ github.event.inputs.image_name }}"
+          if [ -z "$IMAGE_NAME" ]; then
+            IMAGE_NAME="${DEFAULT_IMAGE_NAME}"
+          fi
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "image_name=$IMAGE_NAME" >> "$GITHUB_OUTPUT"
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      # 生成并构建多架构镜像（本地输出为 OCI layout）
+      - name: Build multi-arch image (OCI archive)
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p out
+          docker buildx build \
+            --platform linux/amd64,linux/arm64 \
+            -f docker/Dockerfile \
+            -t "${{ steps.meta.outputs.image_name }}:${{ steps.meta.outputs.tag }}" \
+            --output type=oci,dest=out/${{ steps.meta.outputs.image_name }}-${{ steps.meta.outputs.tag }}-multiarch.oci.tar \
+            .
+
+      # 额外分别导出单架构 docker-archive，方便离线 docker load
+      - name: Build amd64 docker archive
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker buildx build \
+            --platform linux/amd64 \
+            -f docker/Dockerfile \
+            -t "${{ steps.meta.outputs.image_name }}:${{ steps.meta.outputs.tag }}-amd64" \
+            --output type=docker,dest=out/${{ steps.meta.outputs.image_name }}-${{ steps.meta.outputs.tag }}-amd64.docker.tar \
+            .
+
+      - name: Build arm64 docker archive
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker buildx build \
+            --platform linux/arm64 \
+            -f docker/Dockerfile \
+            -t "${{ steps.meta.outputs.image_name }}:${{ steps.meta.outputs.tag }}-arm64" \
+            --output type=docker,dest=out/${{ steps.meta.outputs.image_name }}-${{ steps.meta.outputs.tag }}-arm64.docker.tar \
+            .
+
+      - name: Generate checksums
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd out
+          sha256sum * > SHA256SUMS.txt
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.meta.outputs.tag }}
+          name: Release ${{ steps.meta.outputs.tag }}
+          draft: false
+          prerelease: false
+          generate_release_notes: true
+          files: |
+            out/${{ steps.meta.outputs.image_name }}-${{ steps.meta.outputs.tag }}-multiarch.oci.tar
+            out/${{ steps.meta.outputs.image_name }}-${{ steps.meta.outputs.tag }}-amd64.docker.tar
+            out/${{ steps.meta.outputs.image_name }}-${{ steps.meta.outputs.tag }}-arm64.docker.tar
+            out/SHA256SUMS.txt
