@@ -440,18 +440,3 @@ version: 2.1.0
 python3 scripts/skill_manager.py check-updates --interval weekly
 ```
 
-### 5. 贡献社区
-
-成熟的 skills 可向 [OpenClaw Skills Hub](https://github.com/openclaw-ai/skills-hub) 贡献。
-
----
-
-## API 完整参考
-
-详见 [任务分发流转架构文档](task-dispatch-architecture.md) 的第三部分（API 与工具）。
-
----
-
-<p align="center">
-  <sub>用 <strong>开放</strong> 的生态，赋能 <strong>制度化</strong> 的 AI 协作</sub>
-</p>
