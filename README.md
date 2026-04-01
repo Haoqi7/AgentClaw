@@ -1,32 +1,23 @@
-# Project Title
+# AgentClaw
 
-## Introduction
+Welcome to AgentClaw, a powerful tool for managing and automating your tasks.
 
-This project aims to...
+## Features
+- Easy to use interface
+- Integration with various APIs
+- Customizable settings
 
 ## Installation
 
-To run this project locally, please follow these steps:
+```bash
+# Clone this repository
+git clone https://github.com/Haoqi7/AgentClaw.git
+```
 
-1. Clone the repository:
-   ```bash
-   git clone https://github.com/yourusername/yourrepository.git
-   ```
+## Usage
 
-2. Run the following two scripts:
-   ```bash
-   ./scripts/run_loop.sh
-   python3 dashboard/server.py
-   ```
+To start using AgentClaw, follow the installation instructions and run the app.
 
-## Quick Start
+## Contributing
 
-- Make sure to have Python 3 installed.
-- Follow the local running instructions above without using Docker.
-
-## Troubleshooting
-
-If you encounter issues, please refer to...
-
-- [Installation Issues](#)
-- [Running Issues](#)
+We welcome contributions! Please see our contribution guidelines for more details.
