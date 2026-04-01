@@ -4,19 +4,47 @@
 
 ---
 
-## 🚀 快速上手（参考 docs/getting-started.md）
+## 🚀 快速上手
 
 ### 第一步：安装 OpenClaw（必须）
 
-三省六部基于 [OpenClaw](https://openclaw.ai) 运行，请先安装：
+三省六部基于OpenClaw 运行，请先安装：
+
+## 4 步上手
+
+> **前提条件**：需要 **Node.js >= 22**（[下载 Node.js](https://nodejs.org/)）
+>
+> 检查版本：`node -v`
+
+### 第 1 步：安装
 
 ```bash
-# macOS
-brew install openclaw
-
-# 或下载安装包
-# https://openclaw.ai/download
+npm install -g @qingchencloud/openclaw-zh@latest
 ```
+
+### 第 2 步：初始化（推荐守护进程模式）
+
+```bash
+openclaw onboard --install-daemon
+```
+
+初始化向导会引导你完成：选择 AI 模型 → 配置 API 密钥 → 设置聊天通道
+
+### 第 3 步：启动网关
+
+```bash
+openclaw gateway
+```
+
+### 第 4 步：打开控制台
+
+```bash
+openclaw dashboard
+```
+
+浏览器会自动打开全中文的 Dashboard 控制台。完成！
+
+
 
 安装完成后初始化：
 
@@ -48,8 +76,6 @@ openclaw channels list
 # 添加飞书渠道（入口设为太子）
 openclaw channels add --type feishu --agent taizi
 ```
-
-OpenClaw 文档：https://docs.openclaw.ai/channels
 
 ---
 
@@ -118,4 +144,3 @@ python3 scripts/refresh_live_data.py
 
 - [快速上手指南](docs/getting-started.md)
 - [贡献指南](CONTRIBUTING.md)
-- [OpenClaw 文档](https://docs.openclaw.ai)
