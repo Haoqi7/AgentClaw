@@ -8,6 +8,7 @@ services:
     container_name: agentclaw-all-in-one
     ports:
       - "7891:7891"
+      - "18789:18789"
     environment:
       - TZ=Asia/Shanghai
     volumes:
