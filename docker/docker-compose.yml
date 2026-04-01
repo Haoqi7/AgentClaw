@@ -1,0 +1,17 @@
+version: "3.9"
+
+services:
+  agentclaw:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+    container_name: agentclaw-all-in-one
+    ports:
+      - "7891:7891"
+    environment:
+      - TZ=Asia/Shanghai
+    volumes:
+      - ../data:/data
+      - ../logs:/app/AgentClaw/logs
+      - ../openclaw-home:/root/.openclaw
+    restart: unless-stopped
