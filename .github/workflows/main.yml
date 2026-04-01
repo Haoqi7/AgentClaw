@@ -20,12 +20,13 @@ jobs:
     runs-on: ubuntu-22.04
     env:
       DEFAULT_IMAGE_NAME: agentclaw-all-in-one
+      MAX_ASSET_SIZE: 2147483648 # 2GB hard limit on GitHub Release asset
 
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Resolve release tag
+      - name: Resolve metadata
         id: meta
         shell: bash
         run: |
@@ -36,10 +37,12 @@ jobs:
           else
             TAG="v$(date +'%Y.%m.%d')-${GITHUB_RUN_NUMBER}"
           fi
+
           IMAGE_NAME="${{ github.event.inputs.image_name }}"
           if [ -z "$IMAGE_NAME" ]; then
             IMAGE_NAME="${DEFAULT_IMAGE_NAME}"
           fi
+
           echo "tag=$TAG" >> "$GITHUB_OUTPUT"
           echo "image_name=$IMAGE_NAME" >> "$GITHUB_OUTPUT"
 
@@ -49,8 +52,8 @@ jobs:
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
-      # 生成并构建多架构镜像（本地输出为 OCI layout）
-      - name: Build multi-arch image (OCI archive)
+      # Multi-arch OCI archive
+      - name: Build multi-arch OCI archive
         shell: bash
         run: |
           set -euo pipefail
@@ -62,7 +65,7 @@ jobs:
             --output type=oci,dest=out/${{ steps.meta.outputs.image_name }}-${{ steps.meta.outputs.tag }}-multiarch.oci.tar \
             .
 
-      # 额外分别导出单架构 docker-archive，方便离线 docker load
+      # Single-arch docker archives
       - name: Build amd64 docker archive
         shell: bash
         run: |
@@ -85,14 +88,102 @@ jobs:
             --output type=docker,dest=out/${{ steps.meta.outputs.image_name }}-${{ steps.meta.outputs.tag }}-arm64.docker.tar \
             .
 
-      - name: Generate checksums
+      - name: Install zstd
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y zstd
+
+      # If file >= 2GB, compress with zstd.
+      # If still >= 2GB, split into 1900MB parts.
+      - name: Normalize artifacts for GitHub Release size limit
+        id: normalize
         shell: bash
         run: |
           set -euo pipefail
           cd out
-          sha256sum * > SHA256SUMS.txt
+          shopt -s nullglob
 
-      - name: Create GitHub Release
+          RELEASE_FILES=()
+
+          process_file () {
+            local f="$1"
+            local size
+            size=$(stat -c%s "$f")
+            echo "Processing $f ($size bytes)"
+
+            if [ "$size" -lt "${MAX_ASSET_SIZE}" ]; then
+              RELEASE_FILES+=("$f")
+              return
+            fi
+
+            echo "File >= 2GB, compressing with zstd: $f"
+            zstd -19 -T0 "$f" -o "${f}.zst"
+            rm -f "$f"
+
+            local zf="${f}.zst"
+            local zsize
+            zsize=$(stat -c%s "$zf")
+            echo "Compressed $zf ($zsize bytes)"
+
+            if [ "$zsize" -lt "${MAX_ASSET_SIZE}" ]; then
+              RELEASE_FILES+=("$zf")
+              return
+            fi
+
+            echo "Still >= 2GB, splitting into 1900MB parts: $zf"
+            split -b 1900m -d -a 3 "$zf" "${zf}.part."
+            rm -f "$zf"
+
+            for p in ${zf}.part.*; do
+              RELEASE_FILES+=("$p")
+            done
+          }
+
+          for f in *.tar; do
+            process_file "$f"
+          done
+
+          # Generate restore instructions
+          cat > RESTORE.md <<'EOF'
+          # Restore Docker Images
+
+          ## 1) If you downloaded a single `.tar`
+          ```bash
+          docker load -i <file>.tar
+          ```
+
+          ## 2) If you downloaded a `.tar.zst`
+          ```bash
+          zstd -d <file>.tar.zst
+          docker load -i <file>.tar
+          ```
+
+          ## 3) If you downloaded split parts (`.part.000`, `.part.001`, ...)
+          ```bash
+          cat <file>.zst.part.* > merged.tar.zst
+          zstd -d merged.tar.zst -o merged.tar
+          docker load -i merged.tar
+          ```
+          EOF
+
+          RELEASE_FILES+=("RESTORE.md")
+
+          # checksums for all publish files
+          sha256sum "${RELEASE_FILES[@]}" > SHA256SUMS.txt
+          RELEASE_FILES+=("SHA256SUMS.txt")
+
+          # output multiline list for upload step
+          {
+            echo "files<<EOF"
+            for f in "${RELEASE_FILES[@]}"; do
+              echo "out/$f"
+            done
+            echo "EOF"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Create/Update GitHub Release and upload assets
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ steps.meta.outputs.tag }}
@@ -100,8 +191,4 @@ jobs:
           draft: false
           prerelease: false
           generate_release_notes: true
-          files: |
-            out/${{ steps.meta.outputs.image_name }}-${{ steps.meta.outputs.tag }}-multiarch.oci.tar
-            out/${{ steps.meta.outputs.image_name }}-${{ steps.meta.outputs.tag }}-amd64.docker.tar
-            out/${{ steps.meta.outputs.image_name }}-${{ steps.meta.outputs.tag }}-arm64.docker.tar
-            out/SHA256SUMS.txt
+          files: ${{ steps.normalize.outputs.files }}
