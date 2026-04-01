@@ -11,8 +11,15 @@ services:
       - "18789:18789"
     environment:
       - TZ=Asia/Shanghai
+      - EDICT_DASHBOARD_PORT=7891
     volumes:
       - ../data:/data
       - ../logs:/app/AgentClaw/logs
       - ../openclaw-home:/root/.openclaw
+    healthcheck:
+      test: ["CMD-SHELL", "bash -c 'echo > /dev/tcp/127.0.0.1/7891 && echo > /dev/tcp/127.0.0.1/18789'"]
+      interval: 15s
+      timeout: 5s
+      retries: 10
+      start_period: 40s
     restart: unless-stopped
