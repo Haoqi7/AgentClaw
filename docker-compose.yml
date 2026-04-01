@@ -1,7 +1,0 @@
-version: '3.8'
-
-services: {}
-
-# Docker / Demo 已移除
-# 本项目不再提供 Docker Compose / 镜像方式启动。
-# 请参考 README.md 使用本地方式运行。
