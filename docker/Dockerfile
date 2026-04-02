@@ -1,4 +1,4 @@
-FROM node:22-bullseye
+FROM node:22-bullseye-slim
 
 ENV DEBIAN_FRONTEND=noninteractive \
     PYTHONDONTWRITEBYTECODE=1 \
