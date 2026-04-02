@@ -2679,7 +2679,7 @@ def main():
         f'http://127.0.0.1:{args.port}', f'http://localhost:{args.port}',
     }
 
-    server = HTTPServer((args.host, args.port), Handler)
+    server = HTTPServer(('0.0.0.0', args.port), Handler)
     log.info(f'三省六部看板启动 → http://{args.host}:{args.port}')
     print(f'   按 Ctrl+C 停止')
 
