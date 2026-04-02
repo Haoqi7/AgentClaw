@@ -37,15 +37,18 @@ fi
 # ── 阶段 2：配置校验与自动修复 ───────────────────────────────
 log "=== 配置校验阶段 ==="
 if [ -f "$OC_CFG" ]; then
-  DM_POLICY=$(python3 -c "
+  # 读取 dmPolicy，通过参数传递路径避免插值风险
+  DM_POLICY=$(python3 - "$OC_CFG" <<'PYEOF' 2>/dev/null || echo "__PYERR__"
 import json, sys
 try:
-    d = json.load(open('$OC_CFG'))
+    with open(sys.argv[1], encoding='utf-8') as f:
+        d = json.load(f)
     val = d.get('channels', {}).get('feishu', {}).get('dmPolicy', '__MISSING__')
     print(val)
 except Exception as e:
     print('__ERROR__:' + str(e))
-" 2>/dev/null || echo "__PYERR__")
+PYEOF
+)
 
   case "$DM_POLICY" in
     open|pairing|allowlist|__MISSING__)
@@ -65,10 +68,10 @@ except Exception as e:
       python3 - "$OC_CFG" <<'PYEOF'
 import json, pathlib, sys
 p = pathlib.Path(sys.argv[1])
-d = json.loads(p.read_text())
+d = json.loads(p.read_text(encoding='utf-8'))
 old_val = d.get('channels', {}).get('feishu', {}).get('dmPolicy', '__MISSING__')
 d.setdefault('channels', {}).setdefault('feishu', {})['dmPolicy'] = 'open'
-p.write_text(json.dumps(d, ensure_ascii=False, indent=2))
+p.write_text(json.dumps(d, ensure_ascii=False, indent=2), encoding='utf-8')
 print(f'[entrypoint] 已修正 channels.feishu.dmPolicy: "{old_val}" -> "open"')
 PYEOF
       ;;
@@ -89,6 +92,11 @@ for i in $(seq 1 60); do
   if (echo > /dev/tcp/127.0.0.1/18789) >/dev/null 2>&1; then
     log "gateway is ready."
     GATEWAY_READY=true
+    break
+  fi
+  # 检测 gateway 进程是否已意外退出
+  if ! kill -0 "$GATEWAY_PID" 2>/dev/null; then
+    warn "gateway 进程（PID=$GATEWAY_PID）已意外退出"
     break
   fi
   sleep 1
