@@ -1,19 +1,53 @@
+# VCS / CI
 .git
 .github
 .gitignore
-node_modules
-**/node_modules
-.venv
-venv
-__pycache__
+
+# Python
+__pycache__/
+**/__pycache__/
 *.pyc
-dist
-build
-out
-data
-logs
-*.tar
-*.tar.zst
-*.part.*
+*.pyo
+.venv/
+venv/
+.pytest_cache/
+.mypy_cache/
+
+# Node
+node_modules/
+**/node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# Build outputs
+dist/
+build/
+out/
+coverage/
+*.tsbuildinfo
+
+# Runtime / generated data
+data/
+logs/
+tmp/
+temp/
+
+# Local env files
 .env
 .env.*
+
+# Docker / archive artifacts
+*.tar
+*.tar.gz
+*.tgz
+*.zst
+*.part.*
+*.docker.tar
+*.oci.tar
+
+# OS / Editor
+.DS_Store
+.vscode/
+.idea/
