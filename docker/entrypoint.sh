@@ -1,41 +1,106 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-echo "[entrypoint] starting..."
+OC_HOME="/root/.openclaw"
+OC_CFG="$OC_HOME/openclaw.json"
+INITIALIZED_MARKER="$OC_HOME/.initialized"
 
-# 仅首次初始化时执行；失败可继续（因为可能需要交互配置）
-if [ ! -f /root/.openclaw/.initialized ]; then
-  echo "[entrypoint] first-time openclaw onboard/init..."
+log()  { echo "[entrypoint] $*"; }
+warn() { echo "[entrypoint][WARN] $*"; }
+
+log "starting..."
+
+# ── 阶段 1：初始化（仅首次）─────────────────────────────────
+# 使用幂等标记确保重启时不重复执行全量安装
+log "=== 初始化阶段 ==="
+if [ ! -f "$INITIALIZED_MARKER" ]; then
+  log "首次启动：运行 openclaw onboard/init..."
+  mkdir -p "$OC_HOME"
   openclaw onboard --install-daemon || true
   openclaw init || true
-  mkdir -p /root/.openclaw
-  touch /root/.openclaw/.initialized
+
+  # 运行项目安装脚本（仅首次）
+  if [ -f /app/AgentClaw/install.sh ]; then
+    cd /app/AgentClaw
+    chmod +x install.sh
+    log "运行 install.sh（首次安装）..."
+    ./install.sh
+  fi
+
+  # 标记初始化完成（在 install.sh 完成后写入）
+  touch "$INITIALIZED_MARKER"
+  log "初始化完成，已写入 $INITIALIZED_MARKER"
+else
+  log "检测到已初始化标记，跳过安装步骤（普通重启）"
 fi
 
-# 安装项目（若存在）
-if [ -f /app/AgentClaw/install.sh ]; then
-  cd /app/AgentClaw
-  chmod +x install.sh
-  ./install.sh
+# ── 阶段 2：配置校验与自动修复 ───────────────────────────────
+log "=== 配置校验阶段 ==="
+if [ -f "$OC_CFG" ]; then
+  DM_POLICY=$(python3 -c "
+import json, sys
+try:
+    d = json.load(open('$OC_CFG'))
+    val = d.get('channels', {}).get('feishu', {}).get('dmPolicy', '__MISSING__')
+    print(val)
+except Exception as e:
+    print('__ERROR__:' + str(e))
+" 2>/dev/null || echo "__PYERR__")
+
+  case "$DM_POLICY" in
+    open|pairing|allowlist|__MISSING__)
+      log "配置校验通过（channels.feishu.dmPolicy=${DM_POLICY}）"
+      ;;
+    __ERROR__*|__PYERR__*)
+      warn "读取 $OC_CFG 失败：${DM_POLICY}"
+      warn "尝试运行 openclaw doctor --fix ..."
+      if ! openclaw doctor --fix 2>/dev/null; then
+        warn "自动修复失败，请手动检查 $OC_CFG 后重启容器"
+        exit 1
+      fi
+      ;;
+    *)
+      warn "检测到无效配置：channels.feishu.dmPolicy=\"${DM_POLICY}\"（允许值：open, pairing, allowlist）"
+      warn "自动修正为 \"open\"..."
+      python3 - "$OC_CFG" <<'PYEOF'
+import json, pathlib, sys
+p = pathlib.Path(sys.argv[1])
+d = json.loads(p.read_text())
+old_val = d.get('channels', {}).get('feishu', {}).get('dmPolicy', '__MISSING__')
+d.setdefault('channels', {}).setdefault('feishu', {})['dmPolicy'] = 'open'
+p.write_text(json.dumps(d, ensure_ascii=False, indent=2))
+print(f'[entrypoint] 已修正 channels.feishu.dmPolicy: "{old_val}" -> "open"')
+PYEOF
+      ;;
+  esac
+else
+  warn "$OC_CFG 不存在，跳过配置校验"
 fi
 
-# 启动 gateway（关键服务，不吞错）
-echo "[entrypoint] starting openclaw gateway..."
+# ── 阶段 3：Gateway 启动 ──────────────────────────────────────
+log "=== Gateway 启动阶段 ==="
+log "starting openclaw gateway..."
 openclaw gateway &
+GATEWAY_PID=$!
 
-# 等待 gateway 端口 18789 就绪
-echo "[entrypoint] waiting for gateway on 127.0.0.1:18789 ..."
+log "waiting for gateway on 127.0.0.1:18789 ..."
+GATEWAY_READY=false
 for i in $(seq 1 60); do
   if (echo > /dev/tcp/127.0.0.1/18789) >/dev/null 2>&1; then
-    echo "[entrypoint] gateway is ready."
+    log "gateway is ready."
+    GATEWAY_READY=true
     break
   fi
   sleep 1
-  if [ "$i" -eq 60 ]; then
-    echo "[entrypoint] gateway not ready in 60s, exiting."
-    exit 1
-  fi
 done
+
+if [ "$GATEWAY_READY" = false ]; then
+  warn "gateway 未在 60 秒内就绪，请检查配置："
+  warn "  1. 运行 openclaw doctor --fix 修复配置"
+  warn "  2. 检查 $OC_CFG 中的 channels.feishu.dmPolicy 是否为合法值"
+  warn "  3. 修复后重启容器（不会重复执行安装步骤）"
+  exit 1
+fi
 
 # 刷新循环后台
 if [ -f /app/AgentClaw/scripts/run_loop.sh ]; then
