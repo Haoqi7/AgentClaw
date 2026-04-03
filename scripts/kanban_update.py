@@ -11,23 +11,23 @@
 
 用法:
   # 新建任务（收旨时）
-  python3 kanban_update.py create JJC-20260223-012 "任务标题" Zhongshu 中书省 中书令
+  python3 kanban_update.py create JJC-20260223-0012 "任务标题" Zhongshu 中书省 中书令
 
   # 更新状态
-  python3 kanban_update.py state JJC-20260223-012 Menxia "规划方案已提交门下省"
+  python3 kanban_update.py state JJC-20260223-0012 Menxia "规划方案已提交门下省"
 
   # 添加流转记录
-  python3 kanban_update.py flow JJC-20260223-012 "中书省" "门下省" "规划方案提交审核"
+  python3 kanban_update.py flow JJC-20260223-0012 "中书省" "门下省" "规划方案提交审核"
 
   # 完成任务
-  python3 kanban_update.py done JJC-20260223-012 "/path/to/output" "任务完成摘要"
+  python3 kanban_update.py done JJC-20260223-0012 "/path/to/output" "任务完成摘要"
 
   # 添加/更新子任务 todo
-  python3 kanban_update.py todo JJC-20260223-012 1 "实现API接口" in-progress
-  python3 kanban_update.py todo JJC-20260223-012 1 "" completed
+  python3 kanban_update.py todo JJC-20260223-0012 1 "实现API接口" in-progress
+  python3 kanban_update.py todo JJC-20260223-0012 1 "" completed
 
   # 🔥 实时进展汇报（Agent 主动调用，频率不限）
-  python3 kanban_update.py progress JJC-20260223-012 "正在分析需求，拟定3个子方案" "1.调研技术选型|2.撰写设计文档|3.实现原型"
+  python3 kanban_update.py progress JJC-20260223-0012 "正在分析需求，拟定3个子方案" "1.调研技术选型|2.撰写设计文档|3.实现原型"
 """
 import datetime
 import json, pathlib, sys, subprocess, logging, os, re
