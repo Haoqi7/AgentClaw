@@ -806,15 +806,39 @@ def _get_agent_session_status(agent_id):
 
 
 def _check_agent_process(agent_id):
-    """检测是否有该 Agent 的 openclaw-agent 进程正在运行。"""
+    """检测是否有该 Agent 的 openclaw-agent 进程正在运行。
+    
+    支持多种检测模式:
+    1. pgrep 检测进程名（标准模式）
+    2. Session 文件最近活跃时间检测（daemon/守护进程模式）
+    3. 跳过检测，返回 False（Docker 容器等受限环境）
+    """
+    # 方式1: pgrep 检测进程名
     try:
         result = subprocess.run(
             ['pgrep', '-f', f'openclaw.*--agent.*{agent_id}'],
             capture_output=True, text=True, timeout=5
         )
-        return result.returncode == 0
+        if result.returncode == 0:
+            return True
     except Exception:
-        return False
+        pass
+    
+    # 方式2: 检查 session 文件最近活跃（daemon 模式下无独立进程）
+    try:
+        sessions_file = OCLAW_HOME / 'agents' / agent_id / 'sessions' / 'sessions.json'
+        if sessions_file.exists():
+            data = json.loads(sessions_file.read_text())
+            if isinstance(data, dict):
+                now_ms = int(datetime.datetime.now().timestamp() * 1000)
+                for v in data.values():
+                    ts = v.get('updatedAt', 0)
+                    if isinstance(ts, (int, float)) and (now_ms - ts) <= 5 * 60 * 1000:
+                        return True
+    except Exception:
+        pass
+    
+    return False
 
 
 def _check_agent_workspace(agent_id):
@@ -964,6 +988,7 @@ _ORG_AGENT_MAP = {
     '礼部': 'libu', '户部': 'hubu', '兵部': 'bingbu',
     '刑部': 'xingbu', '工部': 'gongbu', '吏部': 'libu_hr',
     '中书省': 'zhongshu', '门下省': 'menxia', '尚书省': 'shangshu',
+    '执行中': None,  # Fix #3: fallback — 无法确定具体部门时不自动派发
 }
 
 _TERMINAL_STATES = {'Done', 'Cancelled'}
@@ -2088,6 +2113,21 @@ def dispatch_for_state(task_id, task, new_state, trigger='state-transition'):
                 }),
                 _scheduler_add_flow(t, f'派发失败：{agent_id}（{trigger}）', to=t.get('org', ''))
             ))
+            # Fix #11: 派发全部失败后，检查是否需要自动回滚
+            try:
+                def _check_rollback():
+                    tasks = load_tasks()
+                    t = next((t for t in tasks if t.get('id') == task_id), None)
+                    if t:
+                        sched = _ensure_scheduler(t)
+                        if sched.get('autoRollback', True):
+                            retry_count = int(sched.get('retryCount') or 0)
+                            max_retry = max(0, int(sched.get('maxRetry') or 1))
+                            if retry_count >= max_retry:
+                                handle_scheduler_rollback(task_id, f'Agent {agent_id} 派发失败: {err[:100]}')
+                threading.Thread(target=_check_rollback, daemon=True).start()
+            except Exception as e:
+                log.warning(f'派发失败后回滚检查异常: {e}')
         except subprocess.TimeoutExpired:
             log.error(f'❌ {task_id} 自动派发超时 → {agent_id}')
             _update_task_scheduler(task_id, lambda t, s: (
