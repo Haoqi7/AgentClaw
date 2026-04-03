@@ -205,7 +205,7 @@ init_data() {
 import json, pathlib
 tasks = [
     {
-        "id": "JJC-DEMO-001",
+        "id": "JJC-DEMO-0001",
         "title": "🎉 系统初始化完成",
         "official": "工部尚书",
         "org": "工部",
