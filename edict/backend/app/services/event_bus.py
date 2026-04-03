@@ -36,6 +36,7 @@ TOPIC_TASK_ESCALATED = "task.escalated"
 TOPIC_AGENT_THOUGHTS = "agent.thoughts"
 TOPIC_AGENT_TODO_UPDATE = "agent.todo.update"
 TOPIC_AGENT_HEARTBEAT = "agent.heartbeat"
+TOPIC_AGENT_COMPLETED = "agent.completed"
 
 # 所有 topic 对应的 Redis Stream key 前缀
 STREAM_PREFIX = "edict:stream:"
