@@ -64,6 +64,8 @@ interface CourtSession {
   phase: string;
 }
 
+const COURT_SESSION_STORAGE_KEY = 'edict.court_discuss.session_id';
+
 export default function CourtDiscussion() {
   // Phase: setup | session
   const [phase, setPhase] = useState<'setup' | 'session'>('setup');
@@ -87,6 +89,7 @@ export default function CourtDiscussion() {
   const [speakingId, setSpeakingId] = useState<string | null>(null);
   // 官员情绪
   const [emotions, setEmotions] = useState<Record<string, string>>({});
+  const [restoring, setRestoring] = useState(true);
 
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const toast = useStore((s) => s.toast);
@@ -112,6 +115,55 @@ export default function CourtDiscussion() {
     return () => clearInterval(timer);
   }, [autoPlay, session, loading]);
 
+  // 首次加载时恢复会话：优先本地 session_id，其次后端最新活跃会话
+  useEffect(() => {
+    let mounted = true;
+    const restore = async () => {
+      try {
+        const storedId = localStorage.getItem(COURT_SESSION_STORAGE_KEY) || '';
+        if (storedId) {
+          try {
+            const s = await api.courtDiscussSession(storedId);
+            if (mounted && s?.session_id) {
+              setSession(s as unknown as CourtSession);
+              setPhase('session');
+              setTopic(s.topic || '');
+              setSelectedIds(new Set((s.officials || []).map((o) => o.id)));
+              return;
+            }
+          } catch {
+            localStorage.removeItem(COURT_SESSION_STORAGE_KEY);
+          }
+        }
+
+        const listRes = await api.courtDiscussList();
+        const latest = (listRes.sessions || [])[0];
+        if (latest?.session_id) {
+          try {
+            const s = await api.courtDiscussSession(latest.session_id);
+            if (mounted && s?.session_id) {
+              setSession(s as unknown as CourtSession);
+              setPhase('session');
+              setTopic(s.topic || '');
+              setSelectedIds(new Set((s.officials || []).map((o) => o.id)));
+              localStorage.setItem(COURT_SESSION_STORAGE_KEY, s.session_id);
+            }
+          } catch {
+            // ignore
+          }
+        }
+      } finally {
+        if (mounted) setRestoring(false);
+      }
+    };
+    restore();
+    return () => { mounted = false; };
+  }, []);
+
+  useEffect(() => {
+    if (session?.session_id) localStorage.setItem(COURT_SESSION_STORAGE_KEY, session.session_id);
+  }, [session?.session_id]);
+
   // ── 切换官员选中 ──
   const toggleOfficial = (id: string) => {
     setSelectedIds((prev) => {
@@ -131,6 +183,7 @@ export default function CourtDiscussion() {
       if (!res.ok) throw new Error(res.error || '启动失败');
       setSession(res as unknown as CourtSession);
       setPhase('session');
+      if (res.session_id) localStorage.setItem(COURT_SESSION_STORAGE_KEY, res.session_id);
     } catch (e: unknown) {
       toast((e as Error).message || '启动失败', 'err');
     } finally {
@@ -291,6 +344,7 @@ export default function CourtDiscussion() {
     setEmotions({});
     setSpeakingId(null);
     setDiceResult(null);
+    localStorage.removeItem(COURT_SESSION_STORAGE_KEY);
   };
 
   // ── 预设议题（从当前旨意中提取）──
@@ -313,6 +367,10 @@ export default function CourtDiscussion() {
   // ═══════════════════
   //     渲染：设置页
   // ═══════════════════
+
+  if (restoring) {
+    return <div className="empty" style={{ gridColumn: '1/-1' }}>⟳ 正在恢复朝堂会话…</div>;
+  }
 
   if (phase === 'setup') {
     return (

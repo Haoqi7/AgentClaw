@@ -107,6 +107,12 @@ export const api = {
     postJ<ActionResult>(`${API_BASE}/api/court-discuss/destroy`, { sessionId }),
   courtDiscussFate: () =>
     fetchJ<{ ok: boolean; event: string }>(`${API_BASE}/api/court-discuss/fate`),
+  courtDiscussList: () =>
+    fetchJ<{ ok: boolean; sessions: Array<{ session_id: string; topic: string; round: number; phase: string; official_count: number; message_count: number }> }>(
+      `${API_BASE}/api/court-discuss/list`
+    ),
+  courtDiscussSession: (sessionId: string) =>
+    fetchJ<CourtDiscussSessionData>(`${API_BASE}/api/court-discuss/session/${encodeURIComponent(sessionId)}`),
 };
 
 // ── Types ──
@@ -429,4 +435,30 @@ export interface CourtDiscussResult {
   scene_note?: string;
   total_messages?: number;
   error?: string;
+}
+
+export interface CourtDiscussSessionData {
+  ok: boolean;
+  session_id: string;
+  topic: string;
+  task_id?: string;
+  officials: Array<{
+    id: string;
+    name: string;
+    emoji: string;
+    role: string;
+    personality: string;
+    speaking_style: string;
+  }>;
+  messages: Array<{
+    type: string;
+    content: string;
+    official_id?: string;
+    official_name?: string;
+    emotion?: string;
+    action?: string;
+    timestamp?: number;
+  }>;
+  round: number;
+  phase: string;
 }

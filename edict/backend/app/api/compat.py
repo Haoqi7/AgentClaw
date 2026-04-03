@@ -468,3 +468,24 @@ async def court_discuss_destroy(body: CourtSessionBody):
 async def court_discuss_fate():
     legacy = _load_legacy_dashboard()
     return {"ok": True, "event": legacy.cd_fate()}
+
+
+@router.get("/court-discuss/list")
+async def court_discuss_list():
+    legacy = _load_legacy_dashboard()
+    return {"ok": True, "sessions": legacy.cd_list()}
+
+
+@router.get("/court-discuss/officials")
+async def court_discuss_officials():
+    legacy = _load_legacy_dashboard()
+    return {"ok": True, "officials": legacy.CD_PROFILES}
+
+
+@router.get("/court-discuss/session/{session_id}")
+async def court_discuss_session(session_id: str):
+    legacy = _load_legacy_dashboard()
+    sess = legacy.cd_get(session_id)
+    if not sess:
+        raise HTTPException(status_code=404, detail=f"session {session_id} not found")
+    return sess
