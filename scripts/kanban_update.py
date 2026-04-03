@@ -337,7 +337,7 @@ def cmd_block(task_id, reason):
         return tasks
     atomic_json_update(TASKS_FILE, modifier, [])
     _trigger_refresh()
-    log.info(f'✅ {task_id} 已阻塞: {reason[:30]}')
+    log.info(f'🚫 {task_id} 已阻塞: {reason}')
 
 
 def cmd_progress(task_id, now_text, todos_pipe='', tokens=0, cost=0.0, elapsed=0):
