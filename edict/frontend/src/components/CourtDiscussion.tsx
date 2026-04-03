@@ -14,6 +14,7 @@
 import { useState, useRef, useEffect, useCallback } from 'react';
 import { useStore, DEPTS } from '../store';
 import { api } from '../api';
+import type { CourtDiscussSessionData } from '../api';
 
 // ── 常量 ──
 
@@ -48,21 +49,7 @@ interface CourtMessage {
   timestamp?: number;
 }
 
-interface CourtSession {
-  session_id: string;
-  topic: string;
-  officials: Array<{
-    id: string;
-    name: string;
-    emoji: string;
-    role: string;
-    personality: string;
-    speaking_style: string;
-  }>;
-  messages: CourtMessage[];
-  round: number;
-  phase: string;
-}
+type CourtSession = CourtDiscussSessionData;
 
 const COURT_SESSION_STORAGE_KEY = 'edict.court_discuss.session_id';
 
@@ -125,7 +112,7 @@ export default function CourtDiscussion() {
           try {
             const s = await api.courtDiscussSession(storedId);
             if (mounted && s?.session_id) {
-              setSession(s as unknown as CourtSession);
+              setSession(s);
               setPhase('session');
               setTopic(s.topic || '');
               setSelectedIds(new Set((s.officials || []).map((o) => o.id)));
@@ -142,14 +129,14 @@ export default function CourtDiscussion() {
           try {
             const s = await api.courtDiscussSession(latest.session_id);
             if (mounted && s?.session_id) {
-              setSession(s as unknown as CourtSession);
+              setSession(s);
               setPhase('session');
               setTopic(s.topic || '');
               setSelectedIds(new Set((s.officials || []).map((o) => o.id)));
               localStorage.setItem(COURT_SESSION_STORAGE_KEY, s.session_id);
             }
           } catch {
-            // ignore
+            // 会话在后端已结束或被清理时，保留 setup 页面即可
           }
         }
       } finally {
@@ -181,7 +168,7 @@ export default function CourtDiscussion() {
     try {
       const res = await api.courtDiscussStart(topic, Array.from(selectedIds));
       if (!res.ok) throw new Error(res.error || '启动失败');
-      setSession(res as unknown as CourtSession);
+      setSession(res);
       setPhase('session');
       if (res.session_id) localStorage.setItem(COURT_SESSION_STORAGE_KEY, res.session_id);
     } catch (e: unknown) {

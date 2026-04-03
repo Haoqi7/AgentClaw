@@ -98,7 +98,7 @@ export const api = {
 
   // ── 朝堂议政 ──
   courtDiscussStart: (topic: string, officials: string[], taskId?: string) =>
-    postJ<CourtDiscussResult>(`${API_BASE}/api/court-discuss/start`, { topic, officials, taskId }),
+    postJ<CourtDiscussSessionData>(`${API_BASE}/api/court-discuss/start`, { topic, officials, taskId }),
   courtDiscussAdvance: (sessionId: string, userMessage?: string, decree?: string) =>
     postJ<CourtDiscussResult>(`${API_BASE}/api/court-discuss/advance`, { sessionId, userMessage, decree }),
   courtDiscussConclude: (sessionId: string) =>
@@ -108,7 +108,7 @@ export const api = {
   courtDiscussFate: () =>
     fetchJ<{ ok: boolean; event: string }>(`${API_BASE}/api/court-discuss/fate`),
   courtDiscussList: () =>
-    fetchJ<{ ok: boolean; sessions: Array<{ session_id: string; topic: string; round: number; phase: string; official_count: number; message_count: number }> }>(
+    fetchJ<{ ok: boolean; sessions: CourtSessionSummary[] }>(
       `${API_BASE}/api/court-discuss/list`
     ),
   courtDiscussSession: (sessionId: string) =>
@@ -439,6 +439,7 @@ export interface CourtDiscussResult {
 
 export interface CourtDiscussSessionData {
   ok: boolean;
+  error?: string;
   session_id: string;
   topic: string;
   task_id?: string;
@@ -461,4 +462,13 @@ export interface CourtDiscussSessionData {
   }>;
   round: number;
   phase: string;
+}
+
+export interface CourtSessionSummary {
+  session_id: string;
+  topic: string;
+  round: number;
+  phase: string;
+  official_count: number;
+  message_count: number;
 }
