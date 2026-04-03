@@ -176,9 +176,24 @@ class OrchestratorWorker:
             )
 
     async def _on_task_completed(self, payload: dict, trace_id: str):
-        """任务完成 → 记录日志。"""
+        """任务完成 → 通知尚书省汇总或推进到下一个阶段。"""
         task_id = payload.get("task_id")
-        log.info(f"🎉 Task {task_id} completed. trace={trace_id}")
+        agent = payload.get("agent", "")
+        log.info(f"🎉 Task {task_id} completed by agent '{agent}'. trace={trace_id}")
+
+        # 发布完成事件，让 task_service 推进状态
+        await self.bus.publish(
+            topic=TOPIC_TASK_STATUS,
+            trace_id=trace_id,
+            event_type="task.agent.completed",
+            producer="orchestrator",
+            payload={
+                "task_id": task_id,
+                "from": agent,
+                "to": "review",  # 建议进入审核状态
+                "reason": f"Agent '{agent}' 已完成执行",
+            },
+        )
 
     async def _on_task_stalled(self, payload: dict, trace_id: str):
         """任务停滞 → 通知尚书或重新派发。"""
