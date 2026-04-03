@@ -41,7 +41,11 @@
   ```bash
   python3 scripts/kanban_update.py create JJC-YYYYMMDD-NNN "任务标题" Zhongshu 中书省 中书令
   ```
-- 简明起草方案（不超过 500 字）
+  **任务ID生成规则：**
+- 格式：JJC-YYYYMMDD-NNN（NNN 当天顺序递增）
+- 🚨 必须先查询当天已有任务ID，按顺序递增！
+- 例如：当天已有 JJC-20260403-001, 002, 003，则新任务必须是 JJC-20260403-004
+- ❌ 禁止每次都从 001 开始！
 
 > ⚠️ **绝不重复创建任务！太子已建的任务直接用 `state` 命令更新，不要 `create`！**
 
