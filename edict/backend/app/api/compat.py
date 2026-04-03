@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import importlib.util
+import logging
 import subprocess
 import threading
 from pathlib import Path
@@ -11,9 +12,11 @@ from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
 router = APIRouter()
+log = logging.getLogger("edict.api.compat")
 
 _legacy_module = None
 _legacy_lock = threading.Lock()
+_FALLBACK_DISPATCH_CHANNELS = {"feishu", "telegram", "wecom", "signal", "tui", "discord", "slack"}
 
 
 def _find_repo_root() -> Path:
@@ -221,10 +224,27 @@ async def set_model(body: SetModelBody):
 
     def apply_async():
         try:
-            subprocess.run(["python3", str(legacy.SCRIPTS / "apply_model_changes.py")], timeout=30)
-            subprocess.run(["python3", str(legacy.SCRIPTS / "sync_agent_config.py")], timeout=10)
-        except Exception:
-            pass
+            r1 = subprocess.run(
+                ["python3", str(legacy.SCRIPTS / "apply_model_changes.py")],
+                timeout=30,
+                check=False,
+                capture_output=True,
+                text=True,
+            )
+            if r1.returncode != 0:
+                log.warning("apply_model_changes failed rc=%s stderr=%s", r1.returncode, (r1.stderr or "").strip()[:500])
+
+            r2 = subprocess.run(
+                ["python3", str(legacy.SCRIPTS / "sync_agent_config.py")],
+                timeout=10,
+                check=False,
+                capture_output=True,
+                text=True,
+            )
+            if r2.returncode != 0:
+                log.warning("sync_agent_config failed rc=%s stderr=%s", r2.returncode, (r2.stderr or "").strip()[:500])
+        except Exception as e:
+            log.warning("async apply model change failed: %s", e)
 
     threading.Thread(target=apply_async, daemon=True).start()
     return {"ok": True, "message": f"Queued: {body.agentId} → {body.model}"}
@@ -234,7 +254,8 @@ async def set_model(body: SetModelBody):
 async def set_dispatch_channel(body: DispatchChannelBody):
     legacy = _load_legacy_dashboard()
     channel = body.channel.strip()
-    allowed = {"feishu", "telegram", "wecom", "signal", "tui", "discord", "slack"}
+    supported = getattr(legacy, "NOTIFICATION_CHANNELS", None)
+    allowed = set(supported.keys()) if isinstance(supported, dict) and supported else _FALLBACK_DISPATCH_CHANNELS
     if not channel or channel not in allowed:
         raise HTTPException(status_code=400, detail=f"channel must be one of: {', '.join(sorted(allowed))}")
 
@@ -326,10 +347,18 @@ async def refresh_morning():
 
     def do_refresh():
         try:
-            subprocess.run(["python3", str(legacy.SCRIPTS / "fetch_morning_news.py"), "--force"], timeout=120)
+            rc = subprocess.run(
+                ["python3", str(legacy.SCRIPTS / "fetch_morning_news.py"), "--force"],
+                timeout=120,
+                check=False,
+                capture_output=True,
+                text=True,
+            )
+            if rc.returncode != 0:
+                log.warning("fetch_morning_news failed rc=%s stderr=%s", rc.returncode, (rc.stderr or "").strip()[:500])
             legacy.push_to_feishu()
-        except Exception:
-            pass
+        except Exception as e:
+            log.warning("refresh morning brief failed: %s", e)
 
     threading.Thread(target=do_refresh, daemon=True).start()
     return {"ok": True, "message": "采集已触发，约30-60秒后刷新"}
@@ -399,7 +428,8 @@ async def court_discuss_start(body: CourtStartBody):
     topic = body.topic.strip()
     if not topic:
         raise HTTPException(status_code=400, detail="topic required")
-    officials = [o for o in body.officials if o in set(legacy.CD_PROFILES.keys())]
+    valid_officials = set(legacy.CD_PROFILES.keys())
+    officials = [o for o in body.officials if o in valid_officials]
     if len(officials) < 2:
         raise HTTPException(status_code=400, detail="至少选择2位官员")
     return legacy.cd_create(topic, officials, body.taskId.strip())
