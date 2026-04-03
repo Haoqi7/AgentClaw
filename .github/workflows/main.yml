@@ -10,7 +10,7 @@ on:
       image_name:
         description: "Image name (without owner)."
         required: false
-        default: "agentclaw-all-in-one"
+        default: "agentclaw"
 
 permissions:
   contents: write
