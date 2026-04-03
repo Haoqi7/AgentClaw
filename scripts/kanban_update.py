@@ -46,7 +46,10 @@ from utils import now_iso  # noqa: E402
 STATE_ORG_MAP = {
     'Taizi': '太子', 'Zhongshu': '中书省', 'Menxia': '门下省',
     'Assigned': '尚书省', 'Next': '尚书省',
-    'Doing': '执行中', 'Review': '尚书省', 'Done': '完成', 'Blocked': '阻塞',
+    # 注意：'Doing' 不写入此映射。任务进入执行中时应保留原部门（org），
+    # 前端"省部调度"面板按 org 精确匹配部门卡片；若将 org 改为"执行中"，
+    # 任何部门卡片都无法匹配该任务，导致看板永远显示候命/0活跃。
+    'Review': '尚书省', 'Done': '完成', 'Blocked': '阻塞',
 }
 
 _STATE_AGENT_MAP = {
