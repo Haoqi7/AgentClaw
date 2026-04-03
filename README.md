@@ -130,6 +130,27 @@ open http://127.0.0.1:7891
 收件 → 太子分拣 → 中书规划 → 门下审议 → 已派发 → 执行中 → 已完成
 ```
 
+### 各部流转有问题
+```
+for f in /root/.openclaw/workspace-*/AGENTS.md; do cat > "$f" << 'EOF'
+# AGENTS.md · 工作协议
+
+1. 接到任务先回复"已接旨"。
+2. 输出必须包含：任务ID、结果、证据/文件路径、阻塞项。
+3. 需要协作时，回复尚书省请求转派，不跨部直连。
+4. 涉及删除/外发动作必须明确标注并等待批准。
+
+---
+
+## 📡 Subagent 调用规则
+
+**首次调用某个 agent → `sessions_spawn`**
+**继续已有对话 → `sessions_send`**
+
+**❌ 禁止用 `sessions_yield` 调用 subagent！**
+EOF
+done && echo "✅ 已更新所有 AGENTS.md"
+```
 ---
 
 ## docker部署
