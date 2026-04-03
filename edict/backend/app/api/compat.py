@@ -16,6 +16,14 @@ _legacy_module = None
 _legacy_lock = threading.Lock()
 
 
+def _find_repo_root() -> Path:
+    current = Path(__file__).resolve()
+    for parent in current.parents:
+        if (parent / "dashboard" / "server.py").exists():
+            return parent
+    raise RuntimeError("cannot find repository root containing dashboard/server.py")
+
+
 def _load_legacy_dashboard():
     global _legacy_module
     if _legacy_module is not None:
@@ -23,7 +31,7 @@ def _load_legacy_dashboard():
     with _legacy_lock:
         if _legacy_module is not None:
             return _legacy_module
-        server_path = Path(__file__).resolve().parents[4] / "dashboard" / "server.py"
+        server_path = _find_repo_root() / "dashboard" / "server.py"
         spec = importlib.util.spec_from_file_location("edict_legacy_dashboard_server", server_path)
         if spec is None or spec.loader is None:
             raise RuntimeError(f"cannot load legacy dashboard module: {server_path}")
