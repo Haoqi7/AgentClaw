@@ -44,12 +44,9 @@ from file_lock import atomic_json_read, atomic_json_update  # noqa: E402
 from utils import now_iso  # noqa: E402
 
 STATE_ORG_MAP = {
-    'Taizi': '太子', 'Zhongshu': '中书省', 'Menxia': '门下省',
-    'Assigned': '尚书省', 'Next': '尚书省',
-    # 注意：'Doing' 不写入此映射。任务进入执行中时应保留原部门（org），
-    # 前端"省部调度"面板按 org 精确匹配部门卡片；若将 org 改为"执行中"，
-    # 任何部门卡片都无法匹配该任务，导致看板永远显示候命/0活跃。
-    'Review': '尚书省', 'Done': '完成', 'Blocked': '阻塞',
+      'Pending': '待处理', 'Taizi': '太子', 'Zhongshu': '中书省', 'Menxia': '门下省',
+      'Assigned': '尚书省', 'Next': '尚书省',
+      'Review': '尚书省', 'Done': '完成', 'Blocked': '阻塞',
 }
 
 _STATE_AGENT_MAP = {
@@ -286,19 +283,25 @@ def cmd_flow(task_id, from_dept, to_dept, remark):
     log.info(f'✅ {task_id} 流转记录: {from_dept} → {to_dept}')
 
 
-def cmd_done(task_id, output_path='', summary=''):
-    """标记任务完成（原子操作）"""
-    def modifier(tasks):
-        t = find_task(tasks, task_id)
-        if not t:
-            log.error(f'任务 {task_id} 不存在')
-            return tasks
-        t['state'] = 'Done'
-        t['output'] = output_path
-        t['now'] = summary or '任务已完成'
-        t.setdefault('flow_log', []).append({
-            "at": now_iso(), "from": t.get('org', '执行部门'),
-            "to": "皇上", "remark": f"✅ 完成：{summary or '任务已完成'}"
+  def cmd_done(task_id, output_path='', summary=''):
+      """标记任务完成（原子操作）"""
+      """标记任务完成（原子操作，含状态校验）"""
+      def modifier(tasks):
+          t = find_task(tasks, task_id)
+          if not t:
+              log.error(f'任务 {task_id} 不存在')
+              return tasks
+          old_state = t.get('state', '')
+          if old_state in ('Done', 'Cancelled'):
+              log.warning(f'⚠️ 任务 {task_id} 已处于终态 ({old_state})，不可重复完成')
+              return tasks
+          allowed = _VALID_TRANSITIONS.get(old_state, set())
+          if 'Done' not in allowed and old_state not in ('Doing', 'Review'):
+              log.warning(f'⚠️ 非法完成 {task_id}: {old_state} → Done（允许: {allowed}）')
+              return tasks
+          t['state'] = 'Done'
+          t['output'] = output_path
+          t['now'] = summary or '任务已完成'
         })
         # 同步设置 outputMeta，避免依赖 refresh_live_data.py 异步补充
         if output_path:
@@ -315,20 +318,24 @@ def cmd_done(task_id, output_path='', summary=''):
     log.info(f'✅ {task_id} 已完成')
 
 
-def cmd_block(task_id, reason):
-    """标记阻塞（原子操作）"""
-    def modifier(tasks):
-        t = find_task(tasks, task_id)
-        if not t:
-            log.error(f'任务 {task_id} 不存在')
-            return tasks
-        t['state'] = 'Blocked'
-        t['block'] = reason
-        t['updatedAt'] = now_iso()
-        return tasks
-    atomic_json_update(TASKS_FILE, modifier, [])
-    _trigger_refresh()
-    log.warning(f'⚠️ {task_id} 已阻塞: {reason}')
+  def cmd_block(task_id, reason):
+      """标记阻塞（原子操作）"""
+      def modifier(tasks):
+          t = find_task(tasks, task_id)
+          if not t:
+              log.error(f'任务 {task_id} 不存在')
+              return tasks
+          old_state = t.get('state', '')
+          if old_state in ('Done', 'Cancelled'):
+              log.warning(f'⚠️ 任务 {task_id} 已处于终态 ({old_state})，不可阻塞')
+              return tasks
+          allowed = _VALID_TRANSITIONS.get(old_state, set())
+          if allowed is not None and 'Blocked' not in allowed:
+              log.warning(f'⚠️ 非法阻塞 {task_id}: {old_state} → Blocked（允许: {allowed}）')
+              return tasks
+          t['state'] = 'Blocked'
+          t['block'] = reason
+          t['updatedAt'] = now_iso()
 
 
 def cmd_progress(task_id, now_text, todos_pipe='', tokens=0, cost=0.0, elapsed=0):
