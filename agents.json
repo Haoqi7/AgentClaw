@@ -32,7 +32,7 @@
     "workspace": "C:\\Users\\<YOUR_USER>\\.openclaw\\workspace-shangshu",
     "agentDir": "C:\\Users\\<YOUR_USER>\\.openclaw\\agents\\shangshu\\agent",
     "subagents": {
-      "allowAgents": ["zhongshu", "menxia", "hubu", "libu", "bingbu", "xingbu", "gongbu", "libu_hr"]
+      "allowAgents": ["zhongshu", "menxia", "hubu", "libu", "bingbu", "xingbu", "gongbu", "libu_hr", "taizi"]
     }
   },
   {
