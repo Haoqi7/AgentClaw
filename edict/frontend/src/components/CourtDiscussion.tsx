@@ -369,7 +369,11 @@ export default function CourtDiscussion() {
   // ═══════════════════
 
   if (restoring) {
-    return <div className="empty" style={{ gridColumn: '1/-1' }}>⟳ 正在恢复朝堂会话…</div>;
+    return (
+      <div className="empty" style={{ gridColumn: '1/-1' }} role="status" aria-live="polite">
+        ⟳ 正在恢复朝堂会话…
+      </div>
+    );
   }
 
   if (phase === 'setup') {

@@ -488,4 +488,4 @@ async def court_discuss_session(session_id: str):
     sess = legacy.cd_get(session_id)
     if not sess:
         raise HTTPException(status_code=404, detail=f"session {session_id} not found")
-    return sess
+    return {"ok": True, **sess}
