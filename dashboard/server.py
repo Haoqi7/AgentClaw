@@ -628,15 +628,9 @@ def handle_create_task(title, org='中书省', official='中书令', priority='n
         return {'ok': False, 'error': f'标题过短（{len(title)}<{_MIN_TITLE_LEN}字），不像是旨意'}
     if title.lower() in _JUNK_TITLES:
         return {'ok': False, 'error': f'「{title}」不是有效旨意，请输入具体工作指令'}
-    # 生成 task id: JJC-YYYYMMDD-NNN
-    today = datetime.datetime.now().strftime('%Y%m%d')
-    tasks = load_tasks()
-    today_ids = [t['id'] for t in tasks if t.get('id', '').startswith(f'JJC-{today}-')]
-    seq = 1
-    if today_ids:
-        nums = [int(tid.split('-')[-1]) for tid in today_ids if tid.split('-')[-1].isdigit()]
-        seq = max(nums) + 1 if nums else 1
-    task_id = f'JJC-{today}-{seq:03d}'
+    # 生成 task id: JJC-YYYYMMDD-HHMM
+    ts = datetime.datetime.now().strftime('%Y%m%d-%H%M')
+    task_id = f'JJC-{ts}'
     # 正确流程起点：皇上 -> 太子分拣
     # target_dept 记录模板建议的最终执行部门（仅供尚书省派发参考）
     initial_org = '太子'
