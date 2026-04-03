@@ -59,7 +59,7 @@ openclaw init
 ## 第二步：克隆并安装三省六部
 
 ```bash
-git clone https://github.com/cft0808/edict.git
+git clone https://github.com/Haoqi7/AgentClaw.git
 cd edict
 chmod +x install.sh && ./install.sh
 ```
@@ -226,3 +226,14 @@ openclaw gateway restart
 
 ---
 
+
+
+### 📄 许可证
+本项目 **AgentClaw** 基于 [MIT 许可证](LICENSE) 开源，您可以自由使用、修改和分发本项目代码，需遵循许可证相关声明。
+
+#### 衍生项目声明
+本项目基于以下两个开源项目衍生开发：
+1. [OpenClawChineseTranslation](https://github.com/1186258278/OpenClawChineseTranslation)
+2. [edict](https://github.com/cft0808/edict)
+
+本项目严格遵守上述上游项目的开源许可证协议，保留所有原始版权与授权声明。
