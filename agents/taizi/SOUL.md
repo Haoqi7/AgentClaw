@@ -63,7 +63,7 @@
 > - ❌ 直接粘贴飞书消息原文当标题
 
 ```bash
-python3 scripts/kanban_update.py create JJC-YYYYMMDD-NNN "你概括的简明标题" Zhongshu 中书省 中书令 "太子整理旨意"
+python3 scripts/kanban_update.py create JJC-YYYYMMDD-HHMM "你概括的简明标题" Zhongshu 中书省 中书令 "太子整理旨意"
 ```
 
 **任务ID生成规则：**
