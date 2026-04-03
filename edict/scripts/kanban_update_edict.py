@@ -22,10 +22,16 @@ import os
 import re
 import sys
 import pathlib
-import fcntl
 import time
 from datetime import datetime, timezone
 from typing import Optional, Dict, List, Any, Tuple
+
+# Fix #13: 跨平台文件锁（兼容 Windows）
+_IS_WINDOWS = os.name == 'nt'
+if _IS_WINDOWS:
+    import msvcrt
+else:
+    import fcntl
 
 log = logging.getLogger('kanban')
 logging.basicConfig(level=logging.INFO, format='%(asctime)s [%(name)s] %(message)s', datefmt='%H:%M:%S')
@@ -51,7 +57,8 @@ _JUNK_TITLES = {
 
 STATE_ORG_MAP = {
     'Taizi': '太子', 'Zhongshu': '中书省', 'Menxia': '门下省', 'Assigned': '尚书省',
-    'Doing': '执行中', 'Review': '尚书省', 'Done': '完成', 'Blocked': '阻塞',
+    # 注意：'Doing' 不写入此映射，保留原部门 org 以便省部调度面板精确匹配
+    'Review': '尚书省', 'Done': '完成', 'Blocked': '阻塞',
 }
 
 # State → Edict TaskState value 映射
@@ -114,9 +121,19 @@ _NEXT_STATE_MAP = {
     "吏部": "尚书省",
 }
 
-# 任务文件路径（降级模式用）
-TASKS_FILE = pathlib.Path(__file__).parent / 'tasks.json'
-LOCK_FILE = pathlib.Path(__file__).parent / 'tasks.json.lock'
+# Fix #5: 任务文件路径（降级模式用）— 从项目根目录 data/ 下读取，而非 edict/scripts/ 下
+_EDICT_HOME = os.environ.get('EDICT_HOME', '')
+if _EDICT_HOME:
+    TASKS_FILE = pathlib.Path(_EDICT_HOME) / 'data' / 'tasks_source.json'
+else:
+    # 向上查找项目根目录（找 data/ 目录）
+    _dir = pathlib.Path(__file__).resolve()
+    TASKS_FILE = _dir.parent.parent / 'data' / 'tasks_source.json'
+    for _p in (_dir.parent.parent, _dir.parent.parent.parent, _dir.parent):
+        if (_p / 'data').is_dir():
+            TASKS_FILE = _p / 'data' / 'tasks_source.json'
+            break
+LOCK_FILE = TASKS_FILE.with_suffix('.json.lock')
 
 # 全局缓存（避免重复导入）
 _legacy_module = None
@@ -135,14 +152,25 @@ def find_task(tasks: List[Dict], task_id: str) -> Optional[Dict]:
             return task
     return None
 
-def _acquire_file_lock(lock_file: pathlib.Path, timeout: int = 5) -> Optional[int]:
-    """获取文件锁，超时返回 None"""
+# Fix #13: 跨平台文件锁实现（兼容 Windows msvcrt + Unix fcntl）
+def _acquire_file_lock(lock_file: pathlib.Path, timeout: int = 5) -> Optional[Any]:
+    """获取文件锁，超时返回 None。返回文件描述符或 None。"""
     start_time = time.time()
     lock_fd = None
     while time.time() - start_time < timeout:
         try:
             lock_fd = open(lock_file, 'w')
-            fcntl.flock(lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            if _IS_WINDOWS:
+                try:
+                    msvcrt.locking(lock_fd.fileno(), msvcrt.LK_NBLCK, 1)
+                except (IOError, OSError):
+                    if lock_fd:
+                        lock_fd.close()
+                    lock_fd = None
+                    time.sleep(0.1)
+                    continue
+            else:
+                fcntl.flock(lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
             return lock_fd
         except (IOError, OSError):
             if lock_fd:
@@ -150,10 +178,16 @@ def _acquire_file_lock(lock_file: pathlib.Path, timeout: int = 5) -> Optional[in
             time.sleep(0.1)
     return None
 
-def _release_file_lock(lock_fd: Optional[int]):
-    """释放文件锁"""
+def _release_file_lock(lock_fd):
+    """释放文件锁。"""
     if lock_fd:
-        fcntl.flock(lock_fd, fcntl.LOCK_UN)
+        try:
+            if _IS_WINDOWS:
+                msvcrt.locking(lock_fd.fileno(), msvcrt.LK_UNLCK, 1)
+            else:
+                fcntl.flock(lock_fd, fcntl.LOCK_UN)
+        except Exception:
+            pass
         lock_fd.close()
 
 def atomic_json_update(file_path: pathlib.Path, modifier, default=None):
@@ -381,7 +415,7 @@ def _is_valid_task_title(title: str) -> Tuple[bool, str]:
     if re.fullmatch(r'[\s?？!！.。,，…·\-—~]+', t):
         return False, '标题只有标点符号'
     if re.match(r'^[/\\~.]', t) or re.search(r'/[a-zA-Z0-9_-]+/[a-zA-Z0-9_-]+', t):
-        return False, '标题看起来像文件路径，请用中文概括任务'
+        return False, '标题看起来像文件路径'
     if re.fullmatch(r'[\s\W]*', t):
         return False, '标题清洗后为空'
     return True, ''
