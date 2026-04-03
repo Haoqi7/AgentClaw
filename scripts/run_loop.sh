@@ -71,17 +71,22 @@ safe_run() {
 
 while true; do
   rotate_log
+  # Fix #4: refresh_live_data 优先执行，让心跳数据在周期开始时就更新，
+  # 避免 Agent 进展上报后延迟一个周期才反映到看板。
+  safe_run "$SCRIPT_DIR/refresh_live_data.py"
   safe_run "$SCRIPT_DIR/sync_from_openclaw_runtime.py"
   safe_run "$SCRIPT_DIR/sync_agent_config.py"
   safe_run "$SCRIPT_DIR/apply_model_changes.py"
   safe_run "$SCRIPT_DIR/sync_officials_stats.py"
+  # 周期结束时再执行一次，拾取本轮期间产生的新数据
   safe_run "$SCRIPT_DIR/refresh_live_data.py"
 
   # 定期巡检：检测卡住的任务并自动重试
   SCAN_COUNTER=$((SCAN_COUNTER + INTERVAL))
   if (( SCAN_COUNTER >= SCAN_INTERVAL )); then
     SCAN_COUNTER=0
-    curl -s -X POST "http://127.0.0.1:${DASHBOARD_PORT}/api/scheduler-scan" \
+    # Fix #7: 移除 /api/ 前缀，匹配 dashboard/server.py do_POST 中的实际路由
+    curl -s -X POST "http://127.0.0.1:${DASHBOARD_PORT}/scheduler-scan" \
       -H 'Content-Type: application/json' -d '{"thresholdSec":180}' >> "$LOG" 2>&1 || true
   fi
 
