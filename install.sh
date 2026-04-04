@@ -112,10 +112,20 @@ create_workspaces() {
     cat > "$OC_HOME/workspace-$agent/AGENTS.md" << 'AGENTS_EOF'
 # AGENTS.md · 工作协议
 
-1. 接到任务先回复"已接旨"。
+## 📡 工作流程
+
+1. 接到任务先回复上级部门"已接旨"。
 2. 输出必须包含：任务ID、结果、证据/文件路径、阻塞项。
 3. 需要协作时，回复尚书省请求转派，不跨部直连。
 4. 涉及删除/外发动作必须明确标注并等待批准。
+5. 完成任务后向上级部门汇报
+
+## 📡 Subagent 调用规则
+
+**首次调用某个 agent → `sessions_spawn`**
+**继续已有对话 → `sessions_send`**
+**❌ 禁止用 `sessions_yield` 调用 subagent！**
+
 AGENTS_EOF
   done
 }
