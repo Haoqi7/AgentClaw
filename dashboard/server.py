@@ -993,6 +993,149 @@ _ORG_AGENT_MAP = {
 
 _TERMINAL_STATES = {'Done', 'Cancelled'}
 
+# 分级超时监督配置
+_SUPERVISION_CONFIG = {
+    # 三省：10分钟催办，15分钟超时上报太子
+    'Zhongshu':  {'remind_sec': 600, 'timeout_sec': 900, 'label': '中书省', 'parent_agent': 'taizi'},
+    'Menxia':    {'remind_sec': 600, 'timeout_sec': 900, 'label': '门下省', 'parent_agent': 'zhongshu'},
+    'Assigned':  {'remind_sec': 600, 'timeout_sec': 900, 'label': '尚书省', 'parent_agent': 'zhongshu'},
+    # 六部/Next：5分钟催办，催办后仍无响应则检查原因
+    'Doing':     {'remind_sec': 300, 'timeout_sec': 0,   'label': '六部',   'parent_agent': 'shangshu'},
+    'Next':      {'remind_sec': 300, 'timeout_sec': 0,   'label': '六部',   'parent_agent': 'shangshu'},
+    'Taizi':     {'remind_sec': 600, 'timeout_sec': 900, 'label': '太子',   'parent_agent': 'taizi'},
+    'Pending':   {'remind_sec': 600, 'timeout_sec': 900, 'label': '中书省', 'parent_agent': 'taizi'},
+}
+
+# ═══════════════════════════════════════════════════════════════════════
+# 🎯 针对性催办消息模板（每个部门独立定制）
+#
+# 和 SOUL.md 一样可以随时修改每个部门的催办内容。
+# 每个部门收到催办时，会看到与其职责相关的专属催办消息。
+# ═══════════════════════════════════════════════════════════════════════
+_AGENT_REMIND_TEMPLATES = {
+    # 三省催办模板（由上级部门发出）
+    'zhongshu': (
+        '⏰ 中书省催办通知\n'
+        '任务ID: {task_id}\n'
+        '任务标题: {task_title}\n'
+        '已等待: {stalled_min} 分钟（超过10分钟阈值）\n\n'
+        '中书省作为方案起草部门，请立即：\n'
+        '1. 确认是否已收到太子转交的旨意\n'
+        '2. 如已收到，说明当前进展（分析/起草/提交门下审议/等门下回复/转尚书）\n'
+        '3. 如未收到，说明情况以便太子协调\n\n'
+        '⚠️ 看板已有此任务，请勿重复创建。'
+    ),
+    'menxia': (
+        '⏰ 门下省催办通知\n'
+        '任务ID: {task_id}\n'
+        '任务标题: {task_title}\n'
+        '已等待: {stalled_min} 分钟（超过10分钟阈值）\n\n'
+        '中书省提醒：请立即确认是否已收到审议请求。\n'
+        '如已收到，请说明审议进展：\n'
+        '  · 正在进行四维审核（可行性/完整性/风险/资源）\n'
+        '  · 已出具结论（准奏/封驳）\n'
+        '如未收到，请回复以便中书省重新发送方案。\n\n'
+        '⚠️ 看板已有此任务，请勿重复创建。'
+    ),
+    'shangshu': (
+        '⏰ 尚书省催办通知\n'
+        '任务ID: {task_id}\n'
+        '任务标题: {task_title}\n'
+        '已等待: {stalled_min} 分钟（超过10分钟阈值）\n\n'
+        '中书省提醒：门下省已准奏，请尚书省立即：\n'
+        '1. 确认是否已收到执行请求\n'
+        '2. 说明当前进展（分析方案/确定派发/已派发六部/汇总结果中）\n'
+        '3. 如未收到，说明情况以便中书省重新发送\n\n'
+        '⚠️ 看板已有此任务，请勿重复创建。'
+    ),
+    # 六部催办模板（由尚书省发出）
+    'libu': (
+        '⏰ 礼部催办通知\n'
+        '任务ID: {task_id}\n'
+        '任务标题: {task_title}\n'
+        '已等待: {stalled_min} 分钟\n\n'
+        '尚书省提醒礼部：请立即确认是否已收到任务。\n'
+        '如已收到，请说明文档/UI撰写进展。\n'
+        '如未收到，请回复以便尚书省重新派发。\n\n'
+        '⚠️ 看板已有此任务，请勿重复创建。'
+    ),
+    'hubu': (
+        '⏰ 户部催办通知\n'
+        '任务ID: {task_id}\n'
+        '任务标题: {task_title}\n'
+        '已等待: {stalled_min} 分钟\n\n'
+        '尚书省提醒户部：请立即确认是否已收到任务。\n'
+        '如已收到，请说明数据分析/统计工作进展。\n'
+        '如未收到，请回复以便尚书省重新派发。\n\n'
+        '⚠️ 看板已有此任务，请勿重复创建。'
+    ),
+    'bingbu': (
+        '⏰ 兵部催办通知\n'
+        '任务ID: {task_id}\n'
+        '任务标题: {task_title}\n'
+        '已等待: {stalled_min} 分钟\n\n'
+        '尚书省提醒兵部：请立即确认是否已收到任务。\n'
+        '如已收到，请说明开发/编码工作进展。\n'
+        '如未收到，请回复以便尚书省重新派发。\n\n'
+        '⚠️ 看板已有此任务，请勿重复创建。'
+    ),
+    'xingbu': (
+        '⏰ 刑部催办通知\n'
+        '任务ID: {task_id}\n'
+        '任务标题: {task_title}\n'
+        '已等待: {stalled_min} 分钟\n\n'
+        '尚书省提醒刑部：请立即确认是否已收到任务。\n'
+        '如已收到，请说明审查/测试工作进展。\n'
+        '如未收到，请回复以便尚书省重新派发。\n\n'
+        '⚠️ 看板已有此任务，请勿重复创建。'
+    ),
+    'gongbu': (
+        '⏰ 工部催办通知\n'
+        '任务ID: {task_id}\n'
+        '任务标题: {task_title}\n'
+        '已等待: {stalled_min} 分钟\n\n'
+        '尚书省提醒工部：请立即确认是否已收到任务。\n'
+        '如已收到，请说明部署/运维工作进展。\n'
+        '如未收到，请回复以便尚书省重新派发。\n\n'
+        '⚠️ 看板已有此任务，请勿重复创建。'
+    ),
+    'libu_hr': (
+        '⏰ 吏部催办通知\n'
+        '任务ID: {task_id}\n'
+        '任务标题: {task_title}\n'
+        '已等待: {stalled_min} 分钟\n\n'
+        '尚书省提醒吏部：请立即确认是否已收到任务。\n'
+        '如已收到，请说明Agent管理/培训工作进展。\n'
+        '如未收到，请回复以便尚书省重新派发。\n\n'
+        '⚠️ 看板已有此任务，请勿重复创建。'
+    ),
+}
+
+# 默认催办模板
+_DEFAULT_REMIND_TEMPLATE = (
+    '⏰ 催办通知\n'
+    '任务ID: {task_id}\n'
+    '任务标题: {task_title}\n'
+    '已等待: {stalled_min} 分钟\n\n'
+    '请立即确认是否已收到该任务。如未收到，请说明情况。\n\n'
+    '⚠️ 看板已有此任务，请勿重复创建。'
+)
+
+# 超时上报太子的针对性模板
+_TIMEOUT_REPORT_TEMPLATE = (
+    '🚨 超时上报\n'
+    '任务ID: {task_id}\n'
+    '任务标题: {task_title}\n'
+    '停滞部门: {state_label}\n'
+    '负责催办的上级: {parent_agent_label}\n'
+    '已超时: {stalled_min} 分钟（超过15分钟阈值）\n\n'
+    '太子请介入协调：\n'
+    '1. 检查 {state_label} 当前状态\n'
+    '2. 联系 {parent_agent_label} 了解催办结果\n'
+    '3. 必要时直接唤醒停滞部门或调整流程\n\n'
+    '⚠️ 看板已有此任务，请勿重复创建。'
+)
+
 
 def _parse_iso(ts):
     if not ts or not isinstance(ts, str):
@@ -1020,6 +1163,10 @@ def _ensure_scheduler(task):
         sched['stallSince'] = None
     if 'lastDispatchStatus' not in sched:
         sched['lastDispatchStatus'] = 'idle'
+    if 'remindedAt' not in sched:
+        sched['remindedAt'] = None
+    if 'timeoutReportedAt' not in sched:
+        sched['timeoutReportedAt'] = None
     if 'snapshot' not in sched:
         sched['snapshot'] = {
             'state': task.get('state', ''),
@@ -1182,12 +1329,22 @@ def handle_scheduler_rollback(task_id, reason=''):
 
 
 def handle_scheduler_scan(threshold_sec=600):
+    """增强版调度扫描：集成分级超时监督（三省15min + 六部5min催办）。
+
+    规则：
+    - 三省（中书/门下/尚书）：10分钟催办（上级催），15分钟超时上报太子
+    - 六部（Doing/Next）：5分钟催办（尚书催），催办后仍无响应则检查原因修复汇报
+    - 催办由直接上级部门执行，太子总揽全局兜底
+    """
     threshold_sec = max(60, int(threshold_sec or 600))
     tasks = load_tasks()
     now_dt = datetime.datetime.now(datetime.timezone.utc)
     pending_retries = []
     pending_escalates = []
     pending_rollbacks = []
+    # 新增：分级催办和超时上报
+    pending_reminds = []
+    pending_timeouts = []
     actions = []
     changed = False
 
@@ -1200,12 +1357,50 @@ def handle_scheduler_scan(threshold_sec=600):
             continue
 
         sched = _ensure_scheduler(task)
-        task_threshold = int(sched.get('stallThresholdSec') or threshold_sec)
         last_progress = _parse_iso(sched.get('lastProgressAt') or task.get('updatedAt'))
         if not last_progress:
             continue
         stalled_sec = max(0, int((now_dt - last_progress).total_seconds()))
+
+        # ── 分级超时监督逻辑 ──
+        sup_cfg = _SUPERVISION_CONFIG.get(state)
+        if sup_cfg and stalled_sec > 0:
+            remind_sec = sup_cfg['remind_sec']
+            timeout_sec = sup_cfg['timeout_sec']
+            parent_agent = sup_cfg['parent_agent']
+            state_label = sup_cfg['label']
+
+            # 确定催办者（parent_agent）
+            # 三省催办规则：中书催门下/尚书，尚书催六部
+            remind_agent = parent_agent
+
+            # ① 催办阶段
+            if stalled_sec >= remind_sec:
+                reminded = sched.get('remindedAt')
+                if not reminded:
+                    sched['remindedAt'] = now_iso()
+                    sched['stallSince'] = now_iso()
+                    _scheduler_add_flow(task, f'{state_label}停滞{stalled_sec}秒，{remind_agent}发送催办')
+                    pending_reminds.append((task_id, state, remind_agent, state_label, stalled_sec, remind_sec))
+                    actions.append({'taskId': task_id, 'action': 'remind', 'by': remind_agent, 'stalledSec': stalled_sec})
+                    changed = True
+
+            # ② 超时上报阶段（仅对有 timeout_sec > 0 的状态生效，即三省）
+            if timeout_sec > 0 and stalled_sec >= timeout_sec:
+                reported = sched.get('timeoutReportedAt')
+                if not reported:
+                    sched['timeoutReportedAt'] = now_iso()
+                    _scheduler_add_flow(task, f'{state_label}超时{stalled_sec}秒，上报太子协调')
+                    pending_timeouts.append((task_id, state, state_label, stalled_sec, parent_agent))
+                    actions.append({'taskId': task_id, 'action': 'timeout_report', 'stalledSec': stalled_sec})
+                    changed = True
+
+        # ── 原有逻辑：停滞检测阈值 ──
+        task_threshold = int(sched.get('stallThresholdSec') or threshold_sec)
         if stalled_sec < task_threshold:
+            # 即使未达到停滞阈值，也要保存催办/超时标记
+            if changed:
+                pass  # 后面统一保存
             continue
 
         if not sched.get('stallSince'):
@@ -1274,6 +1469,48 @@ def handle_scheduler_scan(threshold_sec=600):
             f'⚠️ 看板已有任务，请勿重复创建。'
         )
         wake_agent(target, msg)
+
+    # ── 新增：分级催办（针对性消息，直接发送到停滞部门） ──
+    for task_id, state, remind_agent, state_label, stalled_sec, remind_sec in pending_reminds:
+        task = next((t for t in tasks if t.get('id') == task_id), None)
+        task_title = task.get('title', '(无标题)') if task else '(无标题)'
+
+        # 确定实际停滞的 agent（谁需要收到催办）
+        stalled_agent = _STATE_AGENT_MAP.get(state, '')
+        if not stalled_agent and state in ('Doing', 'Next'):
+            stalled_agent = _ORG_AGENT_MAP.get(task.get('org', ''), '') if task else ''
+
+        # 🎯 使用该部门的针对性催办模板
+        remind_label = _AGENT_LABELS.get(remind_agent, remind_agent)
+        template = _AGENT_REMIND_TEMPLATES.get(stalled_agent, _DEFAULT_REMIND_TEMPLATE)
+        msg = template.format(
+            task_id=task_id,
+            task_title=task_title,
+            stalled_min=stalled_sec // 60,
+            parent_dept=remind_label,
+        )
+
+        # 直接向停滞部门发送针对性催办
+        if stalled_agent:
+            wake_agent(stalled_agent, msg)
+            log.info(f'🎯 已发送【针对性催办】给 {_AGENT_LABELS.get(stalled_agent, stalled_agent)} | 任务 {task_id}')
+        else:
+            # 回退：发送给催办负责人
+            wake_agent(remind_agent, msg)
+
+    # ── 新增：超时上报太子（针对性模板） ──
+    for task_id, state, state_label, stalled_sec, parent_agent in pending_timeouts:
+        task = next((t for t in tasks if t.get('id') == task_id), None)
+        task_title = task.get('title', '(无标题)') if task else '(无标题)'
+        parent_label = _AGENT_LABELS.get(parent_agent, parent_agent)
+        msg = _TIMEOUT_REPORT_TEMPLATE.format(
+            task_id=task_id,
+            task_title=task_title,
+            state_label=state_label,
+            parent_agent_label=parent_label,
+            stalled_min=stalled_sec // 60,
+        )
+        wake_agent('taizi', msg)
 
     for task_id, state in pending_rollbacks:
         rollback_task = next((t for t in tasks if t.get('id') == task_id), None)
