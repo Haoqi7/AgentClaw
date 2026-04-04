@@ -121,8 +121,8 @@ create_workspaces() {
 5. 完成任务后向上级部门汇报
 
 ## 📡 Subagent 调用规则
-
-**首次调用某个 agent → `sessions_spawn`**
+**必须先使用`sessions_spawn`通知其他部门
+**首次调用某个部门 agent → `sessions_spawn`**
 **继续已有对话 → `sessions_send`**
 **❌ 禁止用 `sessions_yield` 调用 subagent！**
 
