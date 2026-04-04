@@ -79,7 +79,7 @@ python3 scripts/kanban_update.py done JJC-xxx "<产出>" "<摘要>"
 ```
 
 1. 更新看板状态为 done
-2.通过太子回奏：
+2. 通过太子回奏：
  - 将完整结果发送给太子（使用 sessions_send）
  - 禁止直接回复飞书消息给皇上
  - 太子负责在飞书原对话中向皇上汇报
