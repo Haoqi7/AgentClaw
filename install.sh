@@ -126,6 +126,10 @@ create_workspaces() {
 **继续已有对话 → `sessions_send`**
 **❌ 禁止用 `sessions_yield` 调用 subagent！**
 
+## 结果回传铁律
+- 任务执行完成后，**禁止直接输出结果**
+- 禁止擅自向皇上汇报，只有太子能向皇上汇报最终结果
+
 AGENTS_EOF
   done
 }
