@@ -84,6 +84,48 @@ def _trigger_refresh():
     except Exception:
         pass
 
+def _resolve_agent_id(target):
+    """根据目标名称（部门中文名或状态英文名）解析 agent_id。
+
+    优先按部门名查 _ORG_AGENT_MAP，其次按状态名查 _STATE_AGENT_MAP。
+    """
+    if not target:
+        return ''
+    aid = _ORG_AGENT_MAP.get(target)
+    if aid:
+        return aid
+    return _STATE_AGENT_MAP.get(target, '')
+
+
+def _notify_agent(agent_id, task_id, from_org, to_org, title='', remark=''):
+    """异步通知目标 Agent 有新任务/流转。
+
+    - 使用 openclaw sessions spawn 触发目标 Agent 会话。
+    - 非阻塞：通过 Popen 异步执行，不延迟主流程。
+    - 容错：通知失败仅记录日志，不影响看板写入结果。
+    """
+    if not agent_id:
+        return
+    to_label = _AGENT_LABELS.get(agent_id, agent_id)
+    message = (
+        f"📢 任务通知 - {task_id}\n\n"
+        f"任务标题：{title}\n"
+        f"流转：{from_org} → {to_org}\n"
+        f"说明：{remark}\n"
+        f"要求：15分钟内确认收到并开始处理\n\n"
+        f"请立即处理！"
+    )
+    try:
+        subprocess.Popen(
+            ['openclaw', 'sessions', 'spawn', '--agent', agent_id, '--task', message],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+        log.info(f'📨 已发送通知给 {to_label} ({agent_id}) | 任务 {task_id}')
+    except Exception as e:
+        log.warning(f'⚠️ 通知 {to_label} ({agent_id}) 失败: {e}')
+
+
 def find_task(tasks, task_id):
     return next((t for t in tasks if t.get('id') == task_id), None)
 
@@ -208,6 +250,18 @@ def cmd_create(task_id, title, state, org, official, remark=None):
         return tasks
     atomic_json_update(TASKS_FILE, modifier, [])
     _trigger_refresh()
+
+    # 📨 通知初始状态的负责 Agent
+    notify_agent_id = _resolve_agent_id(state) or _resolve_agent_id(actual_org)
+    _notify_agent(
+        agent_id=notify_agent_id,
+        task_id=task_id,
+        from_org='皇上',
+        to_org=actual_org,
+        title=title,
+        remark=clean_remark,
+    )
+
     log.info(f'✅ 创建 {task_id} | {title[:30]} | state={state}')
 
 
@@ -228,6 +282,9 @@ _VALID_TRANSITIONS = {
     'Done':      set(),       # 终态
     'Cancelled': set(),       # 终态
 }
+
+# 不需要通知 Agent 的状态转换集合（终态或内部状态）
+_NO_NOTIFY_STATES = {'Done', 'Cancelled'}
 
 
 def cmd_state(task_id, new_state, now_text=None):
@@ -259,6 +316,24 @@ def cmd_state(task_id, new_state, now_text=None):
     else:
         log.info(f'✅ {task_id} 状态更新: {old_state[0]} → {new_state}')
 
+        # 📨 状态转换成功后，通知新状态的负责 Agent
+        if new_state not in _NO_NOTIFY_STATES:
+            notify_agent_id = _resolve_agent_id(new_state)
+            # 读取任务标题用于通知内容
+            tasks = load()
+            t = find_task(tasks, task_id)
+            task_title = t.get('title', '') if t else ''
+            old_org_label = STATE_ORG_MAP.get(old_state[0], old_state[0] or '未知')
+            new_org_label = STATE_ORG_MAP.get(new_state, new_state)
+            _notify_agent(
+                agent_id=notify_agent_id,
+                task_id=task_id,
+                from_org=old_org_label,
+                to_org=new_org_label,
+                title=task_title,
+                remark=now_text or f"状态已变更为 {new_org_label}",
+            )
+
 
 def cmd_flow(task_id, from_dept, to_dept, remark):
     """添加流转记录（原子操作）"""
@@ -281,6 +356,20 @@ def cmd_flow(task_id, from_dept, to_dept, remark):
     atomic_json_update(TASKS_FILE, modifier, [])
     _trigger_refresh()
     log.info(f'✅ {task_id} 流转记录: {from_dept} → {to_dept}')
+
+    # 📨 流转成功后，通知目标部门的 Agent
+    notify_agent_id = _resolve_agent_id(to_dept)
+    tasks = load()
+    t = find_task(tasks, task_id)
+    task_title = t.get('title', '') if t else ''
+    _notify_agent(
+        agent_id=notify_agent_id,
+        task_id=task_id,
+        from_org=from_dept,
+        to_org=to_dept,
+        title=task_title,
+        remark=clean_remark,
+    )
 
 
 def cmd_done(task_id, output_path='', summary=''):
