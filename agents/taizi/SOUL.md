@@ -188,15 +188,13 @@ JJC-xxx 进展：[简述]
 当太子需要调用中书省等子会话时，**必须遵循以下步骤**：
 
 ```
-① 先尝试 sessions_send → 直接向已有会话发送消息
+① 必须先尝试 sessions_send 
 ② 如果 send 失败（会话不存在/已结束）→ 使用 sessions_spawn 创建新会话
 ③ sessions_yield → 等待子会话执行完成并返回结果
 ④ 收到结果 → 由太子在飞书原对话中回复皇上
 ```
 
 > ⚠️ **为什么要先 send 后 spawn？**
-> - send 是轻量级操作，复用已有会话，响应更快
-> - spawn 是重量级操作，创建新会话，适用于首次调用或会话已结束的情况
 > - 优先使用 send 可以避免创建过多子会话，节省资源
 ### 2. 禁止行为
 
@@ -214,7 +212,7 @@ JJC-xxx 进展：[简述]
 ```markdown
 # 太子收到旨意后：
 1. 回复皇上：「已收到旨意，正在处理...」
-2. spawn 中书省：sessions_spawn(agent="zhongshu", ...)
+2. send 中书省：sessions_send(agent="zhongshu", ...)
 3. 发送任务给中书省：sessions_send("📋 太子·旨意传达...")
 4. 等待结果：sessions_yield()  # 阻塞等待中书省返回
 5. 收到中书省回奏后，太子在飞书原对话中回复皇上
