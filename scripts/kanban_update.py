@@ -71,6 +71,137 @@ _AGENT_LABELS = {
     'gongbu': '工部', 'libu_hr': '吏部', 'zaochao': '钦天监',
 }
 
+# ═══════════════════════════════════════════════════════════════════════
+# 🎯 针对性通知配置（每个部门独立定制，共性格式+专属内容）
+#
+# 和 SOUL.md 一样可以随时修改、扩展每个部门的通知模板。
+# 修改后立即生效，无需重启服务。
+#
+# 字段说明：
+#   role_hint   : 该部门的核心职责提醒（一句话）
+#   action_items: 收到任务后应执行的具体步骤（换行分隔）
+#   confirm_fmt : 确认回执的格式模板（{} 会被替换为 task_id + title）
+#   deadline    : 确认回执的时间限制描述
+# ═══════════════════════════════════════════════════════════════════════
+_AGENT_NOTIFY_PROFILES = {
+    # ── 太子：皇上代理，总揽全局 ──
+    'taizi': {
+        'role_hint': '你是太子，皇上在飞书消息的第一接收人和分拣者',
+        'action_items': (
+            '1. 判断消息类型：闲聊/问答 vs 正式旨意\n'
+            '2. 如是旨意 → 整理需求、创建JJC任务、转交中书省\n'
+            '3. 如是简单消息 → 直接回复皇上'
+        ),
+        'confirm_fmt': '已收到 {task_id} {title}，太子正在处理',
+        'deadline': '10分钟内确认并开始处理',
+    },
+    # ── 中书省：规划决策，方案起草 ──
+    'zhongshu': {
+        'role_hint': '你是中书省，负责接收太子转交的皇上旨意，起草执行方案',
+        'action_items': (
+            '1. 接旨 → 分析需求，起草执行方案\n'
+            '2. 提交门下省审议（必须！）→ 等待准奏/封驳\n'
+            '3. 门下省准奏后 → 立即转尚书省执行（必须，最易遗漏！）\n'
+            '4. 尚书省返回结果 → 更新看板done → 通过太子回奏皇上'
+        ),
+        'confirm_fmt': '已收到 {task_id} {title}，中书省开始分析旨意起草方案',
+        'deadline': '10分钟内确认并开始分析',
+    },
+    # ── 门下省：审议把关，方案审核 ──
+    'menxia': {
+        'role_hint': '你是门下省，三省制的审查核心，负责方案审议',
+        'action_items': (
+            '1. 立即回复确认收到任务\n'
+            '2. 从可行性/完整性/风险/资源四维度审核方案\n'
+            '3. 给出「准奏」或「封驳」结论（附修改建议）\n'
+            '4. 最多3轮，第3轮强制准奏'
+        ),
+        'confirm_fmt': '已收到 {task_id} {title}，门下省开始审议方案',
+        'deadline': '10分钟内确认并开始审议',
+    },
+    # ── 尚书省：执行调度，六部协调 ──
+    'shangshu': {
+        'role_hint': '你是尚书省，负责接收准奏方案后派发六部执行并汇总结果',
+        'action_items': (
+            '1. 立即回复确认收到任务\n'
+            '2. 分析方案 → 确定派发对象（工部/兵部/户部/礼部/刑部/吏部）\n'
+            '3. 派发六部并等待各部执行结果\n'
+            '4. 汇总六部成果 → 返回中书省'
+        ),
+        'confirm_fmt': '已收到 {task_id} {title}，尚书省开始分析方案确定派发对象',
+        'deadline': '10分钟内确认并开始分析',
+    },
+    # ── 六部：各司其职，专业执行 ──
+    'libu': {
+        'role_hint': '你是礼部，负责文档、规范、用户界面与对外沟通',
+        'action_items': (
+            '1. 立即回复确认收到任务\n'
+            '2. 按要求撰写文档/UI文案/对外沟通材料\n'
+            '3. 更新看板进展，完成后上报尚书省'
+        ),
+        'confirm_fmt': '已收到 {task_id} {title}，礼部开始执行',
+        'deadline': '5分钟内确认并开始执行',
+    },
+    'hubu': {
+        'role_hint': '你是户部，负责数据分析、统计、资源管理与成本分析',
+        'action_items': (
+            '1. 立即回复确认收到任务\n'
+            '2. 按要求进行数据收集/清洗/统计/可视化\n'
+            '3. 产出必附量化指标或统计摘要，完成后上报尚书省'
+        ),
+        'confirm_fmt': '已收到 {task_id} {title}，户部开始执行',
+        'deadline': '5分钟内确认并开始执行',
+    },
+    'bingbu': {
+        'role_hint': '你是兵部，负责工程实现、架构设计与功能开发',
+        'action_items': (
+            '1. 立即回复确认收到任务\n'
+            '2. 按要求进行需求分析/方案设计/代码实现\n'
+            '3. 确保代码可运行，完成后上报尚书省'
+        ),
+        'confirm_fmt': '已收到 {task_id} {title}，兵部开始执行',
+        'deadline': '5分钟内确认并开始执行',
+    },
+    'xingbu': {
+        'role_hint': '你是刑部，负责质量保障、测试验收与合规审计',
+        'action_items': (
+            '1. 立即回复确认收到任务\n'
+            '2. 按要求进行代码审查/测试/合规审计\n'
+            '3. 产出必附测试结果或审计清单，完成后上报尚书省'
+        ),
+        'confirm_fmt': '已收到 {task_id} {title}，刑部开始执行',
+        'deadline': '5分钟内确认并开始执行',
+    },
+    'gongbu': {
+        'role_hint': '你是工部，负责基础设施、部署运维与性能监控',
+        'action_items': (
+            '1. 立即回复确认收到任务\n'
+            '2. 按要求进行部署/运维/监控\n'
+            '3. 产出必附回滚方案，完成后上报尚书省'
+        ),
+        'confirm_fmt': '已收到 {task_id} {title}，工部开始执行',
+        'deadline': '5分钟内确认并开始执行',
+    },
+    'libu_hr': {
+        'role_hint': '你是吏部，负责人事管理、Agent管理与能力培训',
+        'action_items': (
+            '1. 立即回复确认收到任务\n'
+            '2. 按要求进行Agent管理/Skill优化/培训评估\n'
+            '3. 完成后上报尚书省'
+        ),
+        'confirm_fmt': '已收到 {task_id} {title}，吏部开始执行',
+        'deadline': '5分钟内确认并开始执行',
+    },
+}
+
+# 默认通知模板（未在 _AGENT_NOTIFY_PROFILES 中配置的 agent 使用此模板）
+_DEFAULT_NOTIFY_PROFILE = {
+    'role_hint': '你有新任务需要处理',
+    'action_items': '1. 回复确认收到\n2. 按要求执行\n3. 完成后上报',
+    'confirm_fmt': '已收到 {task_id} {title}',
+    'deadline': '10分钟内确认',
+}
+
 MAX_PROGRESS_LOG = 100  # 单任务最大进展日志条数
 
 def load():
@@ -97,33 +228,66 @@ def _resolve_agent_id(target):
     return _STATE_AGENT_MAP.get(target, '')
 
 
-def _notify_agent(agent_id, task_id, from_org, to_org, title='', remark=''):
-    """异步通知目标 Agent 有新任务/流转。
+def _notify_agent(agent_id, task_id, from_org, to_org, title='', remark='', _retry=0):
+    """异步通知目标 Agent 有新任务/流转（针对性增强版：部门差异化通知+唤醒重试+确认回执）。
 
     - 使用 openclaw sessions spawn 触发目标 Agent 会话。
     - 非阻塞：通过 Popen 异步执行，不延迟主流程。
     - 容错：通知失败仅记录日志，不影响看板写入结果。
+    - 🎯 针对性通知：根据 _AGENT_NOTIFY_PROFILES 为每个部门生成专属通知内容，
+      包含该部门的核心职责提醒和具体执行步骤指导。
+    - 唤醒重试：首次失败后 3 秒重试一次。
     """
     if not agent_id:
         return
     to_label = _AGENT_LABELS.get(agent_id, agent_id)
-    message = (
-        f"📢 任务通知 - {task_id}\n\n"
-        f"任务标题：{title}\n"
-        f"流转：{from_org} → {to_org}\n"
-        f"说明：{remark}\n"
-        f"要求：15分钟内确认收到并开始处理\n\n"
-        f"请立即处理！"
-    )
+
+    # 🎯 查找该部门的针对性通知配置（共性格式 + 专属内容）
+    profile = _AGENT_NOTIFY_PROFILES.get(agent_id, _DEFAULT_NOTIFY_PROFILE)
+    role_hint = profile.get('role_hint', '')
+    action_items = profile.get('action_items', '')
+    confirm_fmt = profile.get('confirm_fmt', '已收到 {task_id} {title}').format(task_id=task_id, title=title)
+    deadline = profile.get('deadline', '10分钟内确认')
+
+    # 组装针对性通知消息
+    parts = [
+        f"📢 任务通知 → {to_label} - {task_id}",
+        f"",
+        f"📌 {role_hint}",
+        f"",
+        f"📋 任务信息：",
+        f"  · 任务ID：{task_id}",
+        f"  · 任务标题：{title}",
+        f"  · 流转路径：{from_org} → {to_org}",
+        f"  · 说明：{remark}",
+    ]
+    if action_items:
+        parts.append(f"")
+        parts.append(f"🚀 你需要做的：")
+        parts.append(action_items)
+    parts.append(f"")
+    parts.append(f"⚠️ 【交接协议 - 强制执行】")
+    parts.append(f"收到此消息后，你必须做的第一件事：")
+    parts.append(f"  立即回复确认：「{confirm_fmt}」")
+    parts.append(f"  要求：{deadline}")
+    parts.append(f"")
+    parts.append(f"请立即处理！")
+
+    message = '\n'.join(parts)
+
     try:
-        subprocess.Popen(
+        proc = subprocess.Popen(
             ['openclaw', 'sessions', 'spawn', '--agent', agent_id, '--task', message],
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
         )
-        log.info(f'📨 已发送通知给 {to_label} ({agent_id}) | 任务 {task_id}')
+        log.info(f'📨 已发送【针对性】通知给 {to_label} ({agent_id}) | 任务 {task_id}')
     except Exception as e:
-        log.warning(f'⚠️ 通知 {to_label} ({agent_id}) 失败: {e}')
+        log.warning(f'⚠️ 通知 {to_label} ({agent_id}) 失败 (第{_retry+1}次): {e}')
+        if _retry < 1:
+            import time as _time
+            _time.sleep(3)
+            _notify_agent(agent_id, task_id, from_org, to_org, title, remark, _retry=_retry + 1)
 
 
 def find_task(tasks, task_id):
