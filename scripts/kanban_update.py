@@ -613,7 +613,7 @@ _VALID_TRANSITIONS = {
     'Zhongshu':  {'Menxia', 'Cancelled'},
     'Menxia':    {'Assigned', 'Zhongshu', 'Cancelled'},   # 封驳可回中书
     'Assigned':  {'Doing', 'Next', 'Blocked', 'Cancelled'},
-    'Next':      {'Doing', 'Blocked', 'Cancelled'},
+    'Next':      {'Assigned', 'Doing', 'Blocked', 'Cancelled'},
     'Doing':     {'Review', 'Blocked', 'Cancelled'},
     'Review':    {'Done', 'Menxia', 'Doing', 'Cancelled'},  # 可打回重审/重做
     'Blocked':   {'Doing', 'Next', 'Assigned', 'Review', 'Cancelled'},  # 解除后回原位
