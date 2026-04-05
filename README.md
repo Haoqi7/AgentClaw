@@ -18,8 +18,15 @@
 
 ### 第 1 步：安装
 
+**最新中文稳定版**
 ```bash
 npm install -g @qingchencloud/openclaw-zh@latest
+```
+
+**docker目前固定为此版本**
+
+```bash
+npm install -g @qingchencloud/openclaw-zh@2026.4.2-zh.1
 ```
 
 ### 第 2 步：初始化（推荐守护进程模式）
