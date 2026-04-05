@@ -40,8 +40,51 @@ log = logging.getLogger('kanban')
 logging.basicConfig(level=logging.INFO, format='%(asctime)s [%(name)s] %(message)s', datefmt='%H:%M:%S')
 
 # 文件锁 —— 防止多 Agent 同时读写 tasks_source.json
-from file_lock import atomic_json_read, atomic_json_update  # noqa: E402
-from utils import now_iso  # noqa: E402
+# 兼容处理：如果 file_lock 模块不存在，提供降级实现
+try:
+    from file_lock import atomic_json_read, atomic_json_update  # noqa: E402
+except ImportError:
+    # 降级实现：简单的非原子读写（单进程环境可用）
+    import fcntl
+    def atomic_json_read(path, default):
+        """降级读取：使用 fcntl 文件锁"""
+        if not path.exists():
+            return default
+        with open(path, 'r') as f:
+            fcntl.flock(f.fileno(), fcntl.LOCK_SH)
+            try:
+                return json.load(f)
+            finally:
+                fcntl.flock(f.fileno(), fcntl.LOCK_UN)
+    
+    def atomic_json_update(path, modifier, default):
+        """降级更新：使用 fcntl 文件锁"""
+        lock_path = path.with_suffix(path.suffix + '.lock')
+        with open(lock_path, 'w') as lock_f:
+            fcntl.flock(lock_f.fileno(), fcntl.LOCK_EX)
+            try:
+                if path.exists():
+                    with open(path, 'r') as f:
+                        data = json.load(f)
+                else:
+                    data = default
+                new_data = modifier(data)
+                with open(path, 'w') as f:
+                    json.dump(new_data, f, indent=2, ensure_ascii=False)
+                return new_data
+            finally:
+                fcntl.flock(lock_f.fileno(), fcntl.LOCK_UN)
+    
+    log.info('⚠️ file_lock 模块未找到，使用降级文件锁实现')
+
+# utils 模块兼容处理
+try:
+    from utils import now_iso  # noqa: E402
+except ImportError:
+    def now_iso():
+        """降级实现：返回当前 ISO 格式时间"""
+        return datetime.datetime.now().isoformat()
+    log.info('⚠️ utils 模块未找到，使用降级 now_iso 实现')
 
 STATE_ORG_MAP = {
       'Pending': '待处理', 'Taizi': '太子', 'Zhongshu': '中书省', 'Menxia': '门下省',
@@ -204,8 +247,135 @@ _DEFAULT_NOTIFY_PROFILE = {
 
 MAX_PROGRESS_LOG = 100  # 单任务最大进展日志条数
 
+# ═══════════════════════════════════════════════════════════════════════
+# 🪝 状态变更钩子（事件驱动：状态变化 → 自动触发回调）
+#
+# 钩子注册表：key = 目标状态，value = 回调函数列表
+# 状态变更成功后自动触发对应的钩子函数。
+# 扩展方法：只需在此注册新函数，无需改动 cmd_state() 主逻辑。
+# 
+# 注意：钩子函数必须在注册前定义，因此将钩子函数定义移到注册之前
+# ═══════════════════════════════════════════════════════════════════════
+
+
+def hook_notify_taizi(task_id, old_state, new_state, task):
+    """钩子：状态变化时异步通知太子（非阻塞）。
+
+    用于 Menxia / Assigned / Done 等关键节点，
+    让太子主动收到进展推送，无需轮询看板。
+    """
+    title = task.get('title', '')
+    old_label = STATE_ORG_MAP.get(old_state, old_state or '未知')
+    new_label = STATE_ORG_MAP.get(new_state, new_state)
+    msg = (
+        f"📋 任务状态变更通知\n"
+        f"任务ID: {task_id}\n"
+        f"任务标题: {title}\n"
+        f"状态变化: {old_label} → {new_label}\n"
+        f"变更时间: {now_iso()}\n"
+        f"请太子知悉。\n"
+        f"⚠️ 看板已有此任务，请勿重复创建。"
+    )
+    try:
+        subprocess.Popen(
+            ['openclaw', 'sessions', 'spawn', '--agent', 'taizi', '--task', msg],
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+        )
+        log.info(f'🪝 钩子触发：已通知太子 | {task_id} {old_state}→{new_state}')
+    except Exception as e:
+        log.warning(f'🪝 钩子执行失败 (notify_taizi): {e}')
+
+
+# 状态变更钩子注册表（钩子函数已定义）
+_STATE_CHANGE_HOOKS = {
+    'Menxia':   [hook_notify_taizi],   # 任务到门下省 → 通知太子
+    'Assigned': [hook_notify_taizi],   # 任务到尚书省 → 通知太子
+    'Done':     [hook_notify_taizi],   # 任务完成 → 通知太子
+}
+
+# Doing 状态停滞自动催办配置
+_DOING_STALL_SEC = 720  # 12分钟（720秒）无进展则自动催办
+
+
+def _fire_state_hooks(task_id, old_state, new_state, task):
+    """触发注册的状态变更钩子（容错：单个钩子失败不影响其他）"""
+    hooks = _STATE_CHANGE_HOOKS.get(new_state, [])
+    for hook in hooks:
+        try:
+            hook(task_id, old_state, new_state, task)
+        except Exception as e:
+            log.warning(f'🪝 钩子执行失败 ({new_state}): {e}')
+
+
+def _start_doing_stall_watchdog(task_id, task):
+    """钩子：进入 Doing 状态时，启动后台停滞检测（12分钟无进展 → 自动催办）。
+
+    实现原理：
+    1. 记录当前 progress_log 条数快照
+    2. 启动一个后台进程，等待 12 分钟后检查
+    3. 如果 progress_log 没有新增条目，说明 12 分钟内无任何进展
+    4. 向负责该任务的部门发送催办通知
+    """
+    org = task.get('org', '')
+    agent_id = _ORG_AGENT_MAP.get(org, '')
+    if not agent_id:
+        return
+    agent_label = _AGENT_LABELS.get(agent_id, agent_id)
+    title = task.get('title', '')
+    progress_count = len(task.get('progress_log', []))
+
+    # 转义路径和 task_id，防止注入
+    tasks_file_escaped = json.dumps(str(TASKS_FILE))
+    task_id_escaped = json.dumps(task_id)
+    title_escaped = json.dumps(title)
+    agent_id_escaped = json.dumps(agent_id)
+    agent_label_escaped = json.dumps(agent_label)
+    
+    # 后台检测脚本（作为独立进程运行，不阻塞主流程）
+    watchdog_script = f'''#!/usr/bin/env python3
+import json, pathlib, subprocess, sys, time
+time.sleep({_DOING_STALL_SEC})
+try:
+    tasks_file = {tasks_file_escaped}
+    tasks = json.loads(pathlib.Path(tasks_file).read_text())
+    t = next((x for x in tasks if x.get("id") == {task_id_escaped}), None)
+    if not t:
+        sys.exit(0)
+    if t.get("state") != "Doing":
+        sys.exit(0)  # 已不在 Doing 状态，无需催办
+    current_count = len(t.get("progress_log", []))
+    if current_count <= {progress_count}:
+        # 12分钟内无任何进展 → 发送催办
+        msg = (
+            "⏰ 自动催办通知\\n"
+            "任务ID: {task_id_escaped}\\n"
+            "任务标题: {title_escaped}\\n"
+            f"已等待: {_DOING_STALL_SEC // 60} 分钟\\n\\n"
+            "系统检测到该任务进入 Doing 状态后 12 分钟内无任何进展更新。\\n"
+            "请立即确认任务状态并更新进展（progress 命令）。\\n\\n"
+            "⚠️ 看板已有此任务，请勿重复创建。"
+        )
+        subprocess.Popen(
+            ["openclaw", "sessions", "spawn", "--agent", {agent_id_escaped}, "--task", msg],
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+        )
+        print(f"[stall-watchdog] {task_id_escaped} 已催办 {agent_label_escaped}", flush=True)
+except Exception as e:
+    print(f"[stall-watchdog] {task_id_escaped} 检查失败: {{e}}", flush=True)
+'''
+    try:
+        subprocess.Popen(
+            ['python3', '-c', watchdog_script],
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+        )
+        log.info(f'⏰ 停滞看门狗已启动 | {task_id} → {agent_label} | {_DOING_STALL_SEC//60}分钟后检查')
+    except Exception as e:
+        log.warning(f'⏰ 停滞看门狗启动失败 ({task_id}): {e}')
+
+
 def load():
     return atomic_json_read(TASKS_FILE, [])
+
 
 def _trigger_refresh():
     """异步触发 live_status 刷新，不阻塞调用方。"""
@@ -214,6 +384,7 @@ def _trigger_refresh():
                          stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     except Exception:
         pass
+
 
 def _resolve_agent_id(target):
     """根据目标名称（部门中文名或状态英文名）解析 agent_id。
@@ -301,6 +472,7 @@ _JUNK_TITLES = {
     '嗯', '哦', '知道了', '开启了么', '可以', '不行', '行', 'ok', 'yes', 'no',
     '你去开启', '测试', '试试', '看看',
 }
+
 
 def _sanitize_text(raw, max_len=80):
     """清洗文本：剥离文件路径、URL、Conversation 元数据、传旨前缀、截断过长内容。"""
@@ -394,6 +566,7 @@ def cmd_create(task_id, title, state, org, official, remark=None):
         return
     actual_org = STATE_ORG_MAP.get(state, org)
     clean_remark = _sanitize_remark(remark) if remark else f"下旨：{title}"
+    
     def modifier(tasks):
         existing = next((t for t in tasks if t.get('id') == task_id), None)
         if existing:
@@ -412,6 +585,7 @@ def cmd_create(task_id, title, state, org, official, remark=None):
             "updatedAt": now_iso()
         })
         return tasks
+    
     atomic_json_update(TASKS_FILE, modifier, [])
     _trigger_refresh()
 
@@ -455,6 +629,7 @@ def cmd_state(task_id, new_state, now_text=None):
     """更新任务状态（原子操作，含流转合法性校验）"""
     old_state = [None]
     rejected = [False]
+    
     def modifier(tasks):
         t = find_task(tasks, task_id)
         if not t:
@@ -473,8 +648,10 @@ def cmd_state(task_id, new_state, now_text=None):
             t['now'] = now_text
         t['updatedAt'] = now_iso()
         return tasks
+    
     atomic_json_update(TASKS_FILE, modifier, [])
     _trigger_refresh()
+    
     if rejected[0]:
         log.info(f'❌ {task_id} 状态转换被拒: {old_state[0]} → {new_state}')
     else:
@@ -497,6 +674,17 @@ def cmd_state(task_id, new_state, now_text=None):
                 title=task_title,
                 remark=now_text or f"状态已变更为 {new_org_label}",
             )
+        
+        # 🪝 触发状态变更钩子（通知太子等）
+        # 注意：需要在 modifier 外部获取更新后的 task
+        tasks = load()
+        t = find_task(tasks, task_id)
+        if t:
+            _fire_state_hooks(task_id, old_state[0], new_state, t)
+        
+        # ⏰ 进入 Doing 状态 → 启动12分钟停滞看门狗
+        if new_state == 'Doing' and t:
+            _start_doing_stall_watchdog(task_id, t)
 
 
 def cmd_flow(task_id, from_dept, to_dept, remark):
@@ -504,6 +692,7 @@ def cmd_flow(task_id, from_dept, to_dept, remark):
     clean_remark = _sanitize_remark(remark)
     agent_id = _infer_agent_id_from_runtime()
     agent_label = _AGENT_LABELS.get(agent_id, agent_id)
+    
     def modifier(tasks):
         t = find_task(tasks, task_id)
         if not t:
@@ -517,6 +706,7 @@ def cmd_flow(task_id, from_dept, to_dept, remark):
         t['org'] = to_dept
         t['updatedAt'] = now_iso()
         return tasks
+    
     atomic_json_update(TASKS_FILE, modifier, [])
     _trigger_refresh()
     log.info(f'✅ {task_id} 流转记录: {from_dept} → {to_dept}')
@@ -564,6 +754,7 @@ def cmd_done(task_id, output_path='', summary=''):
                 t['outputMeta'] = {"exists": False, "lastModified": None}
         t['updatedAt'] = now_iso()
         return tasks
+    
     atomic_json_update(TASKS_FILE, modifier, [])
     _trigger_refresh()
     log.info(f'✅ {task_id} 已完成')
@@ -588,6 +779,7 @@ def cmd_block(task_id, reason):
         t['block'] = reason
         t['updatedAt'] = now_iso()
         return tasks
+    
     atomic_json_update(TASKS_FILE, modifier, [])
     _trigger_refresh()
     log.info(f'🚫 {task_id} 已阻塞: {reason}')
@@ -644,6 +836,7 @@ def cmd_progress(task_id, now_text, todos_pipe='', tokens=0, cost=0.0, elapsed=0
 
     done_cnt = [0]
     total_cnt = [0]
+    
     def modifier(tasks):
         t = find_task(tasks, task_id)
         if not t:
@@ -677,12 +870,14 @@ def cmd_progress(task_id, now_text, todos_pipe='', tokens=0, cost=0.0, elapsed=0
         done_cnt[0] = sum(1 for td in t.get('todos', []) if td.get('status') == 'completed')
         total_cnt[0] = len(t.get('todos', []))
         return tasks
+    
     atomic_json_update(TASKS_FILE, modifier, [])
     _trigger_refresh()
     res_info = ''
     if tokens or cost or elapsed:
         res_info = f' [res: {tokens}tok/${cost:.4f}/{elapsed}s]'
     log.info(f'📡 {task_id} 进展: {clean[:40]}... [{done_cnt[0]}/{total_cnt[0]}]{res_info}')
+
 
 def cmd_todo(task_id, todo_id, title, status='not-started', detail=''):
     """添加或更新子任务 todo（原子操作）
@@ -694,6 +889,7 @@ def cmd_todo(task_id, todo_id, title, status='not-started', detail=''):
     if status not in ('not-started', 'in-progress', 'completed'):
         status = 'not-started'
     result_info = [0, 0]
+    
     def modifier(tasks):
         t = find_task(tasks, task_id)
         if not t:
@@ -717,9 +913,11 @@ def cmd_todo(task_id, todo_id, title, status='not-started', detail=''):
         result_info[0] = sum(1 for td in t['todos'] if td.get('status') == 'completed')
         result_info[1] = len(t['todos'])
         return tasks
+    
     atomic_json_update(TASKS_FILE, modifier, [])
     _trigger_refresh()
     log.info(f'✅ {task_id} todo [{result_info[0]}/{result_info[1]}]: {todo_id} → {status}')
+
 
 _CMD_MIN_ARGS = {
     'create': 6, 'state': 3, 'flow': 5, 'done': 2, 'block': 3, 'todo': 4, 'progress': 3,
