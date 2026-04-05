@@ -44,24 +44,28 @@ logging.basicConfig(level=logging.INFO, format='%(asctime)s [%(name)s] %(message
 try:
     from file_lock import atomic_json_read, atomic_json_update  # noqa: E402
 except ImportError:
-    # 降级实现：简单的非原子读写（单进程环境可用）
+    # 降级实现：使用 fcntl 文件锁（读写共用同一个锁文件）
     import fcntl
+    
     def atomic_json_read(path, default):
-        """降级读取：使用 fcntl 文件锁"""
+        """降级读取：使用文件锁"""
         if not path.exists():
             return default
-        with open(path, 'r') as f:
-            fcntl.flock(f.fileno(), fcntl.LOCK_SH)
+        # 锁文件：原文件名 + .lock
+        lock_path = path.with_suffix(path.suffix + '.lock')
+        with open(lock_path, 'a') as lock_f:  # 'a' 模式，不会清空文件
+            fcntl.flock(lock_f.fileno(), fcntl.LOCK_SH)  # 共享锁（读锁）
             try:
-                return json.load(f)
+                with open(path, 'r') as f:
+                    return json.load(f)
             finally:
-                fcntl.flock(f.fileno(), fcntl.LOCK_UN)
+                fcntl.flock(lock_f.fileno(), fcntl.LOCK_UN)
     
     def atomic_json_update(path, modifier, default):
-        """降级更新：使用 fcntl 文件锁"""
+        """降级更新：使用文件锁"""
         lock_path = path.with_suffix(path.suffix + '.lock')
-        with open(lock_path, 'w') as lock_f:
-            fcntl.flock(lock_f.fileno(), fcntl.LOCK_EX)
+        with open(lock_path, 'a') as lock_f:  # 'a' 模式，不会清空文件
+            fcntl.flock(lock_f.fileno(), fcntl.LOCK_EX)  # 排他锁（写锁）
             try:
                 if path.exists():
                     with open(path, 'r') as f:
@@ -75,7 +79,7 @@ except ImportError:
             finally:
                 fcntl.flock(lock_f.fileno(), fcntl.LOCK_UN)
     
-    log.info('⚠️ file_lock 模块未找到，使用降级文件锁实现')
+    log.warning('⚠️ file_lock 模块未找到，使用降级文件锁实现')
 
 # utils 模块兼容处理
 try:
