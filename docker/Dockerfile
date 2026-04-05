@@ -12,7 +12,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 WORKDIR /app
 
-RUN npm install -g @qingchencloud/openclaw-zh@2026.3.28-zh.2
+RUN npm install -g @qingchencloud/openclaw-zh@2026.4.2-zh.1
 
 COPY . /app/AgentClaw
 WORKDIR /app/AgentClaw
