@@ -52,6 +52,18 @@ def log(msg):
     print(f"[{ts}] [监察] {msg}", flush=True)
 
 
+def _write_heartbeat():
+    """写入心跳时间戳（main 入口处调用），即使后续逻辑崩溃也能证明监察在运行。"""
+    try:
+        audit = load_audit()
+        now_iso = datetime.datetime.now(datetime.timezone.utc).isoformat().replace("+00:00", "Z")
+        audit["last_check"] = now_iso
+        audit.pop("error", None)  # 清除上次的错误标记
+        save_audit(audit)
+    except Exception:
+        pass
+
+
 # ═══════════════════════════════════════════════════════════════════
 #  部门名称映射
 # ═══════════════════════════════════════════════════════════════════
@@ -311,13 +323,11 @@ def check_illegal_flow(task_id, flow_from, flow_to, index):
 
 
 def check_skip_steps(task_id, flow_log):
-    """检查整个 flow_log 是否跳步（渐进式：只在前置步骤缺失且后续步骤已完成时才报）。
-    
-    例如：流程到门下省审议阶段时，步骤3、4还没发生不算跳步。
-    但如果步骤4（中书省→尚书省）已发生，步骤3（门下省→中书省）缺失，才算跳步。
-    """
+    """检查整个 flow_log 是否跳步（缺少必要环节）。
+    只检查流程已到达位置之前的步骤，不检查未来步骤，避免误报。
+    返回违规列表。"""
     violations = []
-    # 从 flow_log 中提取所有已发生的 (from, to) 部门名对
+    # 从 flow_log 中提取所有 (from, to) 对，转为部门名称
     pairs = set()
     for entry in flow_log:
         f = normalize_name(entry.get("from", ""))
@@ -327,22 +337,17 @@ def check_skip_steps(task_id, flow_log):
             pt = ID_TO_DEPT.get(t, t)
             pairs.add((pf, pt))
 
-    # 构建已完成步骤集合
-    completed = set()
-    for req in REQUIRED_STEPS:
-        if req in pairs:
-            completed.add(req)
+    # 找到流程当前已到达的位置：最后一个匹配 REQUIRED_STEPS 的步骤索引
+    last_reached_index = -1
+    for i, step in enumerate(REQUIRED_STEPS):
+        if step in pairs:
+            last_reached_index = i
 
-    # 只在前置步骤缺失 且 存在更晚的已完成步骤时，才报告跳步
-    for i, (req_from, req_to) in enumerate(REQUIRED_STEPS):
-        if (req_from, req_to) not in completed:
-            # 检查是否有更晚的步骤已经完成
-            has_later = any(
-                REQUIRED_STEPS[j] in completed
-                for j in range(i + 1, len(REQUIRED_STEPS))
-            )
-            if has_later:
-                violations.append(f"流程跳步：缺少必要环节 {req_from} → {req_to}")
+    # 只检查已到达位置及之前的步骤（不检查未来步骤）
+    for i in range(last_reached_index + 1):
+        req_from, req_to = REQUIRED_STEPS[i]
+        if (req_from, req_to) not in pairs:
+            violations.append(f"流程跳步：缺少必要环节 {req_from} → {req_to}")
 
     return violations
 
@@ -461,6 +466,9 @@ def _is_edict_task(task):
 
 
 def main():
+    # ── 第一时间写入心跳，表明监察在运行（即使后续崩溃也能证明）──
+    _write_heartbeat()
+
     tasks = load_tasks()
     if not tasks:
         # 即使没有任务也写入审计日志（标记监察在运行）
@@ -632,8 +640,19 @@ def main():
                     f"任务标题: {title}\n"
                     f"问题: {target_label} 已超时未接旨（{broken['elapsed_sec'] // 60} 分钟无回应）\n"
                     f"处理: 监察已将 {target_label} 唤醒\n"
-                    f"行动: 请 {parent_label} 重新通过 sessions_spawn 向 {target_label} 派发任务\n"
-                    f"⚠️ 监察不会派发任务，请 {parent_label} 执行派发。"
+                    f"行动: 请 {parent_label} 使用以下命令重新向 {target_label} 派发任务：\n"
+                    f"\n"
+                    f"sessions_spawn\n"
+                    f"{{\n"
+                    f'  "agentId": "{target_id}",\n'
+                    f'  "task": "📋 [任务内容]",\n'
+                    f'  "mode": "session",\n'
+                    f'  "thread": true,\n'
+                    f'  "label": "{task_id} {target_label}"\n'
+                    f"}}\n"
+                    f"\n"
+                    f"⚠️ 监察不会派发任务，请 {parent_label} 执行派发。\n"
+                    f"⚠️ 严禁使用 sessions_yield，必须使用 sessions_spawn！"
                 )
                 notify_ok, notify_detail = notify_agent(parent_id, notify_msg)
                 audit["notifications"].append({
@@ -692,4 +711,16 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except Exception as e:
+        log(f"监察脚本异常退出: {e}")
+        # 确保即使崩溃也更新 last_check 并标记错误
+        try:
+            audit = load_audit()
+            now_iso = datetime.datetime.now(datetime.timezone.utc).isoformat().replace("+00:00", "Z")
+            audit["last_check"] = now_iso
+            audit["error"] = str(e)[:500]
+            save_audit(audit)
+        except Exception:
+            pass
