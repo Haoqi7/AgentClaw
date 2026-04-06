@@ -311,29 +311,38 @@ def check_illegal_flow(task_id, flow_from, flow_to, index):
 
 
 def check_skip_steps(task_id, flow_log):
-    """检查整个 flow_log 是否跳步（缺少必要环节）。返回违规列表。"""
+    """检查整个 flow_log 是否跳步（渐进式：只在前置步骤缺失且后续步骤已完成时才报）。
+    
+    例如：流程到门下省审议阶段时，步骤3、4还没发生不算跳步。
+    但如果步骤4（中书省→尚书省）已发生，步骤3（门下省→中书省）缺失，才算跳步。
+    """
     violations = []
-    # 从 flow_log 中提取所有 (from, to) 对
-    pairs = []
+    # 从 flow_log 中提取所有已发生的 (from, to) 部门名对
+    pairs = set()
     for entry in flow_log:
         f = normalize_name(entry.get("from", ""))
         t = normalize_name(entry.get("to", ""))
         if f and t:
-            pairs.append((f, t))
+            pf = ID_TO_DEPT.get(f, f)
+            pt = ID_TO_DEPT.get(t, t)
+            pairs.add((pf, pt))
 
-    # 检查必要步骤是否都出现过
-    # 必须有：太子→中书省、中书省→门下省、门下省→中书省、中书省→尚书省
-    for req_from, req_to in REQUIRED_STEPS:
-        found = False
-        for pair in pairs:
-            # 将 agent_id 转换为部门名称进行比较（与 LEGAL_FLOWS 一致）
-            pf = ID_TO_DEPT.get(pair[0], pair[0])
-            pt = ID_TO_DEPT.get(pair[1], pair[1])
-            if pf == req_from and pt == req_to:
-                found = True
-                break
-        if not found:
-            violations.append(f"流程跳步：缺少必要环节 {req_from} → {req_to}")
+    # 构建已完成步骤集合
+    completed = set()
+    for req in REQUIRED_STEPS:
+        if req in pairs:
+            completed.add(req)
+
+    # 只在前置步骤缺失 且 存在更晚的已完成步骤时，才报告跳步
+    for i, (req_from, req_to) in enumerate(REQUIRED_STEPS):
+        if (req_from, req_to) not in completed:
+            # 检查是否有更晚的步骤已经完成
+            has_later = any(
+                REQUIRED_STEPS[j] in completed
+                for j in range(i + 1, len(REQUIRED_STEPS))
+            )
+            if has_later:
+                violations.append(f"流程跳步：缺少必要环节 {req_from} → {req_to}")
 
     return violations
 
