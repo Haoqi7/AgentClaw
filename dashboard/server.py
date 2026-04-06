@@ -2516,10 +2516,24 @@ class Handler(BaseHTTPRequestHandler):
         elif p == '/api/morning-brief':
             self.send_json(read_json(DATA / 'morning_brief.json', {}))
         elif p == '/api/pipeline-audit':
-            self.send_json(read_json(DATA / 'pipeline_audit.json', {
+            audit = read_json(DATA / 'pipeline_audit.json', {
                 'last_check': '', 'violations': [], 'watched_tasks': [],
                 'watched_count': 0, 'check_count': 0, 'total_violations': 0,
-            }))
+            })
+            # 过滤已取消监察任务的违规和通知记录
+            try:
+                exclude_data = json.loads((DATA / 'audit_exclude.json').read_text())
+                excluded = set(exclude_data.get('excluded_tasks', []))
+            except Exception:
+                excluded = set()
+            if excluded:
+                audit['violations'] = [v for v in audit.get('violations', []) if v.get('task_id') not in excluded]
+                audit['notifications'] = [
+                    n for n in audit.get('notifications', [])
+                    if n.get('task_id', '') not in excluded
+                    and not any(tid in excluded for tid in (n.get('task_ids') or []))
+                ]
+            self.send_json(audit)
         elif p == '/api/morning-config':
             migrate_notification_config()
             self.send_json(read_json(DATA / 'morning_brief_config.json', {
