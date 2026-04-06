@@ -1,13 +1,20 @@
-import { useEffect, useRef } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { useStore, timeAgo } from '../store';
 import { api } from '../api';
-import type { AuditViolation, WatchedTask } from '../api';
+import type { AuditViolation, WatchedTask, AuditNotification } from '../api';
 
 /** 违规类型对应的样式 */
 const TYPE_META: Record<string, { icon: string; color: string; bg: string }> = {
   '越权调用': { icon: '🚫', color: '#ff5270', bg: '#ff527018' },
   '流程跳步': { icon: '⚡', color: '#e8a040', bg: '#e8a04018' },
   '断链超时': { icon: '🔗', color: '#6a9eff', bg: '#6a9eff18' },
+};
+
+/** 通知类型对应的样式 */
+const NOTIFY_TYPE_META: Record<string, { icon: string; color: string }> = {
+  '越权通报': { icon: '🚨', color: '#ff5270' },
+  '断链唤醒': { icon: '🔔', color: '#e8a040' },
+  '断链通知': { icon: '📡', color: '#6a9eff' },
 };
 
 /** 任务状态对应标签 */
@@ -47,6 +54,7 @@ export default function AuditPanel() {
   const watchedCount = auditData?.watched_count || 0;
   const checkCount = auditData?.check_count || 0;
   const totalViolations = auditData?.total_violations || 0;
+  const notifications: AuditNotification[] = auditData?.notifications || [];
 
   // 监察运行状态判断
   const isRunning = !!lastCheck;
@@ -62,7 +70,21 @@ export default function AuditPanel() {
     }
   })();
 
-  const recentViolations = violations.slice(-20).reverse(); // 最近20条，倒序
+  // 按任务 ID 分组违规记录
+  const violationsByTask = (() => {
+    const map = new Map<string, AuditViolation[]>();
+    // 取最近 200 条，倒序
+    const recent = violations.slice(-200).reverse();
+    for (const v of recent) {
+      const key = v.task_id;
+      if (!map.has(key)) map.set(key, []);
+      map.get(key)!.push(v);
+    }
+    return map;
+  })();
+
+  // 通知记录倒序
+  const recentNotifications = notifications.slice(-50).reverse();
 
   return (
     <div>
@@ -73,7 +95,7 @@ export default function AuditPanel() {
             🛡️ 流程监察
           </div>
           <div style={{ fontSize: 12, color: 'var(--muted)' }}>
-            监督三省六部任务流转完整性，检测越权、跳步、断链
+            监督三省六部任务流转完整性，检测越权、跳步、断链（仅监察 JJC- 旨意任务）
           </div>
         </div>
         <button className="btn btn-g" onClick={loadAudit} style={{ fontSize: 12, padding: '6px 14px' }}>
@@ -101,13 +123,13 @@ export default function AuditPanel() {
           icon="👁️"
           label="正在监察"
           value={`${watchedCount} 个任务`}
-          sub={watchedCount > 0 ? '实时监控活跃任务' : '当前无活跃任务'}
+          sub={watchedCount > 0 ? '实时监控旨意任务' : '当前无活跃旨意'}
         />
         <StatCard
-          icon="⚠️"
-          label="待处理违规"
-          value={`${violations.length} 条`}
-          sub={violations.length > 0 ? '请关注并纠正' : '暂无违规'}
+          icon="📢"
+          label="通报记录"
+          value={`${notifications.length} 条`}
+          sub={notifications.length > 0 ? '含越权通报+断链唤醒' : '暂无通报'}
         />
       </div>
 
@@ -115,27 +137,42 @@ export default function AuditPanel() {
       <Section title={`👁️ 正在监察的任务 (${watchedCount})`}>
         {watchedTasks.length === 0 ? (
           <div className="mb-empty" style={{ padding: 20 }}>
-            当前没有活跃任务，监察处于待命状态
+            当前没有活跃旨意任务，监察处于待命状态
           </div>
         ) : (
           <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
             {watchedTasks.map((task) => (
-              <WatchedTaskCard key={task.task_id} task={task} />
+              <WatchedTaskCard key={task.task_id} task={task} onUpdate={loadAudit} />
             ))}
           </div>
         )}
       </Section>
 
-      {/* ── 违规记录 ── */}
-      <Section title={`🚨 违规记录 (${recentViolations.length})`}>
-        {recentViolations.length === 0 ? (
+      {/* ── 通报记录 ── */}
+      <Section title={`📢 通报记录 (${recentNotifications.length})`}>
+        {recentNotifications.length === 0 ? (
           <div className="mb-empty" style={{ padding: 20 }}>
-            {isRunning ? '✅ 所有任务流程正常，暂无违规' : '暂无监察数据，请确认 pipeline_watchdog.py 是否在运行'}
+            {isRunning ? '✅ 暂无通报，所有流程正常' : '暂无监察数据'}
           </div>
         ) : (
-          <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-            {recentViolations.map((v, i) => (
-              <ViolationCard key={`${v.task_id}-${v.detected_at}-${i}`} violation={v} />
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+            {recentNotifications.map((n, i) => (
+              <NotificationCard key={`${n.sent_at}-${i}`} notification={n} />
+            ))}
+          </div>
+        )}
+      </Section>
+
+      {/* ── 违规记录（按任务分组）── */}
+      <Section title={`🚨 违规记录 (${violations.length}条，${violationsByTask.size}个任务)`}>
+        {violations.length === 0 ? (
+          <div className="mb-empty" style={{ padding: 20 }}>
+            {isRunning ? '✅ 所有任务流程正常，暂无违规' : '暂无监察数据'}
+          </div>
+        ) : (
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+            {Array.from(violationsByTask.entries()).map(([taskId, taskViolations]) => (
+              <TaskViolationGroup key={taskId} taskId={taskId} violations={taskViolations} />
             ))}
           </div>
         )}
@@ -148,10 +185,12 @@ export default function AuditPanel() {
         fontSize: 12, color: 'var(--muted)', lineHeight: 1.8,
       }}>
         <div style={{ fontWeight: 700, marginBottom: 8, color: 'var(--text)' }}>📋 监察说明</div>
+        <div><b>监察范围：</b>仅监察 JJC- 开头的旨意任务，不监察对话</div>
         <div><b>标准流程：</b>皇上 → 太子 → 中书省 → 门下省 → 中书省 → 尚书省 → 六部 → 尚书省 → 中书省 → 太子 → 皇上</div>
-        <div><b>越权调用：</b>from→to 不在合法流转对表内（如太子→六部）</div>
-        <div><b>流程跳步：</b>缺少必要环节（如跳过门下省审议）</div>
+        <div><b>越权调用：</b>from→to 不在合法流转对表内（如太子→六部），监察会通过会话通知太子</div>
+        <div><b>流程跳步：</b>缺少必要环节（如跳过门下省审议），仅记录不通知</div>
         <div><b>断链超时：</b>某部门 1 分钟内未回应，监察自动唤醒 + 通知上级</div>
+        <div><b>自动归档：</b>任务完成超过 5 分钟自动归档</div>
         <div><b>运行方式：</b>pipeline_watchdog.py 每 60 秒由 run_loop.sh 调用一次</div>
       </div>
     </div>
@@ -187,8 +226,23 @@ function Section({ title, children }: { title: string; children: React.ReactNode
 }
 
 
-function WatchedTaskCard({ task }: { task: WatchedTask }) {
+function WatchedTaskCard({ task, onUpdate }: { task: WatchedTask; onUpdate: () => void }) {
+  const [excluding, setExcluding] = useState(false);
   const stateLabel = STATE_LABEL[task.state] || task.state;
+
+  const handleExclude = async () => {
+    if (!confirm(`确认停止监察任务 ${task.task_id}？\n${task.title}`)) return;
+    setExcluding(true);
+    try {
+      await api.auditExclude(task.task_id, 'exclude');
+      onUpdate();
+    } catch {
+      // silently fail
+    } finally {
+      setExcluding(false);
+    }
+  };
+
   return (
     <div style={{
       display: 'flex', alignItems: 'center', gap: 12, padding: '10px 14px',
@@ -220,6 +274,130 @@ function WatchedTaskCard({ task }: { task: WatchedTask }) {
       <div style={{ fontSize: 11, color: 'var(--muted)', whiteSpace: 'nowrap' }}>
         流转 {task.flow_count} 步
       </div>
+      <button
+        onClick={handleExclude}
+        disabled={excluding}
+        style={{
+          fontSize: 11, padding: '3px 10px', borderRadius: 4,
+          background: '#ff527018', color: '#ff5270', border: '1px solid #ff527033',
+          cursor: excluding ? 'wait' : 'pointer', whiteSpace: 'nowrap',
+          opacity: excluding ? 0.5 : 1,
+        }}
+      >
+        {excluding ? '...' : '✕ 停止监察'}
+      </button>
+    </div>
+  );
+}
+
+
+function NotificationCard({ notification }: { notification: AuditNotification }) {
+  const meta = NOTIFY_TYPE_META[notification.type] || { icon: '📢', color: '#6a9eff' };
+  const sent = timeAgo(notification.sent_at);
+  const isSent = notification.status === 'sent';
+  const [expanded, setExpanded] = useState(false);
+
+  return (
+    <div style={{
+      padding: '8px 14px', borderRadius: 8,
+      background: isSent ? 'var(--panel2)' : '#ff527008',
+      border: `1px solid ${isSent ? 'var(--line)' : '#ff527033'}`,
+      borderLeft: `3px solid ${meta.color}`,
+      cursor: notification.detail ? 'pointer' : 'default',
+    }}
+      onClick={() => notification.detail && setExpanded(!expanded)}
+    >
+      <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+        <span style={{ fontSize: 13 }}>{meta.icon}</span>
+        <span style={{
+          fontSize: 11, fontWeight: 700, color: meta.color,
+          padding: '1px 6px', borderRadius: 4, background: `${meta.color}15`,
+        }}>
+          {notification.type}
+        </span>
+        <span style={{ fontSize: 12, fontWeight: 600 }}>
+          → {notification.to}
+        </span>
+        {(notification.task_id || notification.task_ids) && (
+          <span style={{
+            fontSize: 11, padding: '2px 6px', borderRadius: 4,
+            background: '#6a9eff15', color: '#6a9eff',
+          }}>
+            {notification.task_ids ? notification.task_ids.join(', ') : notification.task_id}
+          </span>
+        )}
+        <span style={{ fontSize: 11, color: 'var(--muted)', flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+          {notification.summary}
+        </span>
+        <span style={{ fontSize: 11, whiteSpace: 'nowrap' }}>
+          {isSent ? '✅' : '❌'}
+        </span>
+        <span style={{ fontSize: 11, color: 'var(--muted)', whiteSpace: 'nowrap' }}>
+          {sent}
+        </span>
+      </div>
+      {expanded && notification.detail && (
+        <div style={{
+          marginTop: 6, fontSize: 11, color: 'var(--muted)',
+          padding: '6px 10px', borderRadius: 4, background: 'var(--panel2)',
+          wordBreak: 'break-all', lineHeight: 1.6,
+        }}>
+          {notification.detail}
+        </div>
+      )}
+    </div>
+  );
+}
+
+
+function TaskViolationGroup({ taskId, violations }: { taskId: string; violations: AuditViolation[] }) {
+  const [collapsed, setCollapsed] = useState(false);
+  // 从第一条违规获取任务标题
+  const title = violations[0]?.title || taskId;
+
+  return (
+    <div style={{
+      borderRadius: 10, background: 'var(--panel2)', border: '1px solid var(--line)',
+      overflow: 'hidden',
+    }}>
+      {/* 任务标题行（可点击折叠） */}
+      <div
+        onClick={() => setCollapsed(!collapsed)}
+        style={{
+          display: 'flex', alignItems: 'center', gap: 10, padding: '10px 14px',
+          cursor: 'pointer', borderBottom: collapsed ? 'none' : '1px solid var(--line)',
+        }}
+      >
+        <span style={{ fontSize: 12 }}>{collapsed ? '▸' : '▾'}</span>
+        <span style={{
+          fontSize: 12, fontWeight: 700, padding: '2px 8px', borderRadius: 4,
+          background: '#6a9eff18', color: '#6a9eff',
+        }}>
+          {taskId}
+        </span>
+        <span style={{ fontSize: 13, fontWeight: 600, flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+          {title}
+        </span>
+        <span style={{
+          fontSize: 11, padding: '2px 8px', borderRadius: 4,
+          background: violations.length > 0 ? '#ff527018' : '#2ecc8a18',
+          color: violations.length > 0 ? '#ff5270' : '#2ecc8a',
+        }}>
+          {violations.length} 条违规
+        </span>
+      </div>
+
+      {/* 违规列表（可滚动） */}
+      {!collapsed && (
+        <div style={{
+          maxHeight: 320, overflowY: 'auto', padding: '8px 14px',
+          display: 'flex', flexDirection: 'column', gap: 8,
+        }}>
+          {violations.map((v, i) => (
+            <ViolationCard key={`${v.detected_at}-${v.flow_index ?? i}`} violation={v} />
+          ))}
+        </div>
+      )}
     </div>
   );
 }
@@ -230,30 +408,21 @@ function ViolationCard({ violation }: { violation: AuditViolation }) {
   const detected = timeAgo(violation.detected_at);
   return (
     <div style={{
-      padding: '12px 14px', borderRadius: 8,
-      background: meta.bg, border: `1px solid ${meta.color}33`,
+      padding: '10px 12px', borderRadius: 6,
+      background: meta.bg, border: `1px solid ${meta.color}22`,
       borderLeft: `3px solid ${meta.color}`,
     }}>
-      <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 6 }}>
-        <span style={{ fontSize: 14 }}>{meta.icon}</span>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 4 }}>
+        <span style={{ fontSize: 13 }}>{meta.icon}</span>
         <span style={{
-          fontSize: 12, fontWeight: 700, color: meta.color,
-          padding: '1px 8px', borderRadius: 4, background: `${meta.color}22`,
+          fontSize: 11, fontWeight: 700, color: meta.color,
+          padding: '1px 6px', borderRadius: 3, background: `${meta.color}18`,
         }}>
           {violation.type}
-        </span>
-        <span style={{
-          fontSize: 11, padding: '2px 8px', borderRadius: 4,
-          background: '#6a9eff18', color: '#6a9eff',
-        }}>
-          {violation.task_id}
         </span>
         <span style={{ fontSize: 11, color: 'var(--muted)', marginLeft: 'auto' }}>
           {detected}
         </span>
-      </div>
-      <div style={{ fontSize: 13, marginBottom: 4, fontWeight: 600 }}>
-        {violation.title}
       </div>
       <div style={{ fontSize: 12, color: 'var(--muted)', lineHeight: 1.6 }}>
         {violation.detail}
