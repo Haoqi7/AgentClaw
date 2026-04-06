@@ -41,6 +41,8 @@ rotate_log() {
 }
 
 SCAN_INTERVAL="${2:-120}"  # 巡检间隔(秒), 默认 120
+WATCHDOG_INTERVAL=120       # 监察脚本间隔(秒), 默认 120 (2分钟)
+WATCHDOG_COUNTER=0
 SCAN_COUNTER=0
 SCRIPT_TIMEOUT=30  # 单个脚本最大执行时间(秒)
 DASHBOARD_PORT="${EDICT_DASHBOARD_PORT:-7891}"  # 看板端口，可通过环境变量覆盖
@@ -49,6 +51,7 @@ echo "🏛️  三省六部数据刷新循环启动 (PID=$$)"
 echo "   脚本目录: $SCRIPT_DIR"
 echo "   间隔: ${INTERVAL}s"
 echo "   巡检间隔: ${SCAN_INTERVAL}s"
+echo "   监察间隔: ${WATCHDOG_INTERVAL}s"
 echo "   脚本超时: ${SCRIPT_TIMEOUT}s"
 echo "   日志: $LOG"
 echo "   PID文件: $PIDFILE"
@@ -88,6 +91,13 @@ while true; do
     # Fix #7: 移除 /api/ 前缀，匹配 dashboard/server.py do_POST 中的实际路由
     curl -s -X POST "http://127.0.0.1:${DASHBOARD_PORT}/scheduler-scan" \
       -H 'Content-Type: application/json' -d '{"thresholdSec":180}' >> "$LOG" 2>&1 || true
+  fi
+
+  # 定期监察：流程完整性检查 + 断链唤醒
+  WATCHDOG_COUNTER=$((WATCHDOG_COUNTER + INTERVAL))
+  if (( WATCHDOG_COUNTER >= WATCHDOG_INTERVAL )); then
+    WATCHDOG_COUNTER=0
+    safe_run "$SCRIPT_DIR/pipeline_watchdog.py"
   fi
 
   sleep "$INTERVAL"

@@ -92,7 +92,7 @@ backup_existing() {
 create_workspaces() {
   info "创建 Agent Workspace..."
   
-  AGENTS=(taizi zhongshu menxia shangshu hubu libu bingbu xingbu gongbu libu_hr zaochao)
+  AGENTS=(taizi zhongshu menxia shangshu hubu libu bingbu xingbu gongbu libu_hr zaochao jiancha)
   for agent in "${AGENTS[@]}"; do
     ws="$OC_HOME/workspace-$agent"
     mkdir -p "$ws/skills"
@@ -112,35 +112,90 @@ create_workspaces() {
     cat > "$OC_HOME/workspace-$agent/AGENTS.md" << 'AGENTS_EOF'
 # AGENTS.md · 工作协议
 
+## 🔒 身份锚定铁律
+
+**每个 Agent 在处理任何消息之前，必须先执行身份自检：**
+1. 明确自己的身份名称和所属层级（监督层/决策层/执行层）
+2. 明确自己的直接上级是谁、唯一允许调用的下级是谁
+
+
+### 身份与层级表
+
+| 部门 | 层级 | 身份名 | 直接上级 | 允许调用的下级 |
+|------|------|--------|----------|---------------|
+| **太子** | 监督层 | 太子 | 皇上（仅对接） | 仅中书省 |
+| **中书省** | 决策层 | 中书令 | 太子 | 门下省、尚书省 |
+| **门下省** | 决策层 | 门下侍中 | 中书省 | 无（只审核不转发） |
+| **尚书省** | 决策层 | 尚书令 | 中书省 | 六部（工/兵/户/礼/刑/吏） |
+| **工部** | 执行层 | 工部尚书 | 尚书省 | 无 |
+| **兵部** | 执行层 | 兵部尚书 | 尚书省 | 无 |
+| **户部** | 执行层 | 户部尚书 | 尚书省 | 无 |
+| **礼部** | 执行层 | 礼部尚书 | 尚书省 | 无 |
+| **刑部** | 执行层 | 刑部尚书 | 尚书省 | 无 |
+| **吏部** | 执行层 | 吏部尚书 | 尚书省 | 无 |
+
+### 🔒 身份冒充零容忍
+- **禁止任何 Agent 自称其他部门**：例如中书省不得说"我是礼部，我来写文档"
+- **禁止任何 Agent 代行其他部门职责**：例如中书省不得直接写代码/写文档/做测试
+- **禁止跨层级直接调用**：太子不得直接调用六部；中书省不得直接调用六部
+- **唯一合法调用链**：太子 → 中书省 → 门下省 → 中书省 → 尚书省 → 六部
+
+---
+
 ## 权限说明（严格遵守）
 
-**各部要严格遵守自己的职责，禁止越权。
+**各部要严格遵守自己的职责，禁止越权。**
 
 ### 三省六部职责表
 
-
 | 部门 | 身份 | 职责 | 禁止事项 |
 |------|------|------|----------|
-| **太子** | 监督 | 接收皇上消息、分拣任务、创建任务、转交中书省、持续监督全流程、启动心跳检测、触发强制阻断、向皇上汇报最终结果 | ❌ 禁止跳过任何环节、禁止让子会话直接与皇上对话、禁止心跳检测提前终止 |
-| **中书省** | 决策 | 起草方案、提交审议、转交执行 | ❌ 禁止直接执行任何具体工作、禁止跳过门下省审核、禁止直接与皇上对话  |
+| **太子** | 监督 | 接收皇上消息、分拣任务、创建任务、转交中书省、持续监督全流程、向皇上汇报最终结果 | ❌ 禁止跳过任何环节、禁止让子会话直接与皇上对话、禁止直接调用六部、禁止执行任何实际任务 |
+| **中书省** | 决策 | 起草方案、提交审议、转交执行 | ❌ 禁止直接执行任何具体工作、禁止跳过门下省审核、禁止直接与皇上对话、禁止直接调用六部 |
 | **门下省** | 决策 | 审议方案、准奏/封驳 | ❌ 禁止执行任务、禁止修改方案 |
-| **尚书省** | 决策 | 派发六部、汇总结果 | ❌ 禁止越权代劳六部工作 |
-| **工部** | 执行 | 部署运维、安全防御、漏洞扫描 、定时任务| ❌ 禁止承接非本职工作 |
+| **尚书省** | 决策 | 派发六部、汇总结果 | ❌ 禁止越权代劳六部工作、禁止跳过六部自行执行 |
+| **工部** | 执行 | 部署运维、安全防御、漏洞扫描、定时任务 | ❌ 禁止承接非本职工作 |
 | **兵部** | 执行 | 功能开发、架构设计、代码实现 | ❌ 禁止承接非本职工作 |
-| **户部** | 执行 | 数据分析、统计报表、成本核算、数据相关| ❌ 禁止承接非本职工作 |
+| **户部** | 执行 | 数据分析、统计报表、成本核算、数据相关 | ❌ 禁止承接非本职工作 |
 | **刑部** | 执行 | 代码审查、测试验收、合规审计 | ❌ 禁止承接非本职工作 |
 | **礼部** | 执行 | 文档撰写、UI/UX、对外沟通、撰写文案 | ❌ 禁止承接非本职工作 |
 | **吏部** | 执行 | 人事管理、Agent培训 | ❌ 禁止承接技术执行工作 |
 
+---
+
+## 📡 强制接旨确认协议
+
+**这是整个流程的基石，违反此协议 = 流程断裂。**
+
+### 1. 接旨必须做的事（所有 Agent，无一例外）
+当收到上级部门通过 `sessions_spawn` 发来的任务时，**第一件事必须是**：
+```
+sessions_send --to [上级部门] "已收到 JJC-xxx [任务标题]，[本部门身份名]开始执行"
+```
+**然后**才能开始自己的工作。不回复确认 = 未接旨 = 流程未完成。
+
+### 2. 上级必须做的事
+- 上级在**收到下级的"已收到"确认之前**，不得将自己的步骤标记为完成
+- 如果下级 **5 分钟**未回复确认 → 发送催办消息
+- 催办后仍 **5 分钟**无响应 → 上报太子
+
+### 3. 完成后必须做的事
+完成任务后，**必须**使用 `sessions_send` 向上级汇报结果：
+```
+sessions_send --to [上级部门] "✅ 完成 JJC-xxx：[产出摘要]"
+```
+
+---
+
 
 ## 📡 工作流程
 
-1. 除太子外各部接到**任务**必须先回复上级部门"已接旨"。
+1. 除太子外各部接到**任务**必须先回复上级部门"已接旨"（见强制接旨确认协议）。
 2. 完成任务后必须向上级部门汇报。
 3. **【文件存放规范】各部需在自己工作区内自行新建一个文件夹，将任务创建的文件放入其中，不得将文件直接存放于工作区根目录。
 
 ## 📡 Subagent 调用规则
-**除太子外其他部门必须先使用`sessions_spawn`通知其他部门
+**除太子外其他部门必须先使用 `sessions_spawn` 唤醒其他部门**
 **首次调用某个部门 agent → `sessions_spawn`**
 **继续已有对话 → `sessions_send`**
 **❌ 禁止用 `sessions_yield` 调用 subagent！**
@@ -148,6 +203,7 @@ create_workspaces() {
 ## 结果回传铁律
 - 任务执行完成后，**禁止直接输出结果**
 - 禁止擅自向皇上汇报，只有太子能向皇上汇报最终结果
+- 所有结果必须沿调用链反向回传：六部→尚书省→中书省→太子→皇上
 
 AGENTS_EOF
   done
@@ -179,6 +235,7 @@ AGENTS = [
     {"id": "gongbu",   "subagents": {"allowAgents": ["shangshu"]}},
   {"id": "libu_hr",  "subagents": {"allowAgents": ["shangshu"]}},
   {"id": "zaochao",  "subagents": {"allowAgents": []}},
+  {"id": "jiancha",  "subagents": {"allowAgents": ["taizi","zhongshu","menxia","shangshu","hubu","libu","bingbu","xingbu","gongbu","libu_hr"]}},
 ]
 
 agents_cfg = cfg.setdefault('agents', {})
@@ -272,7 +329,7 @@ PYEOF
 link_resources() {
   info "创建 data/scripts 软链接以确保 Agent 数据一致..."
   
-  AGENTS=(taizi zhongshu menxia shangshu hubu libu bingbu xingbu gongbu libu_hr zaochao)
+  AGENTS=(taizi zhongshu menxia shangshu hubu libu bingbu xingbu gongbu libu_hr zaochao jiancha)
   LINKED=0
   for agent in "${AGENTS[@]}"; do
     ws="$OC_HOME/workspace-$agent"
@@ -379,7 +436,7 @@ sync_auth() {
     return
   fi
 
-  AGENTS=(taizi zhongshu menxia shangshu hubu libu bingbu xingbu gongbu libu_hr zaochao)
+  AGENTS=(taizi zhongshu menxia shangshu hubu libu bingbu xingbu gongbu libu_hr zaochao jiancha)
   SYNCED=0
   for agent in "${AGENTS[@]}"; do
     AGENT_DIR="$OC_HOME/agents/$agent/agent"
