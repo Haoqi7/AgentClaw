@@ -114,6 +114,10 @@ export const api = {
     ),
   courtDiscussSession: (sessionId: string) =>
     fetchJ<CourtDiscussSessionData>(`${API_BASE}/api/court-discuss/session/${encodeURIComponent(sessionId)}`),
+
+  // ── 监察排除 ──
+  auditExclude: (taskId: string, action: 'exclude' | 'include' = 'exclude') =>
+    postJ<ActionResult & { excluded_count?: number }>(`${API_BASE}/api/audit-exclude`, { taskId, action }),
 };
 
 // ── Types ──
@@ -493,6 +497,17 @@ export interface WatchedTask {
   flow_count: number;
 }
 
+export interface AuditNotification {
+  type: '越权通报' | '断链唤醒' | '断链通知';
+  to: string;
+  task_id?: string;
+  task_ids?: string[];
+  summary: string;
+  sent_at: string;
+  status: 'sent' | 'failed';
+  detail: string;
+}
+
 export interface PipelineAuditData {
   last_check: string;
   violations: AuditViolation[];
@@ -500,4 +515,5 @@ export interface PipelineAuditData {
   watched_count: number;
   check_count: number;
   total_violations: number;
+  notifications: AuditNotification[];
 }
