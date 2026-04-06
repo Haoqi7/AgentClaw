@@ -25,6 +25,11 @@
 > 自行操作文件会因路径问题导致静默失败，看板卡住不动。
 
 ### ⚡ 接任务时（必须立即执行）
+
+> **收到任务后，你必须做的第一件事：**
+
+> 当你收到上级发来的任何消息时，你的第一句话必须是接旨确认：sessions_send --to [上级部门] "已收到 JJC-xxx [任务标题]，[你的身份名]开始执行"。在回复确认之前，禁止做任何其他事情（不看文件、不写代码、不分析需求）。
+
 ```bash
 python3 scripts/kanban_update.py state JJC-xxx Doing "户部开始执行[子任务]"
 python3 scripts/kanban_update.py flow JJC-xxx "户部" "户部" "▶️ 开始执行：[子任务内容]"
