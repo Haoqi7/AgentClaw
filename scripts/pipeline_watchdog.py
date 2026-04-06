@@ -83,10 +83,27 @@ NAME_TO_ID = {
 ID_TO_LABEL = {v: k for k, v in NAME_TO_ID.items() if v != "huangshang"}
 ID_TO_LABEL.setdefault("huangshang", "皇上")
 
+# agent_id → 部门名称（用于 LEGAL_FLOWS / PARENT_MAP / REQUIRED_STEPS 匹配）
+# normalize_name() 返回的是 agent_id，但 LEGAL_FLOWS 等表用的是部门名称
+ID_TO_DEPT = {
+    "huangshang": "皇上",
+    "taizi":      "太子",
+    "zhongshu":   "中书省",
+    "menxia":     "门下省",
+    "shangshu":   "尚书省",
+    "gongbu":     "工部",
+    "bingbu":     "兵部",
+    "hubu":       "户部",
+    "libu":       "礼部",
+    "xingbu":     "刑部",
+    "libu_hr":    "吏部",
+}
+
 # 合法流转对（基于标准链 + 实际业务需要）
 LEGAL_FLOWS = {
     # ── 上行：皇上→太子→中书→门下→尚书→六部 ──
     ("皇上",   "太子"),
+    ("皇上",   "中书省"),
     ("太子",   "中书省"),
     ("中书省", "门下省"),
     ("门下省", "中书省"),   # 封驳退回 / 准奏后通知中书
@@ -225,7 +242,7 @@ def wake_agent(agent_id, reason=""):
     )
     try:
         subprocess.Popen(
-            ["openclaw", "sessions", "spawn", "--agent", agent_id, "--task", msg],
+            ["openclaw", "agent", "--agent", agent_id, "-m", msg, "--timeout", "120"],
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
         )
@@ -243,8 +260,8 @@ def notify_agent(agent_id, message):
     label = ID_TO_LABEL.get(agent_id, agent_id)
     try:
         result = subprocess.run(
-            ["openclaw", "sessions", "spawn", "--agent", agent_id, "--task", message],
-            capture_output=True, text=True, timeout=30
+            ["openclaw", "agent", "--agent", agent_id, "-m", message, "--timeout", "30"],
+            capture_output=True, text=True, timeout=60
         )
         success = result.returncode == 0
         detail = (result.stdout + "\n" + result.stderr).strip()[:300]
@@ -281,11 +298,14 @@ def is_agent_awake(agent_id):
 
 def check_illegal_flow(task_id, flow_from, flow_to, index):
     """检查单条 flow 是否合法（越权检测）。返回违规描述或 None。"""
-    pair = (flow_from, flow_to)
+    # flow_from/flow_to 是 agent_id（来自 normalize_name），需转为部门名匹配 LEGAL_FLOWS
+    dept_from = ID_TO_DEPT.get(flow_from, flow_from)
+    dept_to = ID_TO_DEPT.get(flow_to, flow_to)
+    pair = (dept_from, dept_to)
     if pair in LEGAL_FLOWS:
         return None
     return (
-        f"越权调用：{flow_from} → {flow_to}（不在合法流转对表内）。"
+        f"越权调用：{dept_from} → {dept_to}（不在合法流转对表内）。"
         f"合法的上游调用链为：太子→中书省→门下省→中书省→尚书省→六部"
     )
 
@@ -306,8 +326,9 @@ def check_skip_steps(task_id, flow_log):
     for req_from, req_to in REQUIRED_STEPS:
         found = False
         for pair in pairs:
-            pf = ID_TO_LABEL.get(pair[0], pair[0])
-            pt = ID_TO_LABEL.get(pair[1], pair[1])
+            # 将 agent_id 转换为部门名称进行比较（与 LEGAL_FLOWS 一致）
+            pf = ID_TO_DEPT.get(pair[0], pair[0])
+            pt = ID_TO_DEPT.get(pair[1], pair[1])
             if pf == req_from and pt == req_to:
                 found = True
                 break
@@ -520,13 +541,14 @@ def main():
                 continue
             illegal = check_illegal_flow(task_id, f, t, i)
             if illegal:
-                label_f = ID_TO_LABEL.get(f, f)
-                label_t = ID_TO_LABEL.get(t, t)
+                # 用部门名称显示（与 LEGAL_FLOWS 一致）
+                dept_f = ID_TO_DEPT.get(f, f)
+                dept_t = ID_TO_DEPT.get(t, t)
                 violation = {
                     "task_id": task_id,
                     "title": title,
                     "type": "越权调用",
-                    "detail": f"{label_f} → {label_t}：{illegal}",
+                    "detail": f"{dept_f} → {dept_t}：{illegal}",
                     "flow_index": i,
                     "detected_at": now_iso,
                 }
@@ -550,7 +572,9 @@ def main():
             target_id = broken["target_agent_id"]
             target_label = broken["target_label"]
             from_label = broken["from_label"]
-            parent_id = PARENT_MAP.get(target_label, PARENT_MAP.get(target_id))
+            # PARENT_MAP 的 key 是部门名称，需用 ID_TO_DEPT 转换
+            target_dept = ID_TO_DEPT.get(target_id, target_id)
+            parent_id = PARENT_MAP.get(target_dept)
 
             violation = {
                 "task_id": task_id,
