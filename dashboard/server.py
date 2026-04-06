@@ -2515,6 +2515,11 @@ class Handler(BaseHTTPRequestHandler):
             self.send_json(read_json(DATA / 'officials_stats.json', {}))
         elif p == '/api/morning-brief':
             self.send_json(read_json(DATA / 'morning_brief.json', {}))
+        elif p == '/api/pipeline-audit':
+            self.send_json(read_json(DATA / 'pipeline_audit.json', {
+                'last_check': '', 'violations': [], 'watched_tasks': [],
+                'watched_count': 0, 'check_count': 0, 'total_violations': 0,
+            }))
         elif p == '/api/morning-config':
             migrate_notification_config()
             self.send_json(read_json(DATA / 'morning_brief_config.json', {
