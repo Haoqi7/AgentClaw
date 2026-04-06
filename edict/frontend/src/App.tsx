@@ -9,6 +9,7 @@ import SessionsPanel from './components/SessionsPanel';
 import MemorialPanel from './components/MemorialPanel';
 import TemplatePanel from './components/TemplatePanel';
 import MorningPanel from './components/MorningPanel';
+import AuditPanel from './components/AuditPanel';
 import TaskModal from './components/TaskModal';
 // ConfirmDialog is used inside TaskModal as needed
 import Toaster from './components/Toaster';
@@ -42,6 +43,12 @@ export default function App() {
     if (key === 'monitor') {
       const activeDepts = tasks.filter((t) => isEdict(t) && t.state === 'Doing').length;
       return activeDepts + '活跃';
+    }
+    if (key === 'audit') {
+      const audit = useStore.getState().auditData;
+      if (!audit || !audit.last_check) return '';
+      const cnt = (audit.violations || []).length;
+      return cnt > 0 ? cnt + '违规' : '正常';
     }
     return '';
   };
@@ -91,6 +98,7 @@ export default function App() {
       {activeTab === 'memorials' && <MemorialPanel />}
       {activeTab === 'templates' && <TemplatePanel />}
       {activeTab === 'morning' && <MorningPanel />}
+      {activeTab === 'audit' && <AuditPanel />}
 
       {/* ── Overlays ── */}
       <TaskModal />
