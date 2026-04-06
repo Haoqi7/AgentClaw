@@ -13,14 +13,23 @@ LOG="/tmp/sansheng_liubu_refresh.log"
 PIDFILE="/tmp/sansheng_liubu_refresh.pid"
 MAX_LOG_SIZE=$((10 * 1024 * 1024))  # 10MB
 
-# ── 单实例保护 ──
+# ── 单实例保护（增强版：校验进程名，防止 PID 复用误判）──
 if [[ -f "$PIDFILE" ]]; then
   OLD_PID=$(cat "$PIDFILE" 2>/dev/null)
-  if kill -0 "$OLD_PID" 2>/dev/null; then
-    echo "❌ 已有实例运行中 (PID=$OLD_PID)，退出"
-    exit 1
+  if [[ -n "$OLD_PID" ]] && kill -0 "$OLD_PID" 2>/dev/null; then
+    # 校验进程名，防止 PID 被系统复用给无关进程
+    OLD_COMM=$(ps -p "$OLD_PID" -o comm= 2>/dev/null || echo "")
+    if [[ "$OLD_COMM" == *"bash"* || "$OLD_COMM" == *"run_loop"* || "$OLD_COMM" == *"sh"* ]]; then
+      echo "❌ 已有实例运行中 (PID=$OLD_PID, comm=$OLD_COMM)，退出"
+      exit 1
+    fi
+    # 进程名不匹配 = PID 已被复用，清除残留 PIDFILE
+    echo "⚠️ 清除残留 PIDFILE (PID=$OLD_PID 进程已被复用为 $OLD_COMM)"
+    rm -f "$PIDFILE"
+  else
+    # 进程不存在，清除残留 PIDFILE
+    rm -f "$PIDFILE"
   fi
-  rm -f "$PIDFILE"
 fi
 echo $$ > "$PIDFILE"
 
