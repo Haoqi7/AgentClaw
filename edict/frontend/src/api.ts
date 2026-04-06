@@ -33,6 +33,7 @@ export const api = {
   morningBrief: () => fetchJ<MorningBrief>(`${API_BASE}/api/morning-brief`),
   morningConfig: () => fetchJ<SubConfig>(`${API_BASE}/api/morning-config`),
   agentsStatus: () => fetchJ<AgentsStatusData>(`${API_BASE}/api/agents-status`),
+  pipelineAudit: () => fetchJ<PipelineAuditData>(`${API_BASE}/api/pipeline-audit`),
 
   // 任务实时动态
   taskActivity: (id: string) =>
@@ -471,4 +472,32 @@ export interface CourtSessionSummary {
   phase: string;
   official_count: number;
   message_count: number;
+}
+
+// ── 流程监察 ──
+
+export interface AuditViolation {
+  task_id: string;
+  title: string;
+  type: '越权调用' | '流程跳步' | '断链超时';
+  detail: string;
+  flow_index?: number;
+  detected_at: string;
+}
+
+export interface WatchedTask {
+  task_id: string;
+  title: string;
+  state: string;
+  org: string;
+  flow_count: number;
+}
+
+export interface PipelineAuditData {
+  last_check: string;
+  violations: AuditViolation[];
+  watched_tasks: WatchedTask[];
+  watched_count: number;
+  check_count: number;
+  total_violations: number;
 }
