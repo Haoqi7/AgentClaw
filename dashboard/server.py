@@ -2796,6 +2796,32 @@ class Handler(BaseHTTPRequestHandler):
             self.send_json(result)
             return
 
+        if p == '/api/audit-exclude':
+            task_id = body.get('taskId', '').strip()
+            action = body.get('action', 'exclude')  # 'exclude' or 'include'
+            if not task_id:
+                self.send_json({'ok': False, 'error': 'taskId required'}, 400)
+                return
+            if not _SAFE_NAME_RE.match(task_id) and not task_id.startswith('JJC-'):
+                self.send_json({'ok': False, 'error': 'taskId 含非法字符'}, 400)
+                return
+            exclude_file = DATA / 'audit_exclude.json'
+            try:
+                data = json.loads(exclude_file.read_text()) if exclude_file.exists() else {}
+            except Exception:
+                data = {}
+            excluded = set(data.get('excluded_tasks', []))
+            if action == 'include':
+                excluded.discard(task_id)
+                msg = f'{task_id} 已恢复监察'
+            else:
+                excluded.add(task_id)
+                msg = f'{task_id} 已停止监察'
+            data['excluded_tasks'] = sorted(excluded)
+            exclude_file.write_text(json.dumps(data, ensure_ascii=False, indent=2))
+            self.send_json({'ok': True, 'message': msg, 'excluded_count': len(excluded)})
+            return
+
         if p == '/api/task-todos':
             task_id = body.get('taskId', '').strip()
             todos = body.get('todos', [])  # [{id, title, status}]
