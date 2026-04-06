@@ -41,7 +41,7 @@ rotate_log() {
 }
 
 SCAN_INTERVAL="${2:-120}"  # 巡检间隔(秒), 默认 120
-WATCHDOG_INTERVAL=120       # 监察脚本间隔(秒), 默认 120 (2分钟)
+WATCHDOG_INTERVAL=60        # 监察脚本间隔(秒), 默认 60 (1分钟)
 WATCHDOG_COUNTER=0
 SCAN_COUNTER=0
 SCRIPT_TIMEOUT=30  # 单个脚本最大执行时间(秒)
