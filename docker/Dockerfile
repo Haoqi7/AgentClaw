@@ -18,7 +18,9 @@ COPY . /app/AgentClaw
 WORKDIR /app/AgentClaw
 
 RUN if [ -f requirements.txt ]; then python3 -m pip install --no-cache-dir -r requirements.txt; fi
-RUN if [ -f package.json ]; then npm install; fi
+
+# Build frontend React app
+RUN cd /app/AgentClaw/edict/frontend && npm install && npm run build
 
 COPY docker/entrypoint.sh /entrypoint.sh
 RUN chmod +x /entrypoint.sh
