@@ -32,7 +32,8 @@ AUDIT_FILE = DATA_DIR / "pipeline_audit.json"
 OCLAW_HOME = pathlib.Path.home() / ".openclaw"
 
 # ── 超时阈值（秒）─────────────────────────────────────────────────
-BREAK_TIMEOUT_SEC = 120  # 2 分钟无回应判定为断链
+BREAK_TIMEOUT_SEC = 60   # 1 分钟无回应判定为断链
+RECENT_DONE_MINUTES = 10  # 最近 N 分钟内完成的任务也需检查（防止速通逃逸）
 
 # ── 日志工具 ──────────────────────────────────────────────────────
 def log(msg):
@@ -332,17 +333,67 @@ def check_broken_chain(task_id, flow_log):
 #  主流程
 # ═══════════════════════════════════════════════════════════════════
 
+def _is_recently_done(task):
+    """判断任务是否在最近 RECENT_DONE_MINUTES 分钟内完成（用于速通逃逸检测）"""
+    updated_at = task.get("updatedAt", "")
+    if not updated_at:
+        return False
+    try:
+        dt = datetime.datetime.fromisoformat(updated_at.replace("Z", "+00:00"))
+        now = datetime.datetime.now(datetime.timezone.utc)
+        return (now - dt).total_seconds() < RECENT_DONE_MINUTES * 60
+    except Exception:
+        return False
+
+
 def main():
     tasks = load_tasks()
     if not tasks:
-        return  # 没有任务，直接退出
+        # 即使没有任务也写入审计日志（标记监察在运行）
+        audit = load_audit()
+        now_iso = datetime.datetime.now(datetime.timezone.utc).isoformat().replace("+00:00", "Z")
+        audit["last_check"] = now_iso
+        audit["watched_tasks"] = []
+        audit["watched_count"] = 0
+        save_audit(audit)
+        log("本轮检查完成，无任务")
+        return
 
-    # 过滤活跃任务
-    active = [t for t in tasks if t.get("state") not in ("Done", "Cancelled")]
-    if not active:
-        return  # 没有活跃任务，直接退出
+    now = datetime.datetime.now(datetime.timezone.utc)
 
+    # 过滤需要检查的任务：活跃任务 + 最近完成的任务（防止速通逃逸）
+    active = []
+    for t in tasks:
+        state = t.get("state", "")
+        if state not in ("Done", "Cancelled"):
+            active.append(t)
+        elif _is_recently_done(t):
+            active.append(t)
+
+    # 即使没有活跃任务也写入审计（标记监察在运行，显示 watched_tasks=[]）
     audit = load_audit()
+    now_iso = now.isoformat().replace("+00:00", "Z")
+
+    # 构建正在监察的任务列表（只含真正活跃的，不含已完成的）
+    truly_active = [t for t in tasks if t.get("state") not in ("Done", "Cancelled")]
+    watched_tasks = []
+    for t in truly_active:
+        watched_tasks.append({
+            "task_id": t.get("id", ""),
+            "title": t.get("title", ""),
+            "state": t.get("state", ""),
+            "org": t.get("org", ""),
+            "flow_count": len(t.get("flow_log", [])),
+        })
+
+    if not active:
+        audit["last_check"] = now_iso
+        audit["watched_tasks"] = watched_tasks
+        audit["watched_count"] = len(watched_tasks)
+        save_audit(audit)
+        log(f"本轮检查完成，{len(watched_tasks)} 个活跃任务均正常")
+        return
+
     new_violations = []
     woken_agents = set()  # 同一轮只唤醒一次
 
@@ -447,14 +498,18 @@ def main():
         audit["violations"].extend(new_violations)
         # 只保留最近 200 条记录
         audit["violations"] = audit["violations"][-200:]
-    audit["last_check"] = datetime.datetime.now(datetime.timezone.utc).isoformat().replace("+00:00", "Z")
+    audit["last_check"] = now_iso
+    audit["watched_tasks"] = watched_tasks
+    audit["watched_count"] = len(watched_tasks)
+    audit["check_count"] = audit.get("check_count", 0) + 1
+    audit["total_violations"] = audit.get("total_violations", 0) + len(new_violations)
 
     save_audit(audit)
 
     if new_violations:
-        log(f"本轮检查完成，发现 {len(new_violations)} 项问题")
+        log(f"本轮检查完成，检查 {len(active)} 个任务（{len(watched_tasks)} 活跃），发现 {len(new_violations)} 项问题")
     else:
-        log(f"本轮检查完成，{len(active)} 个活跃任务均正常")
+        log(f"本轮检查完成，{len(watched_tasks)} 个活跃任务均正常")
 
 
 if __name__ == "__main__":
