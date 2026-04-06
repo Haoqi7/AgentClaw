@@ -14,6 +14,7 @@ import {
   type MorningBrief,
   type SubConfig,
   type ChangeLogEntry,
+  type PipelineAuditData,
 } from './api';
 
 // ── Pipeline Definition (PIPE) ──
@@ -83,7 +84,7 @@ export function getPipeStatus(t: Task): PipeStatus[] {
 
 export type TabKey =
   | 'edicts' | 'monitor' | 'officials' | 'models'
-  | 'skills' | 'sessions' | 'memorials' | 'templates' | 'morning' | 'court';
+  | 'skills' | 'sessions' | 'memorials' | 'templates' | 'morning' | 'audit' | 'court';
 
 export const TAB_DEFS: { key: TabKey; label: string; icon: string }[] = [
   { key: 'edicts',    label: '旨意看板', icon: '📜' },
@@ -96,6 +97,7 @@ export const TAB_DEFS: { key: TabKey; label: string; icon: string }[] = [
   { key: 'memorials', label: '奏折阁',   icon: '📜' },
   { key: 'templates', label: '旨库',     icon: '📋' },
   { key: 'morning',   label: '天下要闻', icon: '🌅' },
+  { key: 'audit',     label: '流程监察', icon: '🛡️' },
 ];
 
 // ── DEPTS for monitor ──
@@ -258,6 +260,7 @@ interface AppStore {
   agentsStatusData: AgentsStatusData | null;
   morningBrief: MorningBrief | null;
   subConfig: SubConfig | null;
+  auditData: PipelineAuditData | null;
 
   // UI State
   activeTab: TabKey;
@@ -288,6 +291,7 @@ interface AppStore {
   loadAgentsStatus: () => Promise<void>;
   loadMorning: () => Promise<void>;
   loadSubConfig: () => Promise<void>;
+  loadAudit: () => Promise<void>;
   loadAll: () => Promise<void>;
 }
 
@@ -301,6 +305,7 @@ export const useStore = create<AppStore>((set, get) => ({
   agentsStatusData: null,
   morningBrief: null,
   subConfig: null,
+  auditData: null,
 
   activeTab: 'edicts',
   edictFilter: 'active',
@@ -319,6 +324,7 @@ export const useStore = create<AppStore>((set, get) => ({
     if (tab === 'officials' && !s.officialsData) s.loadOfficials();
     if (tab === 'monitor') s.loadAgentsStatus();
     if (tab === 'morning' && !s.morningBrief) s.loadMorning();
+    if (tab === 'audit') s.loadAudit();
   },
   setEdictFilter: (f) => set({ edictFilter: f }),
   setSessFilter: (f) => set({ sessFilter: f }),
@@ -390,6 +396,15 @@ export const useStore = create<AppStore>((set, get) => ({
     try {
       const config = await api.morningConfig();
       set({ subConfig: config });
+    } catch {
+      // silently fail
+    }
+  },
+
+  loadAudit: async () => {
+    try {
+      const data = await api.pipelineAudit();
+      set({ auditData: data });
     } catch {
       // silently fail
     }
