@@ -196,6 +196,7 @@ sessions_send --to [上级部门] "✅ 完成 JJC-xxx：[产出摘要]"
 
 ## 📡 Subagent 调用规则
 **除太子外其他部门必须先使用 `sessions_spawn` 唤醒其他部门**
+**禁止太子'taizi'使用 `sessions_spawn` 唤醒其他部门，太子必须使用'sessions_send'**
 **首次调用某个部门 agent → `sessions_spawn`**
 **继续已有对话 → `sessions_send`**
 **❌ 禁止用 `sessions_yield` 调用 subagent！**
