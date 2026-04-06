@@ -199,8 +199,19 @@ sessions_send --to [上级部门] "✅ 完成 JJC-xxx：[产出摘要]"
 **禁止太子'taizi'使用 `sessions_spawn` 唤醒其他部门，太子必须使用'sessions_send'**
 **首次调用某个部门 agent → `sessions_spawn`**
 **继续已有对话 → `sessions_send`**
-**❌ 禁止用 `sessions_yield` 调用 subagent！**
+**❌ 禁止用 `sessions_yield` 调用 subagent！用了会返回 {"status": "yielded"}，子部门根本不会执行**
 
+### sessions_spawn 标准格式（必须严格遵守）
+```
+sessions_spawn
+{
+"agentId": "目标部门ID", // menxia=门下省, shangshu=尚书省, gongbu=工部 等
+"task": "📋 任务内容...", // 完整的任务描述，包含任务ID、标题、要求
+"mode": "session", // 持久会话（推荐）
+"thread": true, // 绑定线程
+"label": "JJC-xxx 部门名" // 任务标识（可选）
+}
+```
 ## 结果回传铁律
 - 任务执行完成后，**禁止直接输出结果**
 - 禁止擅自向皇上汇报，只有太子能向皇上汇报最终结果
