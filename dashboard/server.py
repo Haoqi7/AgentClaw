@@ -100,10 +100,25 @@ def _load_api_token():
     return _API_TOKEN
 
 def _check_api_auth(handler):
-    """校验请求中的 Authorization token。无 token 配置时跳过认证。"""
+    """校验请求中的 Authorization token。无 token 配置时跳过认证。
+
+    同源请求（前端由本看板服务提供）自动放行，无需携带 token。
+    外部请求（如 curl / 第三方集成）需要 Bearer token。
+    """
     token = _load_api_token()
     if not token:
         return True  # 未配置 token，跳过认证
+    # 同源放行：前端由本服务提供（端口 7891），Origin 匹配则信任
+    origin = handler.headers.get('Origin', '')
+    referer = handler.headers.get('Referer', '')
+    host = handler.headers.get('Host', '')
+    port = getattr(_check_api_auth, '_port', 7891)  # main() 设置
+    for src in (origin, referer):
+        if src and (f':{port}' in src or f':{port}/' in src):
+            return True
+    # 无 Origin 且 Host 匹配（如 curl localhost:7891）
+    if not origin and host and (f':{port}' in host or host.startswith(f'127.0.0.1:{port}') or host.startswith(f'localhost:{port}')):
+        return True
     auth_header = handler.headers.get('Authorization', '')
     if auth_header == f'Bearer {token}':
         return True
@@ -3282,6 +3297,7 @@ def main():
     global ALLOWED_ORIGIN, _DASHBOARD_PORT, _DEFAULT_ORIGINS
     ALLOWED_ORIGIN = args.cors
     _DASHBOARD_PORT = args.port
+    _check_api_auth._port = args.port  # 供同源放行判断使用
     _DEFAULT_ORIGINS = _DEFAULT_ORIGINS | {
         f'http://127.0.0.1:{args.port}', f'http://localhost:{args.port}',
     }

@@ -414,9 +414,40 @@ def _notify_agent(agent_id, task_id, from_org, to_org, title='', remark='', _ret
     - 🎯 针对性通知：根据 _AGENT_NOTIFY_PROFILES 为每个部门生成专属通知内容，
       包含该部门的核心职责提醒和具体执行步骤指导。
     - 唤醒重试：首次失败后 3 秒重试一次。
+    - 🔒 会话去重：同一任务 + 同一目标 Agent 在短时间内不重复唤醒。
     """
     if not agent_id:
         return
+
+    # ═══════════════════════════════════════════════════════════════════════
+    # 🔒 会话去重检查：防止同一任务重复唤醒同一 Agent
+    # ═══════════════════════════════════════════════════════════════════════
+    DEDUP_WINDOW_SEC = 120  # 2分钟内不重复唤醒同一任务的同一 Agent
+    try:
+        tasks = load()
+        t = find_task(tasks, task_id)
+        if t:
+            # 🔒 全局限制：单任务通知次数上限
+            notify_count = len(t.get('_lastNotify', {}))
+            if notify_count >= _MAX_NOTIFY_PER_TASK:
+                log.warning(f'🔒 全局去重：{task_id} 已通知 {notify_count} 次，达到上限 {_MAX_NOTIFY_PER_TASK}，停止通知')
+                return
+            # 🔒 单 Agent 去重
+            last_notify = t.get('_lastNotify', {})
+            agent_notify_info = last_notify.get(agent_id, {})
+            last_time = agent_notify_info.get('at', '')
+            if last_time:
+                try:
+                    dt = datetime.datetime.fromisoformat(last_time.replace('Z', '+00:00'))
+                    now = datetime.datetime.now(dt.tzinfo) if dt.tzinfo else datetime.datetime.now()
+                    elapsed = (now - dt).total_seconds()
+                    if elapsed < DEDUP_WINDOW_SEC:
+                        log.info(f'🔒 去重跳过：{task_id} → {agent_id}，上次通知仅 {elapsed:.0f}s 前')
+                        return
+                except Exception:
+                    pass
+    except Exception:
+        pass
     to_label = _AGENT_LABELS.get(agent_id, agent_id)
 
     # 🎯 查找该部门的针对性通知配置（共性格式 + 专属内容）
@@ -465,6 +496,21 @@ def _notify_agent(agent_id, task_id, from_org, to_org, title='', remark='', _ret
             import time as _time
             _time.sleep(3)
             _notify_agent(agent_id, task_id, from_org, to_org, title, remark, _retry=_retry + 1)
+        return
+
+    # ═══════════════════════════════════════════════════════════════════════
+    # 🔒 会话去重：记录本次通知时间，用于后续去重判断
+    # ═══════════════════════════════════════════════════════════════════════
+    def _record_notify(tasks):
+        t = find_task(tasks, task_id)
+        if not t:
+            return tasks
+        t.setdefault('_lastNotify', {})[agent_id] = {'at': now_iso(), 'remark': remark[:60] if remark else ''}
+        return tasks
+    try:
+        atomic_json_update(TASKS_FILE, _record_notify, [])
+    except Exception:
+        pass  # 去重记录写入失败不影响主流程
 
 
 def find_task(tasks, task_id):
@@ -638,11 +684,18 @@ _VALID_TRANSITIONS = {
 # 不需要通知 Agent 的状态转换集合（终态或内部状态）
 _NO_NOTIFY_STATES = {'Done', 'Cancelled'}
 
+# ═══════════════════════════════════════════════════════════════════════
+# 🔒 会话去重：每个任务最大通知次数限制
+# 防止 LLM 反复 spawn subagent 导致会话爆炸
+# ═══════════════════════════════════════════════════════════════════════
+_MAX_NOTIFY_PER_TASK = 8  # 单个任务最多通知（唤醒）8 次
+
 
 def cmd_state(task_id, new_state, now_text=None):
-    """更新任务状态（原子操作，含流转合法性校验）"""
+    """更新任务状态（原子操作，含流转合法性校验 + 会话去重）"""
     old_state = [None]
     rejected = [False]
+    skipped = [False]
     
     def modifier(tasks):
         t = find_task(tasks, task_id)
@@ -653,7 +706,22 @@ def cmd_state(task_id, new_state, now_text=None):
         # 自转换快速路径：相同状态不拒绝，直接跳过（避免 Zhongshu→Zhongshu 等噪声）
         if old_state[0] == new_state:
             log.info(f'✅ {task_id} 状态不变: {new_state}（自转换跳过）')
+            skipped[0] = True
             return tasks
+
+        # ═══════════════════════════════════════════════════════════════════════
+        # 🔒 会话去重：Doing/Next 状态下，同一 activeAgent 不允许重复派发
+        # ═══════════════════════════════════════════════════════════════════════
+        if new_state in ('Doing', 'Next', 'Assigned'):
+            current_active = t.get('activeAgent', '')
+            current_org = t.get('org', '')
+            # 推断目标 Agent
+            target_agent = _resolve_agent_id(new_state) or _ORG_AGENT_MAP.get(current_org, '')
+            if current_active and current_active == target_agent and old_state[0] == new_state:
+                log.info(f'🔒 去重跳过：{task_id} 状态 {new_state} 已由 {target_agent} 处理中，不重复派发')
+                skipped[0] = True
+                return tasks
+
         allowed = _VALID_TRANSITIONS.get(old_state[0])
         if allowed is not None and new_state not in allowed:
             log.warning(f'⚠️ 非法状态转换 {task_id}: {old_state[0]} → {new_state}（允许: {allowed}）')
@@ -665,6 +733,14 @@ def cmd_state(task_id, new_state, now_text=None):
         if now_text:
             t['now'] = now_text
         t['updatedAt'] = now_iso()
+        # 🔒 记录当前活跃 Agent，用于后续去重
+        if new_state in ('Doing', 'Next'):
+            t['activeAgent'] = _resolve_agent_id(new_state) or t.get('org', '')
+        elif new_state == 'Done':
+            t.pop('activeAgent', None)  # 完成时清除
+            t.pop('_lastNotify', None)   # 清除去重记录
+        elif new_state == 'Review':
+            t['activeAgent'] = 'shangshu'
         return tasks
     
     atomic_json_update(TASKS_FILE, modifier, [])
@@ -672,6 +748,8 @@ def cmd_state(task_id, new_state, now_text=None):
     
     if rejected[0]:
         log.info(f'❌ {task_id} 状态转换被拒: {old_state[0]} → {new_state}')
+    elif skipped[0]:
+        log.info(f'⏭️ {task_id} 状态转换跳过（去重或自转换）: {old_state[0]} → {new_state}')
     else:
         log.info(f'✅ {task_id} 状态更新: {old_state[0]} → {new_state}')
 
@@ -724,7 +802,7 @@ def cmd_state(task_id, new_state, now_text=None):
 
 
 def cmd_flow(task_id, from_dept, to_dept, remark):
-    """添加流转记录（原子操作）"""
+    """添加流转记录（原子操作，含去重）"""
     clean_remark = _sanitize_remark(remark)
     agent_id = _infer_agent_id_from_runtime()
     agent_label = _AGENT_LABELS.get(agent_id, agent_id)
@@ -740,6 +818,26 @@ def cmd_flow(task_id, from_dept, to_dept, remark):
         log.warning(f'⚠️ {task_id} 流转校验失败 (to={to_dept}): {err_to}')
         print(f'[看板] 流转被拒绝: {err_to}', flush=True)
         return
+    
+    # 🔒 流转去重：同一任务相同 from→to 在 60 秒内不重复记录
+    DEDUP_FLOW_SEC = 60
+    try:
+        existing_tasks = load()
+        existing_task = find_task(existing_tasks, task_id)
+        if existing_task:
+            for entry in reversed(existing_task.get('flow_log', [])):
+                if entry.get('from') == from_dept and entry.get('to') == to_dept:
+                    try:
+                        dt = datetime.datetime.fromisoformat((entry.get('at', '') or '').replace('Z', '+00:00'))
+                        now = datetime.datetime.now(dt.tzinfo) if dt.tzinfo else datetime.datetime.now()
+                        if (now - dt).total_seconds() < DEDUP_FLOW_SEC:
+                            log.info(f'🔒 流转去重跳过：{task_id} {from_dept}→{to_dept} 在 {DEDUP_FLOW_SEC}s 内已记录')
+                            return
+                    except Exception:
+                        pass
+                    break
+    except Exception:
+        pass
     
     def modifier(tasks):
         t = find_task(tasks, task_id)

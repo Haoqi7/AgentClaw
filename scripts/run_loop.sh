@@ -99,8 +99,8 @@ while true; do
   SCAN_COUNTER=$((SCAN_COUNTER + INTERVAL))
   if (( SCAN_COUNTER >= SCAN_INTERVAL )); then
     SCAN_COUNTER=0
-    # Fix #7: 移除 /api/ 前缀，匹配 dashboard/server.py do_POST 中的实际路由
-    curl -s -X POST "http://127.0.0.1:${DASHBOARD_PORT}/scheduler-scan" \
+    # scheduler-scan: 匹配 dashboard/server.py do_POST 中的 /api/scheduler-scan 路由
+    curl -s -X POST "http://127.0.0.1:${DASHBOARD_PORT}/api/scheduler-scan" \
       -H 'Content-Type: application/json' -d '{"thresholdSec":180}' >> "$LOG" 2>&1 || true
   fi
 
