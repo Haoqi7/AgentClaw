@@ -10,6 +10,7 @@ const TYPE_META: Record<string, { icon: string; color: string; bg: string }> = {
   '断链超时': { icon: '🔗', color: '#6a9eff', bg: '#6a9eff18' },
   '直接执行越权': { icon: '⛔', color: '#ff2d55', bg: '#ff2d5518' },
   '极端停滞': { icon: '⏰', color: '#ff0040', bg: '#ff004018' },
+  '未完成回奏': { icon: '🛑', color: '#ff6b35', bg: '#ff6b3518' },
 };
 
 /** 通知类型对应的样式 */
@@ -73,11 +74,27 @@ export default function AuditPanel() {
     }
   })();
 
-  // 按任务 ID 分组违规记录
+  // 区分活跃违规和已解决违规
+  // 已解决：任务已完成(Done)或已取消(Cancelled)的违规
+  const watchedTaskIds = new Set(watchedTasks.map(t => t.task_id));
+  const activeViolations = violations.filter(v => watchedTaskIds.has(v.task_id));
+  const resolvedViolations = violations.filter(v => !watchedTaskIds.has(v.task_id));
+  const [showResolved, setShowResolved] = useState(false);
+  const [showResolvedNotifs, setShowResolvedNotifs] = useState(false);
+
+  // 当前显示的违规列表
+  const displayViolations = showResolved ? violations : activeViolations;
+  // 当前显示的通知列表
+  const displayNotifications = showResolvedNotifs
+    ? notifications.slice(-50).reverse()
+    : recentNotifications;
+
+  // 按任务 ID 分组违规记录（区分活跃/已解决）
   const violationsByTask = (() => {
     const map = new Map<string, AuditViolation[]>();
-    // 取最近 200 条，倒序
-    const recent = violations.slice(-200).reverse();
+    // 使用当前显示的违规列表
+    const source = displayViolations;
+    const recent = source.slice(-200).reverse();
     for (const v of recent) {
       const key = v.task_id;
       if (!map.has(key)) map.set(key, []);
@@ -86,8 +103,33 @@ export default function AuditPanel() {
     return map;
   })();
 
-  // 通知记录倒序
-  const recentNotifications = notifications.slice(-50).reverse();
+  // 通知记录倒序（过滤已完成/已取消任务的通报，与违规记录保持同步）
+  const recentNotifications = (() => {
+    const all = notifications.slice(-50).reverse();
+    // 通报类型中涉及越权/跳步的多任务通报，只要有任一任务活跃就保留
+    return all.filter(n => {
+      // 单任务通知：检查该任务是否在活跃监察列表中
+      if (n.task_id) return watchedTaskIds.has(n.task_id);
+      // 多任务通报（越权通报/跳步通报）：只要有任一任务活跃就保留
+      if (n.task_ids && n.task_ids.length > 0) {
+        return n.task_ids.some(tid => watchedTaskIds.has(tid));
+      }
+      // 无关联任务的通报，保留显示
+      return true;
+    });
+  })();
+
+  // 已解决的通报记录（任务已完成/不在监察中的）
+  const resolvedNotifications = (() => {
+    const all = notifications.slice(-50).reverse();
+    return all.filter(n => {
+      if (n.task_id) return !watchedTaskIds.has(n.task_id);
+      if (n.task_ids && n.task_ids.length > 0) {
+        return !n.task_ids.some(tid => watchedTaskIds.has(tid));
+      }
+      return false;
+    });
+  })();
 
   return (
     <div>
@@ -152,14 +194,32 @@ export default function AuditPanel() {
       </Section>
 
       {/* ── 通报记录 ── */}
-      <Section title={`📢 通报记录 (${recentNotifications.length})`}>
-        {recentNotifications.length === 0 ? (
+      <Section title={`📢 通报记录 (${recentNotifications.length}${resolvedNotifications.length > 0 ? `，${resolvedNotifications.length}条已解决` : ''})`}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 12 }}>
+          <button
+            className={`btn ${showResolvedNotifs ? 'btn-g' : ''}`}
+            onClick={() => setShowResolvedNotifs(!showResolvedNotifs)}
+            style={{
+              fontSize: 11, padding: '4px 12px', borderRadius: 4,
+              border: showResolvedNotifs ? '1px solid var(--line)' : '1px solid transparent',
+              opacity: showResolvedNotifs ? 1 : 0.6, cursor: 'pointer',
+            }}
+          >
+            {showResolvedNotifs ? '✅ 显示全部通报（含已解决）' : '🔍 仅显示活跃通报'}
+          </button>
+          {resolvedNotifications.length > 0 && !showResolvedNotifs && (
+            <span style={{ fontSize: 11, color: 'var(--muted)' }}>
+              💡 {resolvedNotifications.length} 条已解决通报已隐藏（对应任务已完成/归档）
+            </span>
+          )}
+        </div>
+        {displayNotifications.length === 0 ? (
           <div className="mb-empty" style={{ padding: 20 }}>
             {isRunning ? '✅ 暂无通报，所有流程正常' : '暂无监察数据'}
           </div>
         ) : (
           <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
-            {recentNotifications.map((n, i) => (
+            {displayNotifications.map((n, i) => (
               <NotificationCard key={`${n.sent_at}-${i}`} notification={n} />
             ))}
           </div>
@@ -167,16 +227,49 @@ export default function AuditPanel() {
       </Section>
 
       {/* ── 违规记录（按任务分组）── */}
-      <Section title={`🚨 违规记录 (${violations.length}条，${violationsByTask.size}个任务)`}>
+      <Section title={`🚨 违规记录 (${activeViolations.length}条活跃${resolvedViolations.length > 0 ? `，${resolvedViolations.length}条已解决` : ''}，${violationsByTask.size}个任务)`}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 12 }}>
+          <button
+            className={`btn ${showResolved ? 'btn-g' : ''}`}
+            onClick={() => setShowResolved(!showResolved)}
+            style={{
+              fontSize: 11, padding: '4px 12px', borderRadius: 4,
+              border: showResolved ? '1px solid var(--line)' : '1px solid transparent',
+              opacity: showResolved ? 1 : 0.6, cursor: 'pointer',
+            }}
+          >
+            {showResolved ? '✅ 显示全部（含已解决）' : '🔍 仅显示活跃违规'}
+          </button>
+          {resolvedViolations.length > 0 && !showResolved && (
+            <span style={{ fontSize: 11, color: 'var(--muted)' }}>
+              💡 {resolvedViolations.length} 条已解决违规已隐藏（任务已完成/归档，监察已自动清理）
+            </span>
+          )}
+        </div>
         {violations.length === 0 ? (
           <div className="mb-empty" style={{ padding: 20 }}>
             {isRunning ? '✅ 所有任务流程正常，暂无违规' : '暂无监察数据'}
           </div>
+        ) : violationsByTask.size === 0 ? (
+          <div className="mb-empty" style={{ padding: 20 }}>
+            {showResolved
+              ? '暂无违规记录'
+              : '✅ 当前所有活跃任务流程正常，无违规'
+            }
+          </div>
         ) : (
           <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
-            {Array.from(violationsByTask.entries()).map(([taskId, taskViolations]) => (
-              <TaskViolationGroup key={taskId} taskId={taskId} violations={taskViolations} />
-            ))}
+            {Array.from(violationsByTask.entries()).map(([taskId, taskViolations]) => {
+              const isResolved = !watchedTaskIds.has(taskId);
+              return (
+                <TaskViolationGroup
+                  key={taskId}
+                  taskId={taskId}
+                  violations={taskViolations}
+                  isResolved={isResolved}
+                />
+              );
+            })}
           </div>
         )}
       </Section>
@@ -189,9 +282,10 @@ export default function AuditPanel() {
       }}>
         <div style={{ fontWeight: 700, marginBottom: 8, color: 'var(--text)' }}>📋 监察说明</div>
         <div><b>监察范围：</b>仅监察 JJC- 开头的旨意任务，不监察对话</div>
-        <div><b>标准流程：</b>皇上 → 太子 → 中书省 → 门下省 → 中书省 → 尚书省 → 六部 → 尚书省 → 中书省 → 太子 → 皇上</div>
-        <div><b>越权调用：</b>from→to 不在合法流转对表内（如太子→六部），监察会通过会话通知太子</div>
-        <div><b>流程跳步：</b>缺少必要环节（如跳过门下省审议），仅记录不通知</div>
+        <div><b>完整流程：</b>皇上 → 太子 → 中书省 → 门下省 → 中书省 → 尚书省 → 六部（具体部门）→ 尚书省 → 中书省 → 太子 → 皇上</div>
+        <div><b>越权调用：</b>from→to 不在合法流转对表内（如太子→六部、尚书省使用「六部」泛称），监察会通过会话通知太子</div>
+        <div><b>流程跳步：</b>缺少必要环节（如跳过门下省审议、缺少太子→皇上回奏），仅记录不通知</div>
+        <div><b>未完成回奏：</b>旨意任务必须经过太子汇报皇上才能标记完成，未完成回奏的 Done 操作会被拒绝</div>
         <div><b>断链超时：</b>某部门 1 分钟内未回应，监察自动唤醒 + 通知上级</div>
         <div><b>自动归档：</b>任务完成超过 5 分钟自动归档</div>
         <div><b>运行方式：</b>pipeline_watchdog.py 每 60 秒由 run_loop.sh 调用一次</div>
@@ -360,15 +454,16 @@ function NotificationCard({ notification }: { notification: AuditNotification })
 }
 
 
-function TaskViolationGroup({ taskId, violations }: { taskId: string; violations: AuditViolation[] }) {
+function TaskViolationGroup({ taskId, violations, isResolved }: { taskId: string; violations: AuditViolation[]; isResolved?: boolean }) {
   const [collapsed, setCollapsed] = useState(false);
   // 从第一条违规获取任务标题
   const title = violations[0]?.title || taskId;
 
   return (
     <div style={{
-      borderRadius: 10, background: 'var(--panel2)', border: '1px solid var(--line)',
-      overflow: 'hidden',
+      borderRadius: 10, background: isResolved ? 'var(--panel1)' : 'var(--panel2)',
+      border: `1px solid ${isResolved ? 'var(--line)' : 'var(--line)'}`,
+      overflow: 'hidden', opacity: isResolved ? 0.55 : 1,
     }}>
       {/* 任务标题行（可点击折叠） */}
       <div
@@ -388,6 +483,14 @@ function TaskViolationGroup({ taskId, violations }: { taskId: string; violations
         <span style={{ fontSize: 13, fontWeight: 600, flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
           {title}
         </span>
+        {isResolved && (
+          <span style={{
+            fontSize: 10, padding: '2px 6px', borderRadius: 4,
+            background: '#2ecc8a18', color: '#2ecc8a',
+          }}>
+            ✓ 已解决
+          </span>
+        )}
         <span style={{
           fontSize: 11, padding: '2px 8px', borderRadius: 4,
           background: violations.length > 0 ? '#ff527018' : '#2ecc8a18',
