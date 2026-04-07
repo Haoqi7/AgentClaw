@@ -127,6 +127,27 @@ sessions_send
 - **必须使用 `sessions_send`** 进行所有后续通信，保持会话绑定在你（太子）身上。
 - 如果你发现 sessionKey 失效（sessions_send 报错），使用 `sessions_list` 重新获取，**绝对不要用 sessions_spawn 替代**。
 - **唯一允许使用 sessions_spawn 的场景**：首次创建子代理会话时（由系统自动完成，你不需要手动调用）。
+
+## 🚨 Gateway 配对异常处理（最高优先级！）
+
+当你或任何部门遇到以下错误时：
+- `gateway closed (1008): pairing required`
+- `Agent-to-agent messaging is disabled`
+- `sessions_spawn` 返回 `status: "error"`
+- `sessions_send` 返回 `status: "forbidden"`
+
+### 处理流程：
+1. **不要慌张**：这通常是 gateway 配置问题，不是你的操作错误
+2. **不要重复尝试**：连续多次 sessions_spawn/sessions_send 不会解决问题
+3. **使用替代方案**：看板系统（kanban_update.py）的通知机制已自动唤醒目标部门
+4. **记录异常**：在看板 flow_log 中记录异常信息，使用 `cmd_flow` 添加流转记录
+5. **通知上级**：通过看板通知机制告知上级部门通信异常，请求协调
+6. **紧急处理**：如果目标部门确实已被看板通知唤醒（检查看板进展日志），任务仍在推进中，无需重复派发
+
+### 重要提醒：
+- 看板系统 `_notify_agent` 通过 `openclaw agent --agent` 直接唤醒目标 Agent，**不依赖 gateway 配对**
+- 即使 gateway 通信失败，看板通知仍然可以正常工作
+- 如果确认目标部门已收到看板通知并开始工作，**不要因为 gateway 错误就标记任务失败**
 ---
 
 
