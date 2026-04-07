@@ -2638,7 +2638,8 @@ class Handler(BaseHTTPRequestHandler):
         elif p == '/api/morning-brief':
             self.send_json(read_json(DATA / 'morning_brief.json', {}))
         elif p == '/api/pipeline-audit':
-            audit = read_json(DATA / 'pipeline_audit.json', {
+            # 使用文件锁读取（防止与 watchdog 并发写入冲突）
+            audit = atomic_json_read(DATA / 'pipeline_audit.json', {
                 'last_check': '', 'violations': [], 'watched_tasks': [],
                 'watched_count': 0, 'check_count': 0, 'total_violations': 0,
             })
@@ -2648,12 +2649,22 @@ class Handler(BaseHTTPRequestHandler):
                 excluded = set(exclude_data.get('excluded_tasks', []))
             except Exception:
                 excluded = set()
-            if excluded:
-                audit['violations'] = [v for v in audit.get('violations', []) if v.get('task_id') not in excluded]
+            # 收集已归档任务 ID（用于过滤已归档任务的违规）
+            archived_task_ids = set()
+            try:
+                all_tasks = load_tasks()
+                for t in all_tasks:
+                    if t.get('archived') and t.get('state') in ('Done', 'Cancelled'):
+                        archived_task_ids.add(t.get('id', ''))
+            except Exception:
+                pass
+            if excluded or archived_task_ids:
+                filter_ids = excluded | archived_task_ids
+                audit['violations'] = [v for v in audit.get('violations', []) if v.get('task_id') not in filter_ids]
                 audit['notifications'] = [
                     n for n in audit.get('notifications', [])
-                    if n.get('task_id', '') not in excluded
-                    and not any(tid in excluded for tid in (n.get('task_ids') or []))
+                    if n.get('task_id', '') not in filter_ids
+                    and not any(tid in filter_ids for tid in (n.get('task_ids') or []))
                 ]
                 # 同时过滤 watched_tasks，确保停止监察后立即从列表中移除
                 audit['watched_tasks'] = [
@@ -2967,18 +2978,71 @@ class Handler(BaseHTTPRequestHandler):
             try:
                 audit_file = DATA / 'pipeline_audit.json'
                 if audit_file.exists():
-                    audit_data = json.loads(audit_file.read_text())
+                    audit_data = atomic_json_read(audit_file, {})
                     if action == 'exclude':
                         audit_data['watched_tasks'] = [
                             w for w in audit_data.get('watched_tasks', [])
                             if w.get('task_id', '') != task_id
                         ]
                         audit_data['watched_count'] = len(audit_data.get('watched_tasks', []))
-                    audit_file.write_text(json.dumps(audit_data, ensure_ascii=False, indent=2))
+                    atomic_json_write(audit_file, audit_data)
             except Exception:
                 pass  # 清理失败不影响主流程
 
             self.send_json({'ok': True, 'message': msg, 'excluded_count': len(excluded)})
+            return
+
+        if p == '/api/audit-clear-resolved':
+            # 清除已归档/已完成任务的违规和通知记录
+            try:
+                audit_file = DATA / 'pipeline_audit.json'
+                if not audit_file.exists():
+                    self.send_json({'ok': True, 'message': '无审计数据需要清理', 'cleared': 0})
+                    return
+                audit_data = atomic_json_read(audit_file, {})
+                # 收集已归档任务 ID
+                archived_ids = set()
+                all_tasks = load_tasks()
+                for t in all_tasks:
+                    if t.get('archived') and t.get('state') in ('Done', 'Cancelled'):
+                        archived_ids.add(t.get('id', ''))
+                # 同时收集 Done/Cancelled 但未监察的任务（已不在 watched_tasks 中）
+                watched_ids = set(w.get('task_id', '') for w in audit_data.get('watched_tasks', []))
+                all_tasks_set = set(t.get('id', '') for t in all_tasks)
+                # 非活跃任务 = 不在 watched_tasks 中 且 已完成/取消
+                non_active_ids = set()
+                for t in all_tasks:
+                    tid = t.get('id', '')
+                    if tid not in watched_ids and t.get('state') in ('Done', 'Cancelled'):
+                        non_active_ids.add(tid)
+                clear_ids = archived_ids | non_active_ids
+                if not clear_ids:
+                    self.send_json({'ok': True, 'message': '无已归档任务需要清理', 'cleared': 0})
+                    return
+                # 清理违规记录
+                old_violations = audit_data.get('violations', [])
+                new_violations = [v for v in old_violations if v.get('task_id', '') not in clear_ids]
+                cleared_violations = len(old_violations) - len(new_violations)
+                audit_data['violations'] = new_violations
+                # 清理通知记录
+                old_notifs = audit_data.get('notifications', [])
+                new_notifs = [
+                    n for n in old_notifs
+                    if n.get('task_id', '') not in clear_ids
+                    and not any(tid in clear_ids for tid in (n.get('task_ids') or []))
+                ]
+                cleared_notifs = len(old_notifs) - len(new_notifs)
+                audit_data['notifications'] = new_notifs
+                atomic_json_write(audit_file, audit_data)
+                self.send_json({
+                    'ok': True,
+                    'message': f'已清理 {cleared_violations} 条违规、{cleared_notifs} 条通知',
+                    'cleared_violations': cleared_violations,
+                    'cleared_notifications': cleared_notifs,
+                    'cleared_task_count': len(clear_ids),
+                })
+            except Exception as e:
+                self.send_json({'ok': False, 'error': str(e)[:200]}, 500)
             return
 
         if p == '/api/task-todos':
