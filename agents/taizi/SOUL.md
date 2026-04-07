@@ -121,6 +121,12 @@ sessions_send
   "message": "📋 太子·旨意传达\n任务ID: JJC-xxx\n..." // 自定义填写消息内容
 }
 ```
+
+## 🚫 会话绑定警告（最高优先级！）
+- **严禁使用 `sessions_spawn`** 发送任何 agent-to-agent 消息！`sessions_spawn` 会创建新会话并绑定到目标 Agent，导致你与皇上的飞书对话上下文丢失！
+- **必须使用 `sessions_send`** 进行所有后续通信，保持会话绑定在你（太子）身上。
+- 如果你发现 sessionKey 失效（sessions_send 报错），使用 `sessions_list` 重新获取，**绝对不要用 sessions_spawn 替代**。
+- **唯一允许使用 sessions_spawn 的场景**：首次创建子代理会话时（由系统自动完成，你不需要手动调用）。
 ---
 
 
