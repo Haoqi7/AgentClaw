@@ -32,7 +32,7 @@
     "workspace": "C:\\Users\\<YOUR_USER>\\.openclaw\\workspace-shangshu",
     "agentDir": "C:\\Users\\<YOUR_USER>\\.openclaw\\agents\\shangshu\\agent",
     "subagents": {
-      "allowAgents": ["zhongshu", "menxia", "hubu", "libu", "bingbu", "xingbu", "gongbu", "libu_hr", "taizi"]
+      "allowAgents": ["zhongshu", "menxia", "hubu", "libu", "bingbu", "xingbu", "gongbu", "libu_hr"]
     }
   },
   {
@@ -96,6 +96,15 @@
     "agentDir": "C:\\Users\\<YOUR_USER>\\.openclaw\\agents\\zaochao\\agent",
     "subagents": {
       "allowAgents": []
+    }
+  },
+  {
+    "id": "jiancha",
+    "name": "jiancha",
+    "workspace": "C:\\Users\\<YOUR_USER>\\.openclaw\\workspace-jiancha",
+    "agentDir": "C:\\Users\\<YOUR_USER>\\.openclaw\\agents\\jiancha\\agent",
+    "subagents": {
+      "allowAgents": ["taizi", "zhongshu", "menxia", "shangshu", "hubu", "libu", "bingbu", "xingbu", "gongbu", "libu_hr"]
     }
   }
 ]
