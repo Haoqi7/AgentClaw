@@ -47,7 +47,6 @@ OCLAW_HOME = pathlib.Path.home() / ".openclaw"
 BREAK_TIMEOUT_SEC = 60   # 1 分钟无回应判定为断链
 RECENT_DONE_MINUTES = 10  # 最近 N 分钟内完成的任务也需检查（防止速通逃逸）
 AUTO_ARCHIVE_MINUTES = 5  # Done 超过 N 分钟自动归档
-BREAK_NOTIFY_COOLDOWN_SEC = 600  # 同一断链通知冷却时间（10分钟内不重复通知）
 
 # ── 日志工具 ──────────────────────────────────────────────────────
 def log(msg):
@@ -712,36 +711,12 @@ def _main_inner():
 
     new_violations = []
     woken_agents = set()  # 同一轮只唤醒一次
-    notified_targets = set()  # 同一轮已通知的 (task_id, type, target) 组合
 
     # ── 去重：构建已有违规 key 集合，避免每轮重复写入相同违规 ──
-    # 对于断链超时，使用 (task_id, type, target_agent_id) 作为稳定去重 key
-    # （detail 包含变化的 elapsed 时间，不能用完整 detail 做去重）
     existing_violation_keys = set()
-    existing_stable_keys = set()  # 断链超时的稳定去重 key
     for v in audit.get("violations", []):
         v_key = (v.get("task_id", ""), v.get("type", ""), v.get("flow_index", -1), v.get("detail", ""))
         existing_violation_keys.add(v_key)
-        # 断链超时使用稳定 key（忽略变化的 detail）
-        if v.get("type") == "断链超时":
-            stable_key = (v.get("task_id", ""), "断链超时", v.get("target_agent_id", ""))
-            existing_stable_keys.add(stable_key)
-
-    # ── 构建通知冷却集合：同一 (task_id, type, target) 在冷却期内不重复通知 ──
-    existing_notify_keys = set()
-    for n in audit.get("notifications", []):
-        n_task_id = n.get("task_id", "")
-        n_type = n.get("type", "")
-        n_to = n.get("to", "")
-        n_sent = n.get("sent_at", "")
-        if n_task_id and n_type and n_to and n_sent:
-            try:
-                sent_dt = datetime.datetime.fromisoformat(n_sent.replace("Z", "+00:00"))
-                age = (now - sent_dt).total_seconds()
-                if age < BREAK_NOTIFY_COOLDOWN_SEC:
-                    existing_notify_keys.add((n_task_id, n_type, n_to))
-            except Exception:
-                pass
 
     for task in active:
         task_id = task.get("id", "?")
@@ -819,21 +794,14 @@ def _main_inner():
                 "title": title,
                 "type": "断链超时",
                 "detail": broken["detail"],
-                "target_agent_id": target_id,
                 "detected_at": now_iso,
             }
-            # 断链超时使用稳定去重 key（task_id + type + target_agent_id）
-            stable_key = (task_id, "断链超时", target_id)
-            if stable_key not in existing_stable_keys:
-                new_violations.append(violation)
-                existing_stable_keys.add(stable_key)
+            new_violations.append(violation)
 
-            # ── 介入处理：唤醒目标部门（带冷却，避免重复骚扰）──
-            notify_key_wake = (task_id, "断链唤醒", target_label)
-            if target_id and target_id not in woken_agents and notify_key_wake not in existing_notify_keys:
+            # ── 介入处理：唤醒目标部门 ──
+            if target_id and target_id not in woken_agents:
                 wake_ok, wake_detail = wake_agent(target_id, f"任务 {task_id} 流程断链，{from_label}已等你 {broken['elapsed_sec'] // 60} 分钟")
                 woken_agents.add(target_id)
-                notified_targets.add(notify_key_wake)
                 # 记录通知
                 audit["notifications"].append({
                     "type": "断链唤醒",
@@ -845,14 +813,12 @@ def _main_inner():
                     "detail": wake_detail,
                 })
 
-            # ── 介入处理：检查直接上级 + 通知（带冷却）──
+            # ── 介入处理：检查直接上级 + 通知 ──
             if parent_id:
                 parent_label = ID_TO_LABEL.get(parent_id, parent_id)
-                notify_key_parent_wake = (task_id, "断链唤醒", parent_label)
-                if not is_agent_awake(parent_id) and parent_id not in woken_agents and notify_key_parent_wake not in existing_notify_keys:
+                if not is_agent_awake(parent_id) and parent_id not in woken_agents:
                     wake_ok, wake_detail = wake_agent(parent_id, f"任务 {task_id} 流程断链，需要你重新派发给{target_label}")
                     woken_agents.add(parent_id)
-                    notified_targets.add(notify_key_parent_wake)
                     audit["notifications"].append({
                         "type": "断链唤醒",
                         "to": parent_label,
@@ -863,11 +829,8 @@ def _main_inner():
                         "detail": wake_detail,
                     })
 
-                # 通知上级重新派发（带冷却）
-                notify_key_parent_notify = (task_id, "断链通知", parent_label)
-                if notify_key_parent_notify not in existing_notify_keys and notify_key_parent_notify not in notified_targets:
-                    notified_targets.add(notify_key_parent_notify)
-                    notify_msg = (
+                # 通知上级重新派发（无论上级是否刚被唤醒，都发通知）
+                notify_msg = (
                     f"🛡️ 监察通知\n"
                     f"任务ID: {task_id}\n"
                     f"任务标题: {title}\n"
@@ -887,16 +850,16 @@ def _main_inner():
                     f"⚠️ 监察不会派发任务，请 {parent_label} 执行派发。\n"
                     f"⚠️ 严禁使用 sessions_yield，必须使用 sessions_spawn！"
                 )
-                    notify_ok, notify_detail = notify_agent(parent_id, notify_msg)
-                    audit["notifications"].append({
-                        "type": "断链通知",
-                        "to": parent_label,
-                        "task_id": task_id,
-                        "summary": f"{target_label}超时未接旨，通知{parent_label}重新派发",
-                        "sent_at": now_iso,
-                        "status": "sent" if notify_ok else "failed",
-                        "detail": notify_detail,
-                    })
+                notify_ok, notify_detail = notify_agent(parent_id, notify_msg)
+                audit["notifications"].append({
+                    "type": "断链通知",
+                    "to": parent_label,
+                    "task_id": task_id,
+                    "summary": f"{target_label}超时未接旨，通知{parent_label}重新派发",
+                    "sent_at": now_iso,
+                    "status": "sent" if notify_ok else "failed",
+                    "detail": notify_detail,
+                })
 
     # ── 严重违规通知太子（越权 + 直接执行越权 + 流程跳步）──
     serious = [v for v in new_violations if v["type"] in ("越权调用", "直接执行越权")]
@@ -939,37 +902,14 @@ def _main_inner():
     audit = load_audit()  # 重新读取，获取可能被其他进程更新的数据
     if new_violations:
         # 再次去重，防止并发时重复写入
-        # 对于断链超时，使用稳定 key 去重（忽略变化的 elapsed 时间）
         current_keys = set()
-        current_stable_keys = set()
         for v in audit.get("violations", []):
             current_keys.add((v.get("task_id", ""), v.get("type", ""), v.get("flow_index", -1), v.get("detail", "")))
-            if v.get("type") == "断链超时":
-                stable = (v.get("task_id", ""), "断链超时", v.get("target_agent_id", ""))
-                current_stable_keys.add(stable)
         for v in new_violations:
-            # 断链超时使用稳定 key
-            if v.get("type") == "断链超时":
-                stable = (v.get("task_id", ""), "断链超时", v.get("target_agent_id", ""))
-                if stable not in current_stable_keys:
-                    # 更新已有的断链超时违规（替换 detail 和 detected_at）
-                    updated = False
-                    for i, existing_v in enumerate(audit.get("violations", [])):
-                        if (existing_v.get("task_id", "") == v["task_id"]
-                                and existing_v.get("type") == "断链超时"
-                                and existing_v.get("target_agent_id", "") == v.get("target_agent_id", "")):
-                            audit["violations"][i]["detail"] = v["detail"]
-                            audit["violations"][i]["detected_at"] = v["detected_at"]
-                            updated = True
-                            break
-                    if not updated:
-                        audit.setdefault("violations", []).append(v)
-                    current_stable_keys.add(stable)
-            else:
-                v_key = (v.get("task_id", ""), v.get("type", ""), v.get("flow_index", -1), v.get("detail", ""))
-                if v_key not in current_keys:
-                    audit.setdefault("violations", []).append(v)
-                    current_keys.add(v_key)
+            v_key = (v.get("task_id", ""), v.get("type", ""), v.get("flow_index", -1), v.get("detail", ""))
+            if v_key not in current_keys:
+                audit.setdefault("violations", []).append(v)
+                current_keys.add(v_key)
 
     # ── 自动清理已归档任务的违规记录 ──
     archived_task_ids = set()
