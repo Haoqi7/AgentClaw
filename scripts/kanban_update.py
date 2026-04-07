@@ -422,7 +422,7 @@ def _notify_agent(agent_id, task_id, from_org, to_org, title='', remark='', _ret
     # ═══════════════════════════════════════════════════════════════════════
     # 🔒 会话去重检查：防止同一任务重复唤醒同一 Agent
     # ═══════════════════════════════════════════════════════════════════════
-    DEDUP_WINDOW_SEC = 120  # 2分钟内不重复唤醒同一任务的同一 Agent
+    DEDUP_WINDOW_SEC = 30  # 30s内不重复唤醒同一任务的同一 Agent
     try:
         tasks = load()
         t = find_task(tasks, task_id)
@@ -688,7 +688,7 @@ _NO_NOTIFY_STATES = {'Done', 'Cancelled'}
 # 🔒 会话去重：每个任务最大通知次数限制
 # 防止 LLM 反复 spawn subagent 导致会话爆炸
 # ═══════════════════════════════════════════════════════════════════════
-_MAX_NOTIFY_PER_TASK = 8  # 单个任务最多通知（唤醒）8 次
+_MAX_NOTIFY_PER_TASK = 16  # 单个任务最多通知（唤醒）16 次
 
 
 def cmd_state(task_id, new_state, now_text=None):
@@ -733,9 +733,20 @@ def cmd_state(task_id, new_state, now_text=None):
         if now_text:
             t['now'] = now_text
         t['updatedAt'] = now_iso()
+        
+        # ═══════════════════════════════════════════════════════════════
+        # 🔓 状态转换时清除目标 Agent 的通知去重记录
+        # 原因：封驳→修改→重提 是正常流程，中书省修改后重提门下省
+        #   的时间通常 <120s，如果不去除重记录会导致门下省收不到通知
+        # ═══════════════════════════════════════════════════════════════
+        target_agent = _resolve_agent_id(new_state)
+        if target_agent and new_state not in ('Done', 'Cancelled'):
+            t.setdefault('_lastNotify', {})
+            t['_lastNotify'].pop(target_agent, None)
+        
         # 🔒 记录当前活跃 Agent，用于后续去重
         if new_state in ('Doing', 'Next'):
-            t['activeAgent'] = _resolve_agent_id(new_state) or t.get('org', '')
+            t['activeAgent'] = target_agent or t.get('org', '')
         elif new_state == 'Done':
             t.pop('activeAgent', None)  # 完成时清除
             t.pop('_lastNotify', None)   # 清除去重记录
