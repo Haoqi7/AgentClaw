@@ -116,6 +116,8 @@ _AGENT_LABELS = {
     'zhongshu': '中书省', 'menxia': '门下省', 'shangshu': '尚书省',
     'libu': '礼部', 'hubu': '户部', 'bingbu': '兵部', 'xingbu': '刑部',
     'gongbu': '工部', 'libu_hr': '吏部', 'zaochao': '钦天监',
+    'huangshang': '皇上',
+    '太子调度': '太子调度',
 }
 
 # ═══════════════════════════════════════════════════════════════════════
@@ -622,7 +624,7 @@ def cmd_create(task_id, title, state, org, official, remark=None):
 _VALID_TRANSITIONS = {
     'Pending':   {'Taizi', 'Cancelled'},
     'Taizi':     {'Zhongshu', 'Cancelled'},
-    'Zhongshu':  {'Menxia', 'Cancelled'},
+    'Zhongshu':  {'Zhongshu', 'Menxia', 'Cancelled'},  # 含自转换（内部处理）
     'Menxia':    {'Assigned', 'Zhongshu', 'Cancelled'},   # 封驳可回中书
     'Assigned':  {'Doing', 'Next', 'Blocked', 'Cancelled', 'Zhongshu'},  # 尚书可退回中书
     'Next':      {'Assigned', 'Doing', 'Blocked', 'Cancelled', 'Zhongshu'},  # 也可退回中书
@@ -648,6 +650,10 @@ def cmd_state(task_id, new_state, now_text=None):
             log.error(f'任务 {task_id} 不存在')
             return tasks
         old_state[0] = t['state']
+        # 自转换快速路径：相同状态不拒绝，直接跳过（避免 Zhongshu→Zhongshu 等噪声）
+        if old_state[0] == new_state:
+            log.info(f'✅ {task_id} 状态不变: {new_state}（自转换跳过）')
+            return tasks
         allowed = _VALID_TRANSITIONS.get(old_state[0])
         if allowed is not None and new_state not in allowed:
             log.warning(f'⚠️ 非法状态转换 {task_id}: {old_state[0]} → {new_state}（允许: {allowed}）')
@@ -723,6 +729,18 @@ def cmd_flow(task_id, from_dept, to_dept, remark):
     agent_id = _infer_agent_id_from_runtime()
     agent_label = _AGENT_LABELS.get(agent_id, agent_id)
     
+    # ── 校验：拒绝「六部」泛称 ──
+    is_valid_from, err_from = _validate_flow_dept(from_dept)
+    if not is_valid_from:
+        log.warning(f'⚠️ {task_id} 流转校验失败 (from={from_dept}): {err_from}')
+        print(f'[看板] 流转被拒绝: {err_from}', flush=True)
+        return
+    is_valid_to, err_to = _validate_flow_dept(to_dept)
+    if not is_valid_to:
+        log.warning(f'⚠️ {task_id} 流转校验失败 (to={to_dept}): {err_to}')
+        print(f'[看板] 流转被拒绝: {err_to}', flush=True)
+        return
+    
     def modifier(tasks):
         t = find_task(tasks, task_id)
         if not t:
@@ -756,8 +774,49 @@ def cmd_flow(task_id, from_dept, to_dept, remark):
     )
 
 
+# ── 六部名称集合（用于 cmd_flow 校验：拒绝「六部」泛称）──
+_LIU_BU_NAMES = {'工部', '兵部', '户部', '礼部', '刑部', '吏部', '吏部_hr'}
+
+
+def _validate_flow_dept(dept_name):
+    """校验流转目标部门名称是否合法。
+    
+    规则：
+    1. 「六部」不是有效部门名称，必须使用具体部名
+    2. 三省（中书省/门下省/尚书省）和太子是合法流转目标
+    3. 皇上是合法流转目标（回奏场景）
+    
+    返回 (is_valid, error_msg)。
+    """
+    if not dept_name or not dept_name.strip():
+        return False, '部门名称不能为空'
+    dept = dept_name.strip()
+    # 拒绝「六部」泛称及其变体
+    if '六部' in dept:
+        return False, (
+            f'「六部」不是有效的部门名称，越权行为！'
+            f'必须使用具体部名：工部、兵部、户部、礼部、刑部、吏部之一。'
+        )
+    # 检查是否为合法的流转目标
+    valid_targets = {
+        '皇上', '太子', '太子殿下',
+        '中书省', '中书', '中书令',
+        '门下省', '门下', '门下侍中',
+        '尚书省', '尚书', '尚书令',
+    } | _LIU_BU_NAMES
+    if dept not in valid_targets:
+        return False, f'「{dept}」不是已知的部门名称，请检查拼写'
+    return True, ''
+
+
 def cmd_done(task_id, output_path='', summary=''):
-    """标记任务完成（原子操作，含状态校验）"""
+    """标记任务完成（原子操作，含状态校验 + 流程完整性校验）
+    
+    旨意任务（JJC-开头）必须走完整回传链：
+      六部→尚书省→中书省→太子→皇上
+    flow_log 中必须包含完整的回传链才能标记 Done。
+    非旨意任务不受此限制。
+    """
     def modifier(tasks):
         t = find_task(tasks, task_id)
         if not t:
@@ -771,6 +830,51 @@ def cmd_done(task_id, output_path='', summary=''):
         if 'Done' not in allowed and old_state not in ('Doing', 'Review'):
             log.warning(f'⚠️ 非法完成 {task_id}: {old_state} → Done（允许: {allowed}）')
             return tasks
+        # ── 旨意任务流程完整性校验：必须走完整回传链 ──
+        if task_id.upper().startswith('JJC-'):
+            flow_log = t.get('flow_log', [])
+            # 部门名称别名集合（处理 flow_log 中各种写法）
+            _SHANGSHU_NAMES = {'尚书省', '尚书', '尚书令'}
+            _ZHONGSHU_NAMES = {'中书省', '中书', '中书令'}
+            _TAIZI_NAMES = {'太子', '太子殿下'}
+            _HUANGSHANG_NAMES = {'皇上'}
+            # 收集所有流转对的部门名称
+            flow_pairs = set()
+            for entry in flow_log:
+                f_raw = (entry.get('from', '') or '').strip()
+                t_raw = (entry.get('to', '') or '').strip()
+                if f_raw and t_raw:
+                    flow_pairs.add((f_raw, t_raw))
+            
+            # 校验完整回传链：尚书省→中书省、中书省→太子、太子→皇上
+            has_return_to_zhongshu = any(
+                f in _SHANGSHU_NAMES and t in _ZHONGSHU_NAMES
+                for f, t in flow_pairs
+            )
+            has_return_to_taizi = any(
+                f in _ZHONGSHU_NAMES and t in _TAIZI_NAMES
+                for f, t in flow_pairs
+            )
+            has_report_to_huangshang = any(
+                f in _TAIZI_NAMES and t in _HUANGSHANG_NAMES
+                for f, t in flow_pairs
+            )
+            
+            missing_steps = []
+            if not has_return_to_zhongshu:
+                missing_steps.append('尚书省→中书省')
+            if not has_return_to_taizi:
+                missing_steps.append('中书省→太子')
+            if not has_report_to_huangshang:
+                missing_steps.append('太子→皇上')
+            
+            if missing_steps:
+                log.warning(
+                    f'⚠️ 旨意任务 {task_id} 未完成回奏皇上，不允许标记 Done。'
+                    f'缺失回传环节：{"、".join(missing_steps)}。'
+                    f'完整回传链路要求：尚书省→中书省→太子→皇上'
+                )
+                return tasks
         t['state'] = 'Done'
         t['output'] = output_path
         t['now'] = summary or '任务已完成'
