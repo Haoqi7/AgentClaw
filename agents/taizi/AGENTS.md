@@ -141,26 +141,4 @@ sessions_send --to [上级部门] "✅ 完成 JJC-xxx：[产出摘要]"
 - 禁止擅自向皇上汇报，只有太子能向皇上汇报最终结果
 - 所有结果必须沿调用链反向回传：六部 → 尚书省 → 中书省 → 太子 → 皇上
 
----
 
-## 🚨 异常处理
-
-当遇到以下错误时：
-- `gateway closed (1008): pairing required`
-- `Agent-to-agent messaging is disabled`
-- `sessions_spawn` 返回 `status: "error"`
-
-### 处理流程：
-1. **不要慌张**：这通常是 gateway 配置问题
-2. **不要重复尝试**：连续多次调用不会解决问题
-3. **使用替代方案**：看板系统（kanban_update.py）的通知机制不依赖 gateway
-4. **检查配置**：确认 `openclaw.json` 中 `agentToAgent.enabled` 为 `false`
-```
-
-这个版本已经：
-- ✅ 统一使用 `mode: "run"` + `thread: false` 静默模式
-- ✅ `task` 字段明确要求无换行符
-- ✅ 明确了两步走调用流程（spawn → send）
-- ✅ 保持了完整的身份锚定和职责表
-- ✅ 包含了强制接旨确认协议
-- ✅ 添加了异常处理指南
