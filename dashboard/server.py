@@ -999,12 +999,16 @@ _SUPERVISION_CONFIG = {
     'Zhongshu':  {'remind_sec': 600, 'timeout_sec': 900, 'label': '中书省', 'parent_agent': 'taizi'},
     'Menxia':    {'remind_sec': 600, 'timeout_sec': 900, 'label': '门下省', 'parent_agent': 'zhongshu'},
     'Assigned':  {'remind_sec': 600, 'timeout_sec': 900, 'label': '尚书省', 'parent_agent': 'zhongshu'},
-    # 六部/Next：5分钟催办，催办后仍无响应则检查原因
-    'Doing':     {'remind_sec': 300, 'timeout_sec': 0,   'label': '六部',   'parent_agent': 'shangshu'},
-    'Next':      {'remind_sec': 300, 'timeout_sec': 0,   'label': '六部',   'parent_agent': 'shangshu'},
+    # 六部/Next：5分钟催办，30分钟超时上报太子（原 timeout_sec=0 不会上报）
+    'Doing':     {'remind_sec': 300, 'timeout_sec': 1800, 'label': '六部',   'parent_agent': 'shangshu'},
+    'Next':      {'remind_sec': 300, 'timeout_sec': 1800, 'label': '六部',   'parent_agent': 'shangshu'},
     'Taizi':     {'remind_sec': 600, 'timeout_sec': 900, 'label': '太子',   'parent_agent': 'taizi'},
     'Pending':   {'remind_sec': 600, 'timeout_sec': 900, 'label': '中书省', 'parent_agent': 'taizi'},
+    'Review':    {'remind_sec': 300, 'timeout_sec': 600,  'label': '汇总审查', 'parent_agent': 'shangshu'},
 }
+
+# 长期停滞二次通知间隔（秒）：超过 timeout_sec 后，每 N 秒重复通知太子
+_PERIODIC_RENOTIFY_SEC = 1800  # 30 分钟
 
 # ═══════════════════════════════════════════════════════════════════════
 # 🎯 针对性催办消息模板（每个部门独立定制）
@@ -1470,6 +1474,77 @@ def handle_scheduler_scan(threshold_sec=600):
         )
         wake_agent(target, msg)
 
+    # ── 长期停滞严重警告：停滞超过 2 小时且未升级 ──
+    CRITICAL_STALL_SEC = 7200  # 2 小时
+    for task in tasks:
+        task_id = task.get('id', '')
+        state = task.get('state', '')
+        if not task_id or state in _TERMINAL_STATES or task.get('archived'):
+            continue
+        sched = _ensure_scheduler(task)
+        last_progress = _parse_iso(sched.get('lastProgressAt') or task.get('updatedAt'))
+        if not last_progress:
+            continue
+        stalled_sec = max(0, int((now_dt - last_progress).total_seconds()))
+        if stalled_sec < CRITICAL_STALL_SEC:
+            continue
+        # 检查是否已发送过严重停滞通知（防止重复通知）
+        last_critical = sched.get('lastCriticalNotifyAt')
+        if last_critical:
+            last_critical_dt = _parse_iso(last_critical)
+            if last_critical_dt and (now_dt - last_critical_dt).total_seconds() < _PERIODIC_RENOTIFY_SEC:
+                continue
+        sched['lastCriticalNotifyAt'] = now_iso()
+        sched['escalationLevel'] = 2  # 强制升级到最高
+        task_title = task.get('title', '(无标题)')
+        state_label = _SUPERVISION_CONFIG.get(state, {}).get('label', state)
+        _scheduler_add_flow(task, f'严重停滞{stalled_sec // 60}分钟，强制升级通知太子', to=state_label)
+        changed = True
+        critical_msg = (
+            f'🚨 严重停滞警告\n'
+            f'任务ID: {task_id}\n'
+            f'任务标题: {task_title}\n'
+            f'停滞部门: {state_label}\n'
+            f'已停滞: {stalled_sec // 60} 分钟（超过2小时阈值）\n\n'
+            f'太子请立即介入：\n'
+            f'1. 检查 {state_label} 当前状态和在线情况\n'
+            f'2. 考虑使用 scheduler-rollback 回滚任务\n'
+            f'3. 或使用 scheduler-escalate 手动升级处理\n'
+            f'4. 必要时直接唤醒停滞部门\n\n'
+            f'⚠️ 看板已有此任务，请勿重复创建。'
+        )
+        wake_agent('taizi', critical_msg)
+        actions.append({'taskId': task_id, 'action': 'critical_stall', 'stalledSec': stalled_sec})
+
+    # ── 周期性重报：对超时上报后仍无进展的任务，每 _PERIODIC_RENOTIFY_SEC 重新通知 ──
+    for task in tasks:
+        task_id = task.get('id', '')
+        state = task.get('state', '')
+        if not task_id or state in _TERMINAL_STATES or task.get('archived'):
+            continue
+        sched = task.get('_scheduler') or {}
+        reported = sched.get('timeoutReportedAt')
+        if not reported:
+            continue
+        reported_dt = _parse_iso(reported)
+        if not reported_dt:
+            continue
+        elapsed_since_report = (now_dt - reported_dt).total_seconds()
+        if elapsed_since_report < _PERIODIC_RENOTIFY_SEC:
+            continue
+        # 检查是否有新进展（如果有则不需要重报）
+        last_progress = _parse_iso(sched.get('lastProgressAt') or task.get('updatedAt'))
+        if last_progress and last_progress > reported_dt:
+            continue  # 有新进展，不需要重报
+        # 重置超时标记，允许下一轮重新触发超时上报
+        sched['timeoutReportedAt'] = None
+        sched['remindedAt'] = None
+        task['updatedAt'] = now_iso()
+        changed = True
+        task_title = task.get('title', '(无标题)')
+        state_label = _SUPERVISION_CONFIG.get(state, {}).get('label', state)
+        log.info(f'🔄 周期性重报: {task_id} ({state_label}) 停滞超过 {_PERIODIC_RENOTIFY_SEC // 60} 分钟，重置通知标记')
+
     # ── 新增：分级催办（针对性消息，直接发送到停滞部门） ──
     for task_id, state, remind_agent, state_label, stalled_sec, remind_sec in pending_reminds:
         task = next((t for t in tasks if t.get('id') == task_id), None)
@@ -1546,6 +1621,53 @@ def _startup_recover_queued_dispatches():
         log.info(f'✅ 启动恢复完成: 重新派发 {recovered} 个任务')
     else:
         log.info(f'✅ 启动恢复: 无需恢复')
+
+    # 启动时扫描长期停滞任务（>2小时），立即通知太子
+    try:
+        _startup_check_long_stalled()
+    except Exception as e:
+        log.warning(f'启动停滞扫描异常: {e}')
+
+
+def _startup_check_long_stalled():
+    """服务启动后扫描长期停滞任务（>2小时），通知太子介入。"""
+    CRITICAL_SEC = 7200  # 2 小时
+    now_dt = datetime.datetime.now(datetime.timezone.utc)
+    tasks = load_tasks()
+    notified = 0
+    for task in tasks:
+        task_id = task.get('id', '')
+        state = task.get('state', '')
+        if not task_id or state in _TERMINAL_STATES or task.get('archived'):
+            continue
+        sched = task.get('_scheduler') or {}
+        last_progress = _parse_iso(sched.get('lastProgressAt') or task.get('updatedAt'))
+        if not last_progress:
+            continue
+        stalled_sec = max(0, int((now_dt - last_progress).total_seconds()))
+        if stalled_sec < CRITICAL_SEC:
+            continue
+        # 避免重复通知
+        if sched.get('lastCriticalNotifyAt'):
+            continue
+        sched['lastCriticalNotifyAt'] = now_iso()
+        task['updatedAt'] = now_iso()
+        task_title = task.get('title', '(无标题)')
+        state_label = _SUPERVISION_CONFIG.get(state, {}).get('label', state)
+        msg = (
+            f'🚨 启动检测：严重停滞警告\n'
+            f'任务ID: {task_id}\n'
+            f'任务标题: {task_title}\n'
+            f'停滞部门: {state_label}\n'
+            f'已停滞: {stalled_sec // 60} 分钟\n\n'
+            f'此任务在服务重启前已长期停滞，请太子立即介入处理。\n'
+            f'⚠️ 看板已有此任务，请勿重复创建。'
+        )
+        wake_agent('taizi', msg)
+        notified += 1
+    if notified:
+        save_tasks(tasks)
+        log.info(f'🚨 启动停滞扫描: 发现 {notified} 个长期停滞任务，已通知太子')
 
 
 def handle_repair_flow_order():
@@ -2520,7 +2642,7 @@ class Handler(BaseHTTPRequestHandler):
                 'last_check': '', 'violations': [], 'watched_tasks': [],
                 'watched_count': 0, 'check_count': 0, 'total_violations': 0,
             })
-            # 过滤已取消监察任务的违规和通知记录
+            # 过滤已取消监察任务的违规、通知和正在监察列表
             try:
                 exclude_data = json.loads((DATA / 'audit_exclude.json').read_text())
                 excluded = set(exclude_data.get('excluded_tasks', []))
@@ -2533,6 +2655,13 @@ class Handler(BaseHTTPRequestHandler):
                     if n.get('task_id', '') not in excluded
                     and not any(tid in excluded for tid in (n.get('task_ids') or []))
                 ]
+                # 同时过滤 watched_tasks，确保停止监察后立即从列表中移除
+                audit['watched_tasks'] = [
+                    w for w in audit.get('watched_tasks', [])
+                    if w.get('task_id', '') not in excluded
+                ]
+                # 重新计算 watched_count
+                audit['watched_count'] = len(audit['watched_tasks'])
             self.send_json(audit)
         elif p == '/api/morning-config':
             migrate_notification_config()
@@ -2833,6 +2962,22 @@ class Handler(BaseHTTPRequestHandler):
                 msg = f'{task_id} 已停止监察'
             data['excluded_tasks'] = sorted(excluded)
             exclude_file.write_text(json.dumps(data, ensure_ascii=False, indent=2))
+
+            # 即时清理 pipeline_audit.json 中的 watched_tasks/violations/notifications
+            try:
+                audit_file = DATA / 'pipeline_audit.json'
+                if audit_file.exists():
+                    audit_data = json.loads(audit_file.read_text())
+                    if action == 'exclude':
+                        audit_data['watched_tasks'] = [
+                            w for w in audit_data.get('watched_tasks', [])
+                            if w.get('task_id', '') != task_id
+                        ]
+                        audit_data['watched_count'] = len(audit_data.get('watched_tasks', []))
+                    audit_file.write_text(json.dumps(audit_data, ensure_ascii=False, indent=2))
+            except Exception:
+                pass  # 清理失败不影响主流程
+
             self.send_json({'ok': True, 'message': msg, 'excluded_count': len(excluded)})
             return
 
