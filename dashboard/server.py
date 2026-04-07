@@ -84,6 +84,32 @@ def cors_headers(h):
     h.send_header('Access-Control-Allow-Headers', 'Content-Type')
 
 
+# Issue #6#5: API Token 认证（复用 Gateway auth.token 保护 POST 端点）
+_API_TOKEN = None
+
+def _load_api_token():
+    """从 openclaw.json 加载 Gateway auth.token 作为看板 API 认证凭证"""
+    global _API_TOKEN
+    if _API_TOKEN is not None:
+        return _API_TOKEN
+    try:
+        cfg = json.loads(OCLAW_HOME.joinpath('openclaw.json').read_text())
+        _API_TOKEN = cfg.get('gateway', {}).get('auth', {}).get('token', '')
+    except Exception:
+        _API_TOKEN = ''
+    return _API_TOKEN
+
+def _check_api_auth(handler):
+    """校验请求中的 Authorization token。无 token 配置时跳过认证。"""
+    token = _load_api_token()
+    if not token:
+        return True  # 未配置 token，跳过认证
+    auth_header = handler.headers.get('Authorization', '')
+    if auth_header == f'Bearer {token}':
+        return True
+    return False
+
+
 def _iter_task_data_dirs():
     """返回可用的任务数据目录候选（优先 workspace，其次本地 data）。"""
     dirs = [DATA]
@@ -109,11 +135,18 @@ def _task_source_score(task_file: pathlib.Path):
     return (1 if non_demo > 0 else 0, non_demo, len(tasks), mtime)
 
 
+_TASK_DIR_CACHE_TS = 0
+_TASK_DIR_CACHE_TTL = 300  # 5 分钟缓存过期（Issue #6#3）
+
 def get_task_data_dir():
     """自动选择当前任务数据目录，并缓存结果以保持一次服务期内稳定。"""
-    global _ACTIVE_TASK_DATA_DIR
+    global _ACTIVE_TASK_DATA_DIR, _TASK_DIR_CACHE_TS
+    import time as _time
+    # Issue #6#3: 缓存超过 TTL 时自动刷新
     if _ACTIVE_TASK_DATA_DIR and _ACTIVE_TASK_DATA_DIR.is_dir():
-        return _ACTIVE_TASK_DATA_DIR
+        if _time.time() - _TASK_DIR_CACHE_TS < _TASK_DIR_CACHE_TTL:
+            return _ACTIVE_TASK_DATA_DIR
+        log.info('任务数据目录缓存已过期，重新评估最佳数据源')
     best_dir = DATA
     best_score = (-1, -1, -1, -1)
     for d in _iter_task_data_dirs():
@@ -125,6 +158,7 @@ def get_task_data_dir():
             best_score = score
             best_dir = d
     _ACTIVE_TASK_DATA_DIR = best_dir
+    _TASK_DIR_CACHE_TS = _time.time()
     log.info(f'任务数据源: {_ACTIVE_TASK_DATA_DIR}')
     return _ACTIVE_TASK_DATA_DIR
 
@@ -180,10 +214,13 @@ def handle_task_action(task_id, action, reason):
 
     task.setdefault('flow_log', []).append({
         'at': now_iso(),
-        'from': '皇上',
+        'from': '太子',
         'to': task.get('org', ''),
         'remark': f'{"⏸️ 叫停" if action == "stop" else "🚫 取消" if action == "cancel" else "▶️ 恢复"}：{reason}'
     })
+    # Issue #3: 标记为太子手动操作，监察跳过此类任务
+    _ensure_scheduler(task)
+    task['_scheduler']['_taiziManual'] = True
 
     if action == 'resume':
         _scheduler_mark_progress(task, f'恢复到 {task.get("state", "Doing")}')
@@ -718,6 +755,8 @@ def handle_review_action(task_id, action, comment=''):
         'remark': remark
     })
     _scheduler_mark_progress(task, f'审议动作 {action} -> {task.get("state")}')
+    # Issue #3: 标记为太子手动操作（用户从看板点击审议），监察跳过此类任务
+    task['_scheduler']['_taiziManual'] = True
     task['updatedAt'] = now_iso()
     save_tasks(tasks)
 
@@ -815,8 +854,9 @@ def _check_agent_process(agent_id):
     """
     # 方式1: pgrep 检测进程名
     try:
+        # Issue #6#2: 使用精确匹配，防止 libu 匹配到 libu_hr
         result = subprocess.run(
-            ['pgrep', '-f', f'openclaw.*--agent.*{agent_id}'],
+            ['pgrep', '-f', f'openclaw.*--agent.*(\\s|^|/){agent_id}(\\s|$)'],
             capture_output=True, text=True, timeout=5
         )
         if result.returncode == 0:
@@ -992,6 +1032,10 @@ _ORG_AGENT_MAP = {
 }
 
 _TERMINAL_STATES = {'Done', 'Cancelled'}
+
+# Issue #6#6: 并发派发上限（防止短时间内大量派发压垮 Gateway）
+_MAX_CONCURRENT_DISPATCHES = 3
+_dispatch_semaphore = threading.Semaphore(_MAX_CONCURRENT_DISPATCHES)
 
 # 分级超时监督配置
 _SUPERVISION_CONFIG = {
@@ -1437,7 +1481,7 @@ def handle_scheduler_scan(threshold_sec=600):
             changed = True
             continue
 
-        if sched.get('autoRollback', True):
+        if sched.get('autoRollback', True) and not sched.get('_taiziManual'):
             snapshot = sched.get('snapshot') or {}
             snap_state = snapshot.get('state')
             if snap_state and snap_state != state:
@@ -1454,6 +1498,9 @@ def handle_scheduler_scan(threshold_sec=600):
                 pending_rollbacks.append((task_id, snap_state))
                 actions.append({'taskId': task_id, 'action': 'rollback', 'toState': snap_state})
                 changed = True
+        elif sched.get('_taiziManual'):
+            # 太子手动推进的任务不自动回退，但重置标记以允许下次监控
+            sched['_taiziManual'] = False
 
     if changed:
         save_tasks(tasks)
@@ -2364,8 +2411,14 @@ def dispatch_for_state(task_id, task, new_state, trigger='state-transition'):
     if agent_id is None and new_state in ('Doing', 'Next'):
         org = task.get('org', '')
         agent_id = _ORG_AGENT_MAP.get(org)
+        # Fix: if org is generic '六部' or '执行中', try targetDept
+        if not agent_id:
+            target_dept = task.get('targetDept', '')
+            if target_dept:
+                agent_id = _ORG_AGENT_MAP.get(target_dept)
     if not agent_id:
-        log.info(f'ℹ️ {task_id} 新状态 {new_state} 无对应 Agent，跳过自动派发')
+        # Issue #1 fix: 当无法确定具体六部 agent 时，记录详细日志帮助排查
+        log.warning(f'⚠️ {task_id} 新状态 {new_state} 无法确定目标 Agent（org={task.get("org","")}, targetDept={task.get("targetDept","")}），跳过自动派发。尚书省需在旨意中明确指定 targetDept。')
         return
 
     _update_task_scheduler(task_id, lambda t, s: (
@@ -2512,7 +2565,14 @@ def dispatch_for_state(task_id, task, new_state, trigger='state-transition'):
                 _scheduler_add_flow(t, f'派发异常：{agent_id}（{trigger}）', to=t.get('org', ''))
             ))
 
-    threading.Thread(target=_do_dispatch, daemon=True).start()
+    def _dispatch_with_semaphore():
+        _dispatch_semaphore.acquire()
+        try:
+            _do_dispatch()
+        finally:
+            _dispatch_semaphore.release()
+
+    threading.Thread(target=_dispatch_with_semaphore, daemon=True).start()
     log.info(f'🚀 {task_id} 推进后自动派发 → {agent_id}')
 
 
@@ -2526,9 +2586,21 @@ def handle_advance_state(task_id, comment=''):
     if cur not in _STATE_FLOW:
         return {'ok': False, 'error': f'任务 {task_id} 状态为 {cur}，无法推进'}
     _ensure_scheduler(task)
+    task['_scheduler']['_taiziManual'] = True
     _scheduler_snapshot(task, f'advance-before-{cur}')
     next_state, from_dept, to_dept, default_remark = _STATE_FLOW[cur]
     remark = comment or default_remark
+
+    # Fix: resolve generic '六部' to specific department via targetDept
+    if next_state in ('Doing', 'Next') and to_dept == '六部':
+        target_dept = task.get('targetDept', '')
+        if target_dept and target_dept in _ORG_AGENT_MAP:
+            task['org'] = target_dept
+            to_dept = target_dept
+        else:
+            task['org'] = '执行中'
+    else:
+        task['org'] = _STATE_LABELS.get(next_state, to_dept)
 
     task['state'] = next_state
     task['now'] = f'⬇️ 手动推进：{remark}'
@@ -2771,6 +2843,10 @@ class Handler(BaseHTTPRequestHandler):
             self.send_error(404)
 
     def do_POST(self):
+        # Issue #6#5: POST 端点 Token 认证
+        if not _check_api_auth(self):
+            self.send_json({'ok': False, 'error': 'Unauthorized'}, 401)
+            return
         p = urlparse(self.path).path.rstrip('/')
         length = int(self.headers.get('Content-Length', 0))
         if length > MAX_REQUEST_BODY:

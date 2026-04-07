@@ -520,4 +520,6 @@ export interface PipelineAuditData {
   check_count: number;
   total_violations: number;
   notifications: AuditNotification[];
+  archived_violations?: AuditViolation[];
+  archived_notifications?: AuditNotification[];
 }

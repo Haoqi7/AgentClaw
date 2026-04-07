@@ -51,8 +51,10 @@ rotate_log() {
 
 SCAN_INTERVAL="${2:-60}"  # 巡检间隔(秒), 默认 60（缩短确保停滞检测及时）
 WATCHDOG_INTERVAL=60        # 监察脚本间隔(秒), 默认 60 (1分钟)
+GATEWAY_CHECK_INTERVAL=120  # Issue #4: Gateway 健康检查间隔(秒), 默认 120 (2分钟)
 WATCHDOG_COUNTER=0
 SCAN_COUNTER=0
+GATEWAY_CHECK_COUNTER=0
 SCRIPT_TIMEOUT=30  # 单个脚本最大执行时间(秒)
 DASHBOARD_PORT="${EDICT_DASHBOARD_PORT:-7891}"  # 看板端口，可通过环境变量覆盖
 
@@ -107,6 +109,24 @@ while true; do
   if (( WATCHDOG_COUNTER >= WATCHDOG_INTERVAL )); then
     WATCHDOG_COUNTER=0
     safe_run "$SCRIPT_DIR/pipeline_watchdog.py"
+  fi
+
+  # Issue #4: Gateway 健康检查与自动恢复
+  GATEWAY_CHECK_COUNTER=$((GATEWAY_CHECK_COUNTER + INTERVAL))
+  if (( GATEWAY_CHECK_COUNTER >= GATEWAY_CHECK_INTERVAL )); then
+    GATEWAY_CHECK_COUNTER=0
+    # 检测 Gateway 是否存活
+    if ! (echo > /dev/tcp/127.0.0.1/18789) 2>/dev/null; then
+      echo "$(date '+%H:%M:%S') [loop] ⚠️ Gateway 无响应，尝试重启..." >> "$LOG"
+      # 尝试重启 Gateway（后台启动）
+      nohup openclaw gateway > /dev/null 2>&1 &
+      sleep 5
+      if (echo > /dev/tcp/127.0.0.1/18789) 2>/dev/null; then
+        echo "$(date '+%H:%M:%S') [loop] ✅ Gateway 重启成功" >> "$LOG"
+      else
+        echo "$(date '+%H:%M:%S') [loop] ❌ Gateway 重启失败，等待下次检查" >> "$LOG"
+      fi
+    fi
   fi
 
   sleep "$INTERVAL"

@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
-import { useStore, timeAgo } from '../store';
+import { useStore, timeAgo, isArchived } from '../store';
 import { api } from '../api';
-import type { AuditViolation, WatchedTask, AuditNotification } from '../api';
+import type { AuditViolation, WatchedTask, AuditNotification, Task } from '../api';
 
 /** 违规类型对应的样式 */
 const TYPE_META: Record<string, { icon: string; color: string; bg: string }> = {
@@ -36,6 +36,8 @@ const STATE_LABEL: Record<string, string> = {
 export default function AuditPanel() {
   const auditData = useStore((s) => s.auditData);
   const loadAudit = useStore((s) => s.loadAudit);
+  const liveStatus = useStore((s) => s.liveStatus);
+  const tasks = liveStatus?.tasks || [];
 
   useEffect(() => {
     loadAudit();
@@ -59,6 +61,8 @@ export default function AuditPanel() {
   const checkCount = auditData?.check_count || 0;
   const totalViolations = auditData?.total_violations || 0;
   const notifications: AuditNotification[] = auditData?.notifications || [];
+  const archivedViolations: AuditViolation[] = auditData?.archived_violations || [];
+  const archivedNotifications: AuditNotification[] = auditData?.archived_notifications || [];
 
   // 监察运行状态判断
   const isRunning = !!lastCheck;
@@ -163,6 +167,54 @@ export default function AuditPanel() {
         )}
       </Section>
 
+      {/* ── 已归档任务 ── */}
+      {(() => {
+        const archivedTasks = (tasks || []).filter((t: Task) => isArchived(t) && /^JJC-/i.test(t.id || ''));
+        return (
+          <Section title={`📦 已归档旨意 (${archivedTasks.length})`}>
+            {archivedTasks.length === 0 ? (
+              <div className="mb-empty" style={{ padding: 20 }}>
+                暂无归档任务（任务完成超过 5 分钟自动归档）
+              </div>
+            ) : (
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 6, maxHeight: 300, overflowY: 'auto' }}>
+                {archivedTasks.slice(0, 50).map((t: Task) => (
+                  <div key={t.id} style={{
+                    display: 'flex', alignItems: 'center', gap: 10, padding: '8px 12px',
+                    borderRadius: 6, background: 'var(--panel2)', border: '1px solid var(--line)',
+                    opacity: 0.75,
+                  }}>
+                    <span style={{
+                      fontSize: 11, padding: '2px 6px', borderRadius: 3,
+                      background: '#6a9eff18', color: '#6a9eff', fontWeight: 600, whiteSpace: 'nowrap',
+                    }}>
+                      {t.id}
+                    </span>
+                    <span style={{ flex: 1, fontSize: 12, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                      {t.title}
+                    </span>
+                    <span style={{
+                      fontSize: 10, padding: '2px 6px', borderRadius: 3,
+                      background: '#2ecc8a18', color: '#2ecc8a', whiteSpace: 'nowrap',
+                    }}>
+                      {STATE_LABEL[t.state as keyof typeof STATE_LABEL] || t.state}
+                    </span>
+                    <span style={{ fontSize: 10, color: 'var(--muted)', whiteSpace: 'nowrap' }}>
+                      {t.archivedAt ? timeAgo(t.archivedAt) : ''}
+                    </span>
+                  </div>
+                ))}
+                {archivedTasks.length > 50 && (
+                  <div style={{ fontSize: 11, color: 'var(--muted)', textAlign: 'center', padding: 8 }}>
+                    仅显示最近 50 条，共 {archivedTasks.length} 条归档
+                  </div>
+                )}
+              </div>
+            )}
+          </Section>
+        );
+      })()}
+
       {/* ── 通报记录 ── */}
       <Section title={`📢 通报记录 (${recentNotifications.length})`}>
         {recentNotifications.length === 0 ? (
@@ -222,6 +274,26 @@ export default function AuditPanel() {
                 />
               );
             })}
+          </div>
+        )}
+      </Section>
+
+      {/* ── 已归档违规记录（Issue #5）── */}
+      <Section title={`📦 已归档违规 (${archivedViolations.length}条)`}>
+        {archivedViolations.length === 0 ? (
+          <div className="mb-empty" style={{ padding: 20 }}>
+            暂无归档违规记录
+          </div>
+        ) : (
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 8, maxHeight: 400, overflowY: 'auto' }}>
+            {archivedViolations.slice(-100).reverse().map((v, i) => (
+              <ViolationCard key={`archived-${v.detected_at}-${v.flow_index ?? i}`} violation={v} />
+            ))}
+            {archivedViolations.length > 100 && (
+              <div style={{ fontSize: 11, color: 'var(--muted)', textAlign: 'center', padding: 8 }}>
+                仅显示最近 100 条，共 {archivedViolations.length} 条归档违规
+              </div>
+            )}
           </div>
         )}
       </Section>

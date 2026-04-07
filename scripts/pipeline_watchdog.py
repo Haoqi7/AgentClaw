@@ -727,6 +727,13 @@ def _main_inner():
         if not flow_log:
             continue
 
+        # ── Issue #3: 跳过太子手动操作的任务（不受监察回退）──
+        # 用户在看板手动点击推进/叫停/取消时，server.py 会标记 _taiziManual
+        # 这些操作视为太子行为，不检测越权/跳步/断链
+        sched = task.get("_scheduler") or {}
+        if sched.get("_taiziManual"):
+            continue
+
         # ── 检查 1：越权调用（逐条检查）──
         for i, entry in enumerate(flow_log):
             f = normalize_name(entry.get("from", ""))
@@ -911,7 +918,7 @@ def _main_inner():
                 audit.setdefault("violations", []).append(v)
                 current_keys.add(v_key)
 
-    # ── 自动清理已归档任务的违规记录 ──
+    # ── 归档已完成任务违规记录（转移到 archived_violations，而非删除）──
     archived_task_ids = set()
     for t in tasks:
         if t.get("archived") and t.get("state") in ("Done", "Cancelled"):
@@ -919,20 +926,35 @@ def _main_inner():
     if archived_task_ids:
         old_violations = audit.get("violations", [])
         if old_violations:
-            new_filtered = [v for v in old_violations if v.get("task_id", "") not in archived_task_ids]
-            removed_count = len(old_violations) - len(new_filtered)
-            if removed_count > 0:
-                audit["violations"] = new_filtered
-                log(f"自动清理 {removed_count} 条已归档任务的违规记录")
-        # 同时清理已归档任务的通知记录
+            active_violations = []
+            archived_new = []
+            for v in old_violations:
+                if v.get("task_id", "") in archived_task_ids:
+                    archived_new.append(v)
+                else:
+                    active_violations.append(v)
+            if archived_new:
+                audit["violations"] = active_violations
+                audit.setdefault("archived_violations", []).extend(archived_new)
+                audit["archived_violations"] = audit["archived_violations"][-200:]  # 归档违规也限制 200 条
+                log(f"归档 {len(archived_new)} 条已归档任务的违规记录（保留在 archived_violations）")
+        # 同时归档已归档任务的通知记录
         old_notifications = audit.get("notifications", [])
         if old_notifications:
-            new_notifs = [
+            active_notifs = [
                 n for n in old_notifications
                 if n.get("task_id", "") not in archived_task_ids
                 and not any(tid in archived_task_ids for tid in (n.get("task_ids") or []))
             ]
-            audit["notifications"] = new_notifs
+            archived_notifs = [
+                n for n in old_notifications
+                if n.get("task_id", "") in archived_task_ids
+                or any(tid in archived_task_ids for tid in (n.get("task_ids") or []))
+            ]
+            if archived_notifs:
+                audit.setdefault("archived_notifications", []).extend(archived_notifs)
+                audit["archived_notifications"] = audit["archived_notifications"][-100:]
+            audit["notifications"] = active_notifs
 
     # 只保留最近 200 条记录
     audit["violations"] = audit["violations"][-200:]
