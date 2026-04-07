@@ -8,11 +8,13 @@ const TYPE_META: Record<string, { icon: string; color: string; bg: string }> = {
   '越权调用': { icon: '🚫', color: '#ff5270', bg: '#ff527018' },
   '流程跳步': { icon: '⚡', color: '#e8a040', bg: '#e8a04018' },
   '断链超时': { icon: '🔗', color: '#6a9eff', bg: '#6a9eff18' },
+  '直接执行越权': { icon: '⛔', color: '#ff2d55', bg: '#ff2d5518' },
 };
 
 /** 通知类型对应的样式 */
 const NOTIFY_TYPE_META: Record<string, { icon: string; color: string }> = {
   '越权通报': { icon: '🚨', color: '#ff5270' },
+  '跳步通报': { icon: '⚡', color: '#e8a040' },
   '断链唤醒': { icon: '🔔', color: '#e8a040' },
   '断链通知': { icon: '📡', color: '#6a9eff' },
 };
@@ -228,18 +230,22 @@ function Section({ title, children }: { title: string; children: React.ReactNode
 
 function WatchedTaskCard({ task, onUpdate }: { task: WatchedTask; onUpdate: () => void }) {
   const [excluding, setExcluding] = useState(false);
+  const [excludeMsg, setExcludeMsg] = useState('');
   const stateLabel = STATE_LABEL[task.state] || task.state;
 
   const handleExclude = async () => {
     if (!confirm(`确认停止监察任务 ${task.task_id}？\n${task.title}`)) return;
     setExcluding(true);
+    setExcludeMsg('');
     try {
-      await api.auditExclude(task.task_id, 'exclude');
-      onUpdate();
-    } catch {
-      // silently fail
+      const res = await api.auditExclude(task.task_id, 'exclude');
+      setExcludeMsg(res.ok ? '✅ 已停止' : `❌ ${res.error || '失败'}`);
+      if (res.ok) onUpdate();
+    } catch (e: any) {
+      setExcludeMsg(`❌ ${e.message || '请求失败'}`);
     } finally {
       setExcluding(false);
+      setTimeout(() => setExcludeMsg(''), 3000);
     }
   };
 
@@ -274,18 +280,21 @@ function WatchedTaskCard({ task, onUpdate }: { task: WatchedTask; onUpdate: () =
       <div style={{ fontSize: 11, color: 'var(--muted)', whiteSpace: 'nowrap' }}>
         流转 {task.flow_count} 步
       </div>
-      <button
-        onClick={handleExclude}
-        disabled={excluding}
-        style={{
-          fontSize: 11, padding: '3px 10px', borderRadius: 4,
-          background: '#ff527018', color: '#ff5270', border: '1px solid #ff527033',
-          cursor: excluding ? 'wait' : 'pointer', whiteSpace: 'nowrap',
-          opacity: excluding ? 0.5 : 1,
-        }}
-      >
-        {excluding ? '...' : '✕ 停止监察'}
-      </button>
+      <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: 2 }}>
+        <button
+          onClick={handleExclude}
+          disabled={excluding}
+          style={{
+            fontSize: 11, padding: '3px 10px', borderRadius: 4,
+            background: '#ff527018', color: '#ff5270', border: '1px solid #ff527033',
+            cursor: excluding ? 'wait' : 'pointer', whiteSpace: 'nowrap',
+            opacity: excluding ? 0.5 : 1,
+          }}
+        >
+          {excluding ? '...' : '✕ 停止监察'}
+        </button>
+        {excludeMsg && <span style={{ fontSize: 10, color: excludeMsg.startsWith('✅') ? '#2ecc8a' : '#ff5270' }}>{excludeMsg}</span>}
+      </div>
     </div>
   );
 }
