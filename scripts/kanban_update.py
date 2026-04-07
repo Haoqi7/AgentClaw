@@ -282,7 +282,7 @@ def hook_notify_taizi(task_id, old_state, new_state, task):
     )
     try:
         subprocess.Popen(
-            ['openclaw', 'sessions', 'spawn', '--agent', 'taizi', '--task', msg],
+            ['openclaw', 'agent', '--agent', 'taizi', '-m', msg, '--timeout', '120'],
             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
         )
         log.info(f'🪝 钩子触发：已通知太子 | {task_id} {old_state}→{new_state}')
@@ -360,7 +360,7 @@ try:
             "⚠️ 看板已有此任务，请勿重复创建。"
         )
         subprocess.Popen(
-            ["openclaw", "sessions", "spawn", "--agent", {agent_id_escaped}, "--task", msg],
+            ["openclaw", "agent", "--agent", {agent_id_escaped}, "-m", msg, "--timeout", "120"],
             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
         )
         print(f"[stall-watchdog] {task_id_escaped} 已催办 {agent_label_escaped}", flush=True)
@@ -452,7 +452,7 @@ def _notify_agent(agent_id, task_id, from_org, to_org, title='', remark='', _ret
 
     try:
         proc = subprocess.Popen(
-            ['openclaw', 'sessions', 'spawn', '--agent', agent_id, '--task', message],
+            ['openclaw', 'agent', '--agent', agent_id, '-m', message, '--timeout', '120'],
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
         )
@@ -580,12 +580,20 @@ def cmd_create(task_id, title, state, org, official, remark=None):
             if existing.get('state') not in (None, '', 'Inbox', 'Pending'):
                 log.warning(f'任务 {task_id} 已存在 (state={existing["state"]})，将被覆盖')
         tasks = [t for t in tasks if t.get('id') != task_id]
+        # 构建初始 flow_log：皇上→太子（旨意到达太子）
+        init_flow = [{"at": now_iso(), "from": "皇上", "to": "太子", "remark": clean_remark}]
+        # 如果 state 不是 Pending/Taizi，说明太子已经转交，追加太子→目标部门
+        if state not in ('Pending', 'Taizi'):
+            init_flow.append({
+                "at": now_iso(), "from": "太子", "to": actual_org,
+                "remark": f"太子转交旨意至{actual_org}",
+            })
         tasks.insert(0, {
             "id": task_id, "title": title, "official": official,
             "org": actual_org, "state": state,
             "now": clean_remark[:60] if remark else f"已下旨，等待{actual_org}接旨",
             "eta": "-", "block": "无", "output": "", "ac": "",
-            "flow_log": [{"at": now_iso(), "from": "皇上", "to": actual_org, "remark": clean_remark}],
+            "flow_log": init_flow,
             "updatedAt": now_iso()
         })
         return tasks
