@@ -2,7 +2,7 @@
 """
 三省六部 · 监察脚本 (pipeline_watchdog.py)
 
-定期扫描 tasks_source.json，校验每个活跃任务的 flow_log 流程合法性。
+定期扫描 tasks_source.json，校验每个活跃任务的 flow_log 流程合法性。taizi
 
 检测三类问题：
   1. 越权调用 — from→to 不在合法流转对表内
@@ -32,6 +32,8 @@ import subprocess
 import sys
 import time
 import datetime
+import fcntl
+import os
 
 # ── 路径配置 ──────────────────────────────────────────────────────
 REPO_DIR = pathlib.Path(__file__).resolve().parent.parent
@@ -194,37 +196,58 @@ SAN_SHENG_DEPTS = {"中书省", "门下省", "尚书省"}
 
 
 # ═══════════════════════════════════════════════════════════════════
-#  数据读写
+#  数据读写（带文件锁，防止并发读写导致数据丢失）
 # ═══════════════════════════════════════════════════════════════════
 
-def load_tasks():
-    """安全读取 tasks_source.json"""
+def _locked_read_json(filepath, default):
+    """带共享锁读取 JSON 文件（允许多个读者并发，阻止写者）"""
+    if not pathlib.Path(filepath).exists():
+        return default
+    lock_path = pathlib.Path(str(filepath) + '.lock')
+    lock_f = open(lock_path, 'a')
     try:
-        text = TASKS_FILE.read_text(encoding="utf-8")
-        return json.loads(text)
+        fcntl.flock(lock_f.fileno(), fcntl.LOCK_SH)
+        with open(filepath, 'r', encoding='utf-8') as f:
+            return json.load(f)
+    except Exception:
+        return default
+    finally:
+        fcntl.flock(lock_f.fileno(), fcntl.LOCK_UN)
+        lock_f.close()
+
+
+def _locked_write_json(filepath, data):
+    """带排他锁写入 JSON 文件（阻止所有其他读写）+ 原子写入"""
+    lock_path = pathlib.Path(str(filepath) + '.lock')
+    lock_f = open(lock_path, 'a')
+    try:
+        fcntl.flock(lock_f.fileno(), fcntl.LOCK_EX)
+        tmp_path = pathlib.Path(str(filepath) + '.tmp')
+        tmp_path.write_text(
+            json.dumps(data, ensure_ascii=False, indent=2),
+            encoding='utf-8',
+        )
+        os.replace(str(tmp_path), str(filepath))
     except Exception as e:
-        log(f"读取任务文件失败: {e}")
-        return []
+        log(f"写入文件失败 {filepath}: {e}")
+    finally:
+        fcntl.flock(lock_f.fileno(), fcntl.LOCK_UN)
+        lock_f.close()
+
+
+def load_tasks():
+    """安全读取 tasks_source.json（带文件锁）"""
+    return _locked_read_json(TASKS_FILE, [])
 
 
 def load_audit():
-    """读取历史审计日志"""
-    try:
-        text = AUDIT_FILE.read_text(encoding="utf-8")
-        return json.loads(text)
-    except Exception:
-        return {"last_check": "", "violations": [], "notifications": []}
+    """读取历史审计日志（带文件锁）"""
+    return _locked_read_json(AUDIT_FILE, {"last_check": "", "violations": [], "notifications": []})
 
 
 def save_audit(audit):
-    """写入审计日志"""
-    try:
-        AUDIT_FILE.write_text(
-            json.dumps(audit, ensure_ascii=False, indent=2),
-            encoding="utf-8",
-        )
-    except Exception as e:
-        log(f"写入审计日志失败: {e}")
+    """写入审计日志（带文件锁 + 原子写入）"""
+    _locked_write_json(AUDIT_FILE, audit)
 
 
 def load_exclude_list():
@@ -238,14 +261,8 @@ def load_exclude_list():
 
 
 def save_tasks(tasks):
-    """写入任务文件"""
-    try:
-        TASKS_FILE.write_text(
-            json.dumps(tasks, ensure_ascii=False, indent=2),
-            encoding="utf-8",
-        )
-    except Exception as e:
-        log(f"写入任务文件失败: {e}")
+    """写入任务文件（带文件锁 + 原子写入）"""
+    _locked_write_json(TASKS_FILE, tasks)
 
 
 # ═══════════════════════════════════════════════════════════════════
@@ -547,7 +564,47 @@ def _is_edict_task(task):
     return task_id.upper().startswith("JJC-")
 
 
+# ── 单实例锁（防止多个 watchdog 进程同时运行导致审计数据混乱）──
+_WATCHDOG_LOCK_FILE = REPO_DIR / "data" / ".pipeline_watchdog.pid"
+
+
+def _acquire_watchdog_lock():
+    """尝试获取 watchdog 单实例锁。返回 (lock_file, success)。"""
+    try:
+        lock_f = open(_WATCHDOG_LOCK_FILE, 'w')
+        fcntl.flock(lock_f.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        lock_f.write(str(os.getpid()))
+        lock_f.flush()
+        return lock_f, True
+    except (IOError, OSError):
+        return None, False
+
+
+def _release_watchdog_lock(lock_f):
+    """释放 watchdog 单实例锁。"""
+    if lock_f:
+        try:
+            fcntl.flock(lock_f.fileno(), fcntl.LOCK_UN)
+            lock_f.close()
+        except Exception:
+            pass
+
+
 def main():
+    # ── 单实例锁：防止多个 watchdog 同时运行 ──
+    lock_f, locked = _acquire_watchdog_lock()
+    if not locked:
+        log("已有 watchdog 实例运行中，跳过本轮")
+        return
+
+    try:
+        _main_inner()
+    finally:
+        _release_watchdog_lock(lock_f)
+
+
+def _main_inner():
+    """watchdog 主逻辑（在单实例锁保护下运行）。"""
     # ── 第一时间写入心跳，表明监察在运行（即使后续崩溃也能证明）──
     _write_heartbeat()
 
@@ -810,9 +867,18 @@ def main():
             "detail": notify_detail,
         })
 
-    # ── 写入审计日志 ──
+    # ── 写入审计日志（重新读取最新数据防止覆盖并发写入）──
+    audit = load_audit()  # 重新读取，获取可能被其他进程更新的数据
     if new_violations:
-        audit["violations"].extend(new_violations)
+        # 再次去重，防止并发时重复写入
+        current_keys = set()
+        for v in audit.get("violations", []):
+            current_keys.add((v.get("task_id", ""), v.get("type", ""), v.get("flow_index", -1), v.get("detail", "")))
+        for v in new_violations:
+            v_key = (v.get("task_id", ""), v.get("type", ""), v.get("flow_index", -1), v.get("detail", ""))
+            if v_key not in current_keys:
+                audit.setdefault("violations", []).append(v)
+                current_keys.add(v_key)
         # 只保留最近 200 条记录
         audit["violations"] = audit["violations"][-200:]
     audit["last_check"] = now_iso
@@ -825,10 +891,10 @@ def main():
 
     save_audit(audit)
 
-    if new_violations:
-        log(f"本轮检查完成，检查 {len(active)} 个任务（{len(watched_tasks)} 活跃），发现 {len(new_violations)} 项问题")
-    else:
-        log(f"本轮检查完成，{len(watched_tasks)} 个活跃任务均正常")
+    active_count = len(active)
+    watched_count = len(watched_tasks)
+    violation_count = len(new_violations)
+    log(f"本轮检查完成，检查 {active_count} 个任务（{watched_count} 活跃），发现 {violation_count} 项问题")
 
 
 if __name__ == "__main__":
