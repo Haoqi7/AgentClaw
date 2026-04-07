@@ -80,14 +80,9 @@ export default function AuditPanel() {
   const activeViolations = violations.filter(v => watchedTaskIds.has(v.task_id));
   const resolvedViolations = violations.filter(v => !watchedTaskIds.has(v.task_id));
   const [showResolved, setShowResolved] = useState(false);
-  const [showResolvedNotifs, setShowResolvedNotifs] = useState(false);
 
   // 当前显示的违规列表
   const displayViolations = showResolved ? violations : activeViolations;
-  // 当前显示的通知列表
-  const displayNotifications = showResolvedNotifs
-    ? notifications.slice(-50).reverse()
-    : recentNotifications;
 
   // 按任务 ID 分组违规记录（区分活跃/已解决）
   const violationsByTask = (() => {
@@ -103,33 +98,8 @@ export default function AuditPanel() {
     return map;
   })();
 
-  // 通知记录倒序（过滤已完成/已取消任务的通报，与违规记录保持同步）
-  const recentNotifications = (() => {
-    const all = notifications.slice(-50).reverse();
-    // 通报类型中涉及越权/跳步的多任务通报，只要有任一任务活跃就保留
-    return all.filter(n => {
-      // 单任务通知：检查该任务是否在活跃监察列表中
-      if (n.task_id) return watchedTaskIds.has(n.task_id);
-      // 多任务通报（越权通报/跳步通报）：只要有任一任务活跃就保留
-      if (n.task_ids && n.task_ids.length > 0) {
-        return n.task_ids.some(tid => watchedTaskIds.has(tid));
-      }
-      // 无关联任务的通报，保留显示
-      return true;
-    });
-  })();
-
-  // 已解决的通报记录（任务已完成/不在监察中的）
-  const resolvedNotifications = (() => {
-    const all = notifications.slice(-50).reverse();
-    return all.filter(n => {
-      if (n.task_id) return !watchedTaskIds.has(n.task_id);
-      if (n.task_ids && n.task_ids.length > 0) {
-        return !n.task_ids.some(tid => watchedTaskIds.has(tid));
-      }
-      return false;
-    });
-  })();
+  // 通知记录倒序
+  const recentNotifications = notifications.slice(-50).reverse();
 
   return (
     <div>
@@ -194,32 +164,14 @@ export default function AuditPanel() {
       </Section>
 
       {/* ── 通报记录 ── */}
-      <Section title={`📢 通报记录 (${recentNotifications.length}${resolvedNotifications.length > 0 ? `，${resolvedNotifications.length}条已解决` : ''})`}>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 12 }}>
-          <button
-            className={`btn ${showResolvedNotifs ? 'btn-g' : ''}`}
-            onClick={() => setShowResolvedNotifs(!showResolvedNotifs)}
-            style={{
-              fontSize: 11, padding: '4px 12px', borderRadius: 4,
-              border: showResolvedNotifs ? '1px solid var(--line)' : '1px solid transparent',
-              opacity: showResolvedNotifs ? 1 : 0.6, cursor: 'pointer',
-            }}
-          >
-            {showResolvedNotifs ? '✅ 显示全部通报（含已解决）' : '🔍 仅显示活跃通报'}
-          </button>
-          {resolvedNotifications.length > 0 && !showResolvedNotifs && (
-            <span style={{ fontSize: 11, color: 'var(--muted)' }}>
-              💡 {resolvedNotifications.length} 条已解决通报已隐藏（对应任务已完成/归档）
-            </span>
-          )}
-        </div>
-        {displayNotifications.length === 0 ? (
+      <Section title={`📢 通报记录 (${recentNotifications.length})`}>
+        {recentNotifications.length === 0 ? (
           <div className="mb-empty" style={{ padding: 20 }}>
             {isRunning ? '✅ 暂无通报，所有流程正常' : '暂无监察数据'}
           </div>
         ) : (
           <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
-            {displayNotifications.map((n, i) => (
+            {recentNotifications.map((n, i) => (
               <NotificationCard key={`${n.sent_at}-${i}`} notification={n} />
             ))}
           </div>
