@@ -624,7 +624,7 @@ def cmd_create(task_id, title, state, org, official, remark=None):
 _VALID_TRANSITIONS = {
     'Pending':   {'Taizi', 'Cancelled'},
     'Taizi':     {'Zhongshu', 'Cancelled'},
-    'Zhongshu':  {'Zhongshu', 'Menxia', 'Cancelled'},  # 含自转换（内部处理）
+    'Zhongshu':  {'Menxia', 'Cancelled'},
     'Menxia':    {'Assigned', 'Zhongshu', 'Cancelled'},   # 封驳可回中书
     'Assigned':  {'Doing', 'Next', 'Blocked', 'Cancelled', 'Zhongshu'},  # 尚书可退回中书
     'Next':      {'Assigned', 'Doing', 'Blocked', 'Cancelled', 'Zhongshu'},  # 也可退回中书
@@ -833,30 +833,26 @@ def cmd_done(task_id, output_path='', summary=''):
         # ── 旨意任务流程完整性校验：必须走完整回传链 ──
         if task_id.upper().startswith('JJC-'):
             flow_log = t.get('flow_log', [])
-            # 部门名称别名集合（处理 flow_log 中各种写法）
-            _SHANGSHU_NAMES = {'尚书省', '尚书', '尚书令'}
-            _ZHONGSHU_NAMES = {'中书省', '中书', '中书令'}
-            _TAIZI_NAMES = {'太子', '太子殿下'}
-            _HUANGSHANG_NAMES = {'皇上'}
             # 收集所有流转对的部门名称
             flow_pairs = set()
             for entry in flow_log:
                 f_raw = (entry.get('from', '') or '').strip()
                 t_raw = (entry.get('to', '') or '').strip()
                 if f_raw and t_raw:
+                    # 标准化名称：使用 _ORG_AGENT_MAP / _STATE_AGENT_MAP 转换
                     flow_pairs.add((f_raw, t_raw))
             
             # 校验完整回传链：尚书省→中书省、中书省→太子、太子→皇上
             has_return_to_zhongshu = any(
-                f in _SHANGSHU_NAMES and t in _ZHONGSHU_NAMES
+                f in ('尚书省', '尚书') and t in ('中书省', '中书')
                 for f, t in flow_pairs
             )
             has_return_to_taizi = any(
-                f in _ZHONGSHU_NAMES and t in _TAIZI_NAMES
+                f in ('中书省', '中书') and t in ('太子', '太子殿下')
                 for f, t in flow_pairs
             )
             has_report_to_huangshang = any(
-                f in _TAIZI_NAMES and t in _HUANGSHANG_NAMES
+                f in ('太子', '太子殿下') and t in ('皇上',)
                 for f, t in flow_pairs
             )
             
