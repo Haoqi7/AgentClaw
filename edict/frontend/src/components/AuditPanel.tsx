@@ -9,6 +9,7 @@ const TYPE_META: Record<string, { icon: string; color: string; bg: string }> = {
   '流程跳步': { icon: '⚡', color: '#e8a040', bg: '#e8a04018' },
   '断链超时': { icon: '🔗', color: '#6a9eff', bg: '#6a9eff18' },
   '直接执行越权': { icon: '⛔', color: '#ff2d55', bg: '#ff2d5518' },
+  '极端停滞': { icon: '⏰', color: '#ff0040', bg: '#ff004018' },
 };
 
 /** 通知类型对应的样式 */
