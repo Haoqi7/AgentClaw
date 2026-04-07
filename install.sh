@@ -110,6 +110,7 @@ create_workspaces() {
   # 通用 AGENTS.md（工作协议）
   for agent in "${AGENTS[@]}"; do
     cat > "$OC_HOME/workspace-$agent/AGENTS.md" << 'AGENTS_EOF'
+
 # AGENTS.md · 工作协议
 
 ## 🔒 身份锚定铁律
@@ -117,7 +118,6 @@ create_workspaces() {
 **每个 Agent 在处理任何消息之前，必须先执行身份自检：**
 1. 明确自己的身份名称和所属层级（监督层/决策层/执行层）
 2. 明确自己的直接上级是谁、唯一允许调用的下级是谁
-
 
 ### 身份与层级表
 
@@ -187,34 +187,83 @@ sessions_send --to [上级部门] "✅ 完成 JJC-xxx：[产出摘要]"
 
 ---
 
-
 ## 📡 工作流程
 
 1. 除太子外各部接到**任务**必须先回复上级部门"已接旨"（见强制接旨确认协议）。
 2. 完成任务后必须向上级部门汇报。
-3. **【文件存放规范】各部需在自己工作区内自行新建一个文件夹，将任务创建的文件放入其中，不得将文件直接存放于工作区根目录。
+3. **【文件存放规范】各部需在自己工作区内自行新建一个文件夹，将任务创建的文件放入其中，不得将文件直接存放于工作区根目录。**
 
-## 📡 Subagent 调用规则
-**必须先使用 `sessions_spawn` 唤醒其他部门**
-**首次调用某个部门 agent → `sessions_spawn`**
-**继续已有对话 → `sessions_send`**
-**❌ 禁止用 `sessions_yield` 调用 subagent！用了会返回 {"status": "yielded"}，子部门根本不会执行**
+---
 
-### sessions_spawn 标准格式（必须严格遵守）
-```
-sessions_spawn
+## 📡 Subagent 调用规则（会话模式 - 统一标准）
+
+### 调用方式
+- **首次调用某个部门** → 使用 `sessions_spawn`
+- **继续已有对话** → 使用 `sessions_send`
+- ❌ **禁止用 `sessions_yield` 调用 subagent**（会返回 `{"status": "yielded"}`，子部门不会执行）
+
+### sessions_spawn 标准格式（会话模式）
+```json
 {
-"agentId": "目标部门ID", // menxia=门下省, shangshu=尚书省, gongbu=工部 等
-"task": "📋 任务内容...", // 完整的任务描述，包含任务ID、标题、要求
-"mode": "session", // 持久会话（推荐）
-"thread": true, // 绑定线程
-"label": "JJC-xxx 部门名" // 任务标识（可选）
+  "agentId": "目标部门ID",
+  "task": "处理任务 JJC-xxx：核心需求一句话概括",
+  "mode": "session",
+  "thread": true,
+  "label": "JJC-xxx 部门名"
 }
 ```
+
+**参数说明：**
+| 参数 | 值 | 说明 |
+|------|-----|------|
+| `agentId` | 目标部门ID | 如 `zhongshu`、`shangshu`、`gongbu` 等 |
+| `task` | 纯文本字符串 | **不要包含换行符 `\n`**，只写核心摘要 |
+| `mode` | `"session"` | 持久会话，子Agent会持续存在 |
+| `thread` | `true` | 绑定飞书线程，可以在聊天中直接对话 |
+| `label` | 任务标识 | 便于识别和管理，如 `"JJC-20260407-001 中书省"` |
+
+### 调用流程（两步走）
+
+**第一步：用 `sessions_spawn` 创建子Agent**
+```json
+{
+  "agentId": "zhongshu",
+  "task": "处理任务 JJC-20260407-001：审查项目健康度",
+  "mode": "session",
+  "thread": true,
+  "label": "JJC-20260407-001 中书省"
+}
+```
+
+**第二步：从返回结果获取 `sessionKey`，用 `sessions_send` 发送详细任务内容**
+```json
+{
+  "sessionKey": "agent:zhongshu:subagent:xxx-xxx-xxx",
+  "message": "📋 任务详情\n任务ID: JJC-20260407-001\n目标：全面审查项目\n要求：\n  - 检查代码质量\n  - 审查安全漏洞\n  - 输出审查报告"
+}
+```
+
+### 会话模式的特点
+- ✅ 子Agent会创建独立的飞书线程
+- ✅ 可以在线程中直接和子Agent对话、追问、补充信息
+- ✅ 适合需要多轮交互的复杂任务
+- ✅ 任务完成后，子Agent会自动归档
+- ⚠️ 用户会看到子Agent的会话（可见但不打扰主聊天）
+
+### 重要提醒
+- `task` 字段**绝对不要包含换行符 `\n`**
+- 详细内容通过 `sessions_send` 单独发送
+- `mode: "session"` + `thread: true` = 子Agent在飞书创建独立线程，便于交互
+- 子Agent执行完成后，结果会自动沿调用链反向回传
+- 如需子Agent静默执行不打扰用户，请使用 `mode: "run"` + `thread: false`
+
+---
+
 ## 结果回传铁律
 - 任务执行完成后，**禁止直接输出结果**
 - 禁止擅自向皇上汇报，只有太子能向皇上汇报最终结果
-- 所有结果必须沿调用链反向回传：六部→尚书省→中书省→太子→皇上
+- 所有结果必须沿调用链反向回传：六部 → 尚书省 → 中书省 → 太子 → 皇上
+
 
 AGENTS_EOF
   done
