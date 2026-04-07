@@ -49,7 +49,7 @@ rotate_log() {
   fi
 }
 
-SCAN_INTERVAL="${2:-120}"  # 巡检间隔(秒), 默认 120
+SCAN_INTERVAL="${2:-60}"  # 巡检间隔(秒), 默认 60（缩短确保停滞检测及时）
 WATCHDOG_INTERVAL=60        # 监察脚本间隔(秒), 默认 60 (1分钟)
 WATCHDOG_COUNTER=0
 SCAN_COUNTER=0
