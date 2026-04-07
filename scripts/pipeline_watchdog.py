@@ -112,10 +112,11 @@ ID_TO_DEPT = {
 }
 
 # 合法流转对（基于标准链 + 实际业务需要）
+# 规则：所有旨意必须走完整链路 皇上→太子→中书→门下→中书→尚书→六部
 LEGAL_FLOWS = {
     # ── 上行：皇上→太子→中书→门下→尚书→六部 ──
     ("皇上",   "太子"),
-    ("皇上",   "中书省"),
+    # ("皇上", "中书省") 已移除：旨意必须经过太子分拣
     ("太子",   "中书省"),
     ("中书省", "门下省"),
     ("门下省", "中书省"),   # 封驳退回 / 准奏后通知中书
@@ -139,7 +140,7 @@ LEGAL_FLOWS = {
     ("尚书省", "中书省"),   # 汇总返回
     ("中书省", "太子"),     # 回奏
     ("太子",   "皇上"),     # 汇报皇上
-    ("尚书省", "太子"),     # 尚书省直接汇报太子
+    # ("尚书省", "太子") 已移除：返回必须经中书省转交
 
     # ── 六部内部消息（自己给自己发内部处理消息）──
     ("工部",   "工部"),
@@ -149,6 +150,18 @@ LEGAL_FLOWS = {
     ("刑部",   "刑部"),
     ("吏部",   "吏部"),
     ("吏部_hr", "吏部_hr"),
+
+    # ── 太子调度系统（flow_log from='太子调度'）──
+    ("太子调度", "中书省"),
+    ("太子调度", "门下省"),
+    ("太子调度", "尚书省"),
+    ("太子调度", "工部"),
+    ("太子调度", "兵部"),
+    ("太子调度", "户部"),
+    ("太子调度", "礼部"),
+    ("太子调度", "刑部"),
+    ("太子调度", "吏部"),
+    ("太子调度", "吏部_hr"),
 }
 
 # 部门 → 直接上级（断链时需要通知上级）
@@ -171,7 +184,13 @@ REQUIRED_STEPS = [
     ("中书省", "门下省"),
     ("门下省", "中书省"),   # 门下省必须返回中书省
     ("中书省", "尚书省"),   # 中书省必须转交尚书省
+    ("尚书省", "中书省"),   # 尚书省汇总后必须返回中书省
 ]
+
+# 六部名称集合（用于直接执行越权检测）
+LIU_BU_DEPTS = {"工部", "兵部", "户部", "礼部", "刑部", "吏部", "吏部_hr"}
+# 三省名称集合
+SAN_SHENG_DEPTS = {"中书省", "门下省", "尚书省"}
 
 
 # ═══════════════════════════════════════════════════════════════════
@@ -324,7 +343,7 @@ def check_illegal_flow(task_id, flow_from, flow_to, index):
 
 def check_skip_steps(task_id, flow_log):
     """检查整个 flow_log 是否跳步（缺少必要环节）。
-    只检查流程已到达位置之前的步骤，不检查未来步骤，避免误报。
+    改进：增加后向检查 — 如果后续步骤已出现但中间步骤缺失，也报违规。
     返回违规列表。"""
     violations = []
     # 从 flow_log 中提取所有 (from, to) 对，转为部门名称
@@ -337,19 +356,82 @@ def check_skip_steps(task_id, flow_log):
             pt = ID_TO_DEPT.get(t, t)
             pairs.add((pf, pt))
 
-    # 找到流程当前已到达的位置：最后一个匹配 REQUIRED_STEPS 的步骤索引
+    # 前向检查：找到流程当前已到达的位置
     last_reached_index = -1
     for i, step in enumerate(REQUIRED_STEPS):
         if step in pairs:
             last_reached_index = i
 
-    # 只检查已到达位置及之前的步骤（不检查未来步骤）
+    # 只检查已到达位置及之前的步骤
     for i in range(last_reached_index + 1):
         req_from, req_to = REQUIRED_STEPS[i]
         if (req_from, req_to) not in pairs:
             violations.append(f"流程跳步：缺少必要环节 {req_from} → {req_to}")
 
+    # 后向检查：如果后续步骤已出现但中间步骤缺失
+    # 例如：尚书省→中书省 出现了（step 4），但 step 2（门下→中书）缺失
+    future_steps_seen = set()
+    for i in range(last_reached_index + 1, len(REQUIRED_STEPS)):
+        if REQUIRED_STEPS[i] in pairs:
+            future_steps_seen.add(i)
+
+    for future_i in future_steps_seen:
+        # 检查 future_i 之前的所有必需步骤是否存在
+        for i in range(future_i):
+            if REQUIRED_STEPS[i] not in pairs:
+                req_from, req_to = REQUIRED_STEPS[i]
+                skip_msg = f"流程跳步：{REQUIRED_STEPS[future_i][0]}→{REQUIRED_STEPS[future_i][1]} 已执行，但缺少前置环节 {req_from} → {req_to}"
+                if skip_msg not in violations:
+                    violations.append(skip_msg)
+
     return violations
+
+
+def check_direct_execution(task_id, flow_log, task_state=""):
+    """检查三省（中书/门下/尚书）是否直接执行了六部的工作。
+    
+    检测逻辑：
+    1. 任务已完成（Done）但 flow_log 中没有任何六部参与
+    2. 或者：三省的 flow_log remark 中包含执行产出类关键词但没有六部参与
+    
+    返回违规描述或 None。
+    """
+    # 只检查已到达尚书省及之后阶段的任务
+    has_shangshu = False
+    has_liubu = False
+    depts_involved = set()
+    
+    for entry in flow_log:
+        f = normalize_name(entry.get("from", ""))
+        t = normalize_name(entry.get("to", ""))
+        if f:
+            dept_f = ID_TO_DEPT.get(f, f)
+            dept_t = ID_TO_DEPT.get(t, t) if t else ""
+            depts_involved.add(dept_f)
+            if dept_t:
+                depts_involved.add(dept_t)
+        if t:
+            dept_t = ID_TO_DEPT.get(t, t)
+            if dept_t == "尚书省" or f == "shangshu":
+                has_shangshu = True
+            if dept_t in LIU_BU_DEPTS or f in LIU_BU_DEPTS:
+                has_liubu = True
+    
+    # 如果任务已完成且没有六部参与，但有尚书省参与
+    if task_state == "Done" and has_shangshu and not has_liubu:
+        return (
+            "直接执行越权：任务已完成，但整个流程中没有任何六部参与执行。"
+            "中书省、门下省、尚书省只能规划/审议/派发，具体执行必须由六部完成。"
+        )
+    
+    # 如果尚书省参与了但没有六部，且任务已推进到较后阶段
+    if has_shangshu and not has_liubu and task_state not in ("", "Pending", "Taizi", "Zhongshu"):
+        return (
+            "疑似直接执行越权：流程已到达尚书省，但尚未派发任何六部执行。"
+            "尚书省收到门下省准奏方案后，必须派发给六部执行，不可自行代劳。"
+        )
+    
+    return None
 
 
 def check_broken_chain(task_id, flow_log):
@@ -542,10 +624,17 @@ def main():
     new_violations = []
     woken_agents = set()  # 同一轮只唤醒一次
 
+    # ── 去重：构建已有违规 key 集合，避免每轮重复写入相同违规 ──
+    existing_violation_keys = set()
+    for v in audit.get("violations", []):
+        v_key = (v.get("task_id", ""), v.get("type", ""), v.get("flow_index", -1), v.get("detail", ""))
+        existing_violation_keys.add(v_key)
+
     for task in active:
         task_id = task.get("id", "?")
         title = task.get("title", "")
         flow_log = task.get("flow_log", [])
+        task_state = task.get("state", "")
 
         if not flow_log:
             continue
@@ -556,32 +645,51 @@ def main():
             t = normalize_name(entry.get("to", ""))
             if not f or not t:
                 continue
+            # 跳过太子调度系统产生的 flow_log（合法的系统行为）
+            dept_f = ID_TO_DEPT.get(f, f)
+            if dept_f == "太子调度":
+                continue
             illegal = check_illegal_flow(task_id, f, t, i)
             if illegal:
-                # 用部门名称显示（与 LEGAL_FLOWS 一致）
-                dept_f = ID_TO_DEPT.get(f, f)
-                dept_t = ID_TO_DEPT.get(t, t)
+                v_key = (task_id, "越权调用", i, f"{dept_f} → {ID_TO_DEPT.get(t, t)}：{illegal}")
+                if v_key not in existing_violation_keys:
+                    violation = {
+                        "task_id": task_id,
+                        "title": title,
+                        "type": "越权调用",
+                        "detail": f"{dept_f} → {ID_TO_DEPT.get(t, t)}：{illegal}",
+                        "flow_index": i,
+                        "detected_at": now_iso,
+                    }
+                    new_violations.append(violation)
+
+        # ── 检查 2：流程跳步（改进：含后向检查）──
+        skips = check_skip_steps(task_id, flow_log)
+        for skip_detail in skips:
+            v_key = (task_id, "流程跳步", -1, skip_detail)
+            if v_key not in existing_violation_keys:
                 violation = {
                     "task_id": task_id,
                     "title": title,
-                    "type": "越权调用",
-                    "detail": f"{dept_f} → {dept_t}：{illegal}",
-                    "flow_index": i,
+                    "type": "流程跳步",
+                    "detail": skip_detail,
                     "detected_at": now_iso,
                 }
                 new_violations.append(violation)
 
-        # ── 检查 2：流程跳步 ──
-        skips = check_skip_steps(task_id, flow_log)
-        for skip_detail in skips:
-            violation = {
-                "task_id": task_id,
-                "title": title,
-                "type": "流程跳步",
-                "detail": skip_detail,
-                "detected_at": now_iso,
-            }
-            new_violations.append(violation)
+        # ── 检查 2.5：直接执行越权（三省代劳六部工作）──
+        direct_exec = check_direct_execution(task_id, flow_log, task_state)
+        if direct_exec:
+            v_key = (task_id, "直接执行越权", -1, direct_exec)
+            if v_key not in existing_violation_keys:
+                violation = {
+                    "task_id": task_id,
+                    "title": title,
+                    "type": "直接执行越权",
+                    "detail": direct_exec,
+                    "detected_at": now_iso,
+                }
+                new_violations.append(violation)
 
         # ── 检查 3：断链超时 ──
         broken = check_broken_chain(task_id, flow_log)
@@ -665,25 +773,38 @@ def main():
                     "detail": notify_detail,
                 })
 
-    # ── 越权违规：同步通知太子（只在会话中发送越权通报，不发跳步）──
-    serious = [v for v in new_violations if v["type"] == "越权调用"]
-    if serious:
+    # ── 严重违规通知太子（越权 + 直接执行越权 + 流程跳步）──
+    serious = [v for v in new_violations if v["type"] in ("越权调用", "直接执行越权")]
+    skip_violations = [v for v in new_violations if v["type"] == "流程跳步"]
+    
+    if serious or skip_violations:
         lines = []
-        for v in serious:
-            lines.append(f"  - {v['task_id']}: {v['detail']}")
+        if serious:
+            for v in serious:
+                lines.append(f"  - {v['task_id']}: {v['detail']}")
+        if skip_violations:
+            for v in skip_violations:
+                lines.append(f"  - {v['task_id']}: {v['detail']}")
         summary = "\n".join(lines)
+        violation_types = []
+        if serious:
+            violation_types.append(f"{len(serious)} 项越权/执行违规")
+        if skip_violations:
+            violation_types.append(f"{len(skip_violations)} 项流程跳步")
+        type_summary = "，".join(violation_types)
+        
         notify_msg = (
-            f"🛡️ 监察通报 — 越权违规\n"
-            f"发现 {len(serious)} 项越权违规：\n\n"
+            f"🛡️ 监察通报 — 流程违规\n"
+            f"发现 {type_summary}：\n\n"
             f"{summary}\n\n"
             f"请太子核实并纠正。"
         )
         notify_ok, notify_detail = notify_agent("taizi", notify_msg)
         audit["notifications"].append({
-            "type": "越权通报",
+            "type": "越权通报" if serious else "跳步通报",
             "to": "太子",
-            "task_ids": [v["task_id"] for v in serious],
-            "summary": f"发现{len(serious)}项越权违规",
+            "task_ids": list(set(v["task_id"] for v in (serious + skip_violations))),
+            "summary": f"发现{type_summary}",
             "sent_at": now_iso,
             "status": "sent" if notify_ok else "failed",
             "detail": notify_detail,
