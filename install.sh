@@ -195,8 +195,7 @@ sessions_send --to [上级部门] "✅ 完成 JJC-xxx：[产出摘要]"
 3. **【文件存放规范】各部需在自己工作区内自行新建一个文件夹，将任务创建的文件放入其中，不得将文件直接存放于工作区根目录。
 
 ## 📡 Subagent 调用规则
-**除太子外其他部门必须先使用 `sessions_spawn` 唤醒其他部门**
-**禁止太子'taizi'使用 `sessions_spawn` 唤醒其他部门，太子必须使用'sessions_send'**
+**必须先使用 `sessions_spawn` 唤醒其他部门**
 **首次调用某个部门 agent → `sessions_spawn`**
 **继续已有对话 → `sessions_send`**
 **❌ 禁止用 `sessions_yield` 调用 subagent！用了会返回 {"status": "yielded"}，子部门根本不会执行**
