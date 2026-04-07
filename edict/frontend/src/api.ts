@@ -19,6 +19,10 @@ async function postJ<T>(url: string, data: unknown): Promise<T> {
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(data),
   });
+  if (!res.ok) {
+    const text = await res.text().catch(() => '');
+    throw new Error(`HTTP ${res.status}: ${text.slice(0, 200)}`);
+  }
   return res.json();
 }
 
@@ -483,7 +487,7 @@ export interface CourtSessionSummary {
 export interface AuditViolation {
   task_id: string;
   title: string;
-  type: '越权调用' | '流程跳步' | '断链超时';
+  type: '越权调用' | '流程跳步' | '断链超时' | '直接执行越权';
   detail: string;
   flow_index?: number;
   detected_at: string;
