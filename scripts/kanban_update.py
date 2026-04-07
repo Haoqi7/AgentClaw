@@ -624,11 +624,11 @@ _VALID_TRANSITIONS = {
     'Taizi':     {'Zhongshu', 'Cancelled'},
     'Zhongshu':  {'Menxia', 'Cancelled'},
     'Menxia':    {'Assigned', 'Zhongshu', 'Cancelled'},   # 封驳可回中书
-    'Assigned':  {'Doing', 'Next', 'Blocked', 'Cancelled'},
-    'Next':      {'Assigned', 'Doing', 'Blocked', 'Cancelled'},
-    'Doing':     {'Review', 'Blocked', 'Cancelled'},
-    'Review':    {'Done', 'Menxia', 'Doing', 'Cancelled'},  # 可打回重审/重做
-    'Blocked':   {'Doing', 'Next', 'Assigned', 'Review', 'Cancelled'},  # 解除后回原位
+    'Assigned':  {'Doing', 'Next', 'Blocked', 'Cancelled', 'Zhongshu'},  # 尚书可退回中书
+    'Next':      {'Assigned', 'Doing', 'Blocked', 'Cancelled', 'Zhongshu'},  # 也可退回中书
+    'Doing':     {'Review', 'Blocked', 'Cancelled', 'Zhongshu'},  # 六部可退回中书
+    'Review':    {'Done', 'Menxia', 'Doing', 'Zhongshu', 'Cancelled'},  # 可打回重审/重做/退回中书
+    'Blocked':   {'Doing', 'Next', 'Assigned', 'Review', 'Cancelled', 'Zhongshu'},  # 解除后回原位或退回中书
     'Done':      set(),       # 终态
     'Cancelled': set(),       # 终态
 }
@@ -686,6 +686,24 @@ def cmd_state(task_id, new_state, now_text=None):
                 title=task_title,
                 remark=now_text or f"状态已变更为 {new_org_label}",
             )
+
+        # 📨 状态回退时，通知原部门（如封驳/退回场景）
+        if new_state == 'Zhongshu' and old_state[0] not in ('Pending', 'Taizi', None, ''):
+            # 从更后面的阶段退回中书省，通知原负责部门
+            old_agent_id = _resolve_agent_id(old_state[0])
+            if old_agent_id and old_agent_id != 'zhongshu':
+                tasks = load()
+                t = find_task(tasks, task_id)
+                task_title = t.get('title', '') if t else ''
+                old_org_label = STATE_ORG_MAP.get(old_state[0], old_state[0] or '未知')
+                _notify_agent(
+                    agent_id=old_agent_id,
+                    task_id=task_id,
+                    from_org='中书省',
+                    to_org=old_org_label,
+                    title=task_title,
+                    remark=f"任务已退回中书省，等待重新处理",
+                )
         
         # 🪝 触发状态变更钩子（通知太子等）
         # 注意：需要在 modifier 外部获取更新后的 task
