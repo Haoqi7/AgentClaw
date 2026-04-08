@@ -226,7 +226,7 @@ function MemorialDetailModal({
 
         {/* Delete Confirmation Area — outside scrollable body, always visible */}
         {confirmDelete && (
-          <div style={{ marginTop: 12, padding: 14, background: 'rgba(255,82,112,0.08)', border: '1px solid rgba(255,82,112,0.3)', borderRadius: 10, flex-shrink: 0 }}>
+          <div style={{ marginTop: 12, padding: 14, background: 'rgba(255,82,112,0.08)', border: '1px solid rgba(255,82,112,0.3)', borderRadius: 10, flexShrink: 0 }}>
             <div style={{ fontSize: 13, fontWeight: 700, color: 'var(--danger)', marginBottom: 8 }}>⚠️ 确认删除此奏折</div>
             <div style={{ fontSize: 12, color: 'var(--muted)', marginBottom: 10 }}>
               此操作不可撤销。请输入任务编号 <code style={{ background: 'var(--panel2)', padding: '2px 6px', borderRadius: 4 }}>{t.id}</code> 确认：
