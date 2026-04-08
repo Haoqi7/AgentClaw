@@ -28,9 +28,13 @@
 
   # 🔥 实时进展汇报（Agent 主动调用，频率不限）
   python3 kanban_update.py progress JJC-20260223-012 "正在分析需求，拟定3个子方案" "1.调研技术选型|2.撰写设计文档|3.实现原型"
+  # 🔑 Session Key 注册表（解决会话爆炸问题）
+  # python3 kanban_update.py session-keys save   JJC-xxx zhongshu menxia "agent:menxia:subagent:abc"
+  # python3 kanban_update.py session-keys lookup JJC-xxx zhongshu menxia
+  # python3 kanban_update.py session-keys list   JJC-xxx
 """
 import datetime
-import json, pathlib, sys, subprocess, logging, os, re
+import json, pathlib, sys, subprocess, logging, os, re, uuid
 
 _BASE = pathlib.Path(os.environ['EDICT_HOME']) if 'EDICT_HOME' in os.environ else pathlib.Path(__file__).resolve().parent.parent
 TASKS_FILE = _BASE / 'data' / 'tasks_source.json'
@@ -471,15 +475,13 @@ def _resolve_agent_id(target):
 def _notify_agent(agent_id, task_id, from_org, to_org, title='', remark='', _retry=0):
     """异步通知目标 Agent 有新任务/流转（针对性增强版：部门差异化通知+唤醒重试+确认回执）。
 
-    - 使用 openclaw agent --agent <id> 触发目标 Agent 会话。
+    - 使用 openclaw sessions spawn 触发目标 Agent 会话。
     - 非阻塞：通过 Popen 异步执行，不延迟主流程。
     - 容错：通知失败仅记录日志，不影响看板写入结果。
     - 🎯 针对性通知：根据 _AGENT_NOTIFY_PROFILES 为每个部门生成专属通知内容，
       包含该部门的核心职责提醒和具体执行步骤指导。
     - 唤醒重试：首次失败后 3 秒重试一次。
     - 🔒 会话去重：同一任务 + 同一目标 Agent 在短时间内不重复唤醒。
-    - 🔒 会话复用：通知消息包含 sessions_spawn/sessions_send 使用指导，
-      首次通知时引导创建会话，后续通知强制复用已有会话，防止会话爆炸。
     """
     if not agent_id:
         return
@@ -523,19 +525,6 @@ def _notify_agent(agent_id, task_id, from_org, to_org, title='', remark='', _ret
     confirm_fmt = profile.get('confirm_fmt', '已收到 {task_id} {title}').format(task_id=task_id, title=title)
     deadline = profile.get('deadline', '10分钟内确认')
 
-    # 🔒 判断是否为首次通知该 Agent（用于指导会话复用）
-    is_first_notify = True
-    try:
-        tasks_check = load()
-        t_check = find_task(tasks_check, task_id)
-        if t_check:
-            last_notify = t_check.get('_lastNotify', {})
-            agent_info = last_notify.get(agent_id, {})
-            if agent_info.get('done'):
-                is_first_notify = False
-    except Exception:
-        pass
-
     # 组装针对性通知消息
     parts = [
         f"📢 任务通知 → {to_label} - {task_id}",
@@ -558,25 +547,6 @@ def _notify_agent(agent_id, task_id, from_org, to_org, title='', remark='', _ret
     parts.append(f"  立即回复确认：「{confirm_fmt}」")
     parts.append(f"  要求：{deadline}")
     parts.append(f"")
-
-    # 🔒 会话复用强制指令（Issue #1 修复：防止会话爆炸）
-    if is_first_notify:
-        parts.append(f"⚠️ 【会话管理 - 首次通知】")
-        parts.append(f"这是本任务首次通知 {to_label}。")
-        parts.append(f"如果你需要与其他部门通信：")
-        parts.append(f"  · 首次调用某部门 → 使用 sessions_spawn 创建子会话")
-        parts.append(f"  · 后续与同一部门的通信 → 必须使用 sessions_send 复用已有子会话")
-        parts.append(f"  · 禁止对同一部门多次使用 sessions_spawn 创建重复会话！")
-        parts.append(f"  · 保存 sessions_spawn 返回的 sessionKey，后续用 sessions_send 发送")
-    else:
-        parts.append(f"⚠️ 【会话管理 - 非首次通知】")
-        parts.append(f"本任务已有会话记录。如果你之前已经用 sessions_spawn 创建过子会话，")
-        parts.append(f"必须使用 sessions_send 复用已有子会话进行通信，")
-        parts.append(f"禁止再次使用 sessions_spawn 创建新的重复会话！")
-        parts.append(f"查找已有的 sessionKey 使用 sessions_send 即可。")
-
-    parts.append(f"")
-    parts.append(f"⚠️ 看板已有此任务，请勿重复创建。")
     parts.append(f"请立即处理！")
 
     message = '\n'.join(parts)
@@ -613,6 +583,147 @@ def _notify_agent(agent_id, task_id, from_org, to_org, title='', remark='', _ret
 
 def find_task(tasks, task_id):
     return next((t for t in tasks if t.get('id') == task_id), None)
+
+
+# ═══════════════════════════════════════════════════════════════════════
+# 🔑 Session Key 注册表（解决会话爆炸问题）
+#
+# 每个任务维护一个 session_keys 字典，记录 agent 对之间的 sessionKey。
+# Agent 跨部门通信时，先 lookup 已有 key → 有则用 sessions_send 复用会话，
+# 没有则用 sessions_spawn 创建 → 保存返回的 sessionKey 供后续复用。
+#
+# 用法:
+#   kanban_update.py session-keys save   JJC-xxx zhongshu menxia "agent:menxia:subagent:abc-123"
+#   kanban_update.py session-keys lookup JJC-xxx zhongshu menxia
+#   kanban_update.py session-keys list   JJC-xxx
+# ═══════════════════════════════════════════════════════════════════════
+
+def _normalize_pair(agent_a, agent_b):
+    """将两个 agent_id 规范化为有序 pair key（字母序排列，确保双向查找一致）。
+    
+    例如: _normalize_pair('zhongshu', 'menxia') → 'menxia:zhongshu'
+          _normalize_pair('menxia', 'zhongshu') → 'menxia:zhongshu'  (相同结果)
+    """
+    parts = sorted([agent_a.strip().lower(), agent_b.strip().lower()])
+    return f'{parts[0]}:{parts[1]}'
+
+
+def _resolve_agent_id_for_pair(name):
+    """将部门名称或 agent_id 统一解析为 agent_id。"""
+    if not name:
+        return ''
+    name = name.strip().lower()
+    # 直接匹配 agent_id
+    if name in _ORG_AGENT_MAP.values() or name in ('taizi', 'main', 'huangshang'):
+        return name
+    # 通过部门名反查
+    return _ORG_AGENT_MAP.get(name, '') or _STATE_AGENT_MAP.get(name, '')
+
+
+def cmd_session_keys_save(task_id, agent_a, agent_b, session_key):
+    """保存一个 sessionKey 到任务的 session_keys 注册表。
+    
+    Agent 在调用 sessions_spawn 成功后，应立即调用此命令保存返回的 sessionKey，
+    以便后续同一对 agent 之间的通信复用该会话。
+    """
+    if not task_id or not agent_a or not agent_b or not session_key:
+        log.warning('session-keys save: 缺少必要参数 (task_id, agent_a, agent_b, session_key)')
+        print('[session-keys] 用法: session-keys save {task_id} {agent_a} {agent_b} {sessionKey}', flush=True)
+        return
+    
+    pair = _normalize_pair(agent_a, agent_b)
+    
+    def modifier(tasks):
+        t = find_task(tasks, task_id)
+        if not t:
+            log.warning(f'session-keys save: 任务 {task_id} 不存在')
+            return tasks
+        keys = t.setdefault('session_keys', {})
+        is_update = pair in keys
+        keys[pair] = {
+            'sessionKey': session_key.strip(),
+            'savedAt': now_iso(),
+            'agents': [agent_a.strip(), agent_b.strip()],
+        }
+        return tasks
+    
+    try:
+        atomic_json_update(TASKS_FILE, modifier, [])
+        action = '更新' if True else '保存'
+        log.info(f'🔑 session-key {action}: {task_id} | {pair} = {session_key[:40]}...')
+        print(f'[session-keys] ✅ 已{"更新" if True else "保存"} {pair} 的 sessionKey', flush=True)
+    except Exception as e:
+        log.error(f'session-keys save 失败: {e}')
+        print(f'[session-keys] ❌ 保存失败: {e}', flush=True)
+
+
+def cmd_session_keys_lookup(task_id, agent_a, agent_b):
+    """查找任务中两个 agent 之间已保存的 sessionKey。
+    
+    返回格式（JSON）:
+      - 找到: {"ok": true, "pair": "menxia:zhongshu", "sessionKey": "agent:xxx", "savedAt": "..."}
+      - 未找到: {"ok": false, "pair": "menxia:zhongshu", "sessionKey": null}
+    
+    Agent 调用 sessions_send 之前应先 lookup，有 key 则用 sessions_send，没有则 sessions_spawn。
+    """
+    if not task_id or not agent_a or not agent_b:
+        log.warning('session-keys lookup: 缺少必要参数')
+        print(json.dumps({'ok': False, 'error': '缺少参数: task_id, agent_a, agent_b'}, ensure_ascii=False), flush=True)
+        return
+    
+    pair = _normalize_pair(agent_a, agent_b)
+    
+    try:
+        tasks = load()
+        t = find_task(tasks, task_id)
+        if not t:
+            print(json.dumps({'ok': False, 'pair': pair, 'sessionKey': None, 'error': f'任务 {task_id} 不存在'}, ensure_ascii=False), flush=True)
+            return
+        
+        keys = t.get('session_keys', {})
+        entry = keys.get(pair)
+        if entry and entry.get('sessionKey'):
+            result = {
+                'ok': True,
+                'pair': pair,
+                'sessionKey': entry['sessionKey'],
+                'savedAt': entry.get('savedAt', ''),
+                'agents': entry.get('agents', []),
+            }
+            log.info(f'🔑 session-key lookup: {task_id} | {pair} → 找到 {entry["sessionKey"][:40]}...')
+            print(json.dumps(result, ensure_ascii=False), flush=True)
+        else:
+            log.info(f'🔑 session-key lookup: {task_id} | {pair} → 未找到')
+            print(json.dumps({'ok': False, 'pair': pair, 'sessionKey': None}, ensure_ascii=False), flush=True)
+    except Exception as e:
+        log.error(f'session-keys lookup 失败: {e}')
+        print(json.dumps({'ok': False, 'pair': pair, 'sessionKey': None, 'error': str(e)}, ensure_ascii=False), flush=True)
+
+
+def cmd_session_keys_list(task_id):
+    """列出任务中所有已保存的 sessionKey。
+    
+    返回格式（JSON）:
+      {"ok": true, "task_id": "JJC-xxx", "keys": {"menxia:zhongshu": {"sessionKey": "...", ...}, ...}}
+    """
+    if not task_id:
+        log.warning('session-keys list: 缺少 task_id')
+        print(json.dumps({'ok': False, 'error': '缺少 task_id'}, ensure_ascii=False), flush=True)
+        return
+    
+    try:
+        tasks = load()
+        t = find_task(tasks, task_id)
+        if not t:
+            print(json.dumps({'ok': False, 'error': f'任务 {task_id} 不存在'}, ensure_ascii=False), flush=True)
+            return
+        
+        keys = t.get('session_keys', {})
+        print(json.dumps({'ok': True, 'task_id': task_id, 'keys': keys, 'count': len(keys)}, ensure_ascii=False, indent=2), flush=True)
+        log.info(f'🔑 session-keys list: {task_id} | 共 {len(keys)} 个 key')
+    except Exception as e:
+        log.error(f'session-keys list 失败: {e}')
+        print(json.dumps({'ok': False, 'error': str(e)}, ensure_ascii=False), flush=True)
 
 
 # 旨意标题最低要求
@@ -1293,6 +1404,29 @@ if __name__ == '__main__':
             cost=kw.get('cost', 0.0),
             elapsed=kw.get('elapsed', 0),
         )
+    elif cmd == 'session-keys':
+        if len(args) < 2:
+            print('[session-keys] 子命令: save | lookup | list', flush=True)
+            sys.exit(1)
+        sub_cmd = args[1]
+        if sub_cmd == 'save':
+            if len(args) < 6:
+                print('[session-keys] 用法: session-keys save {task_id} {agent_a} {agent_b} {sessionKey}', flush=True)
+                sys.exit(1)
+            cmd_session_keys_save(args[2], args[3], args[4], args[5])
+        elif sub_cmd == 'lookup':
+            if len(args) < 5:
+                print('[session-keys] 用法: session-keys lookup {task_id} {agent_a} {agent_b}', flush=True)
+                sys.exit(1)
+            cmd_session_keys_lookup(args[2], args[3], args[4])
+        elif sub_cmd == 'list':
+            if len(args) < 3:
+                print('[session-keys] 用法: session-keys list {task_id}', flush=True)
+                sys.exit(1)
+            cmd_session_keys_list(args[2])
+        else:
+            print(f'[session-keys] 未知子命令: {sub_cmd}（可用: save, lookup, list）', flush=True)
+            sys.exit(1)
     else:
         print(__doc__)
         sys.exit(1)

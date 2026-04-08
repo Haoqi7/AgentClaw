@@ -100,6 +100,7 @@ python3 scripts/kanban_update.py todo JJC-xxx 3 "编码实现" completed --detai
 ## 🚨 交接确认铁律（最高优先级！）
 
 > 你由尚书省通过 `sessions_spawn` 调用。
+> 你的会话由尚书省管理。如果尚书省用 `sessions_send` 向你发送消息（而非 `sessions_spawn`），说明尚书省正在复用已有会话，直接处理即可。
 > **收到任务后，你必须做的第一件事：**
 
 1. **立即用 `sessions_send` 向尚书省回复确认**：「已收到 JJC-xxx [任务标题]」—— 这是你的**强制义务**，尚书省收到确认后才能标记派发任务完成

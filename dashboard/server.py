@@ -15,7 +15,6 @@ import json, pathlib, subprocess, sys, threading, argparse, datetime, logging, r
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from urllib.parse import urlparse, quote as _url_quote
 from urllib.request import Request, urlopen
-import urllib.error
 
 # 引入文件锁工具，确保与其他脚本并发安全
 scripts_dir = str(pathlib.Path(__file__).parent.parent / 'scripts')
@@ -114,6 +113,42 @@ def _load_api_token():
     except Exception:
         _API_TOKEN = ''
     return _API_TOKEN
+
+
+def _get_gateway_base_url():
+    """获取 Gateway 基础 URL（支持环境变量/配置文件覆盖，默认 127.0.0.1:18789）。
+    
+    优先级: 环境变量 EDICT_GATEWAY_URL > openclaw.json 配置 > 默认值
+    """
+    # 优先使用环境变量
+    env_url = os.environ.get('EDICT_GATEWAY_URL', '').strip()
+    if env_url:
+        return env_url.rstrip('/')
+    # 从 openclaw.json 读取
+    try:
+        cfg = json.loads(OCLAW_HOME.joinpath('openclaw.json').read_text())
+        gw = cfg.get('gateway', {})
+        # 支持 gateway.url 或 gateway.host + gateway.port
+        url = gw.get('url', '').strip()
+        if url:
+            return url.rstrip('/')
+        host = gw.get('host', '127.0.0.1')
+        port = gw.get('port', 18789)
+        if host and port:
+            return f'http://{host}:{port}'
+    except Exception:
+        pass
+    return 'http://127.0.0.1:18789'
+
+
+def _get_gateway_token():
+    """获取 Gateway API token（从 openclaw.json 读取）"""
+    try:
+        cfg = json.loads(OCLAW_HOME.joinpath('openclaw.json').read_text())
+        return cfg.get('gateway', {}).get('auth', {}).get('token', '')
+    except Exception:
+        return ''
+
 
 def _check_api_auth(handler):
     """校验请求中的 Authorization token。无 token 配置时跳过认证。
@@ -852,8 +887,13 @@ def _check_gateway_alive():
     if _check_gateway_probe():
         return True
     try:
+        gw_url = _get_gateway_base_url()
+        from urllib.parse import urlparse
+        parsed = urlparse(gw_url)
+        gw_host = parsed.hostname or '127.0.0.1'
+        gw_port = parsed.port or 18789
         if os.name == 'nt':
-            with socket.create_connection(('127.0.0.1', 18789), timeout=2):
+            with socket.create_connection((gw_host, gw_port), timeout=2):
                 return True
             return False
         result = subprocess.run(['pgrep', '-f', 'openclaw-gateway'],
@@ -865,7 +905,8 @@ def _check_gateway_alive():
 
 def _check_gateway_probe():
     """通过 HTTP probe 检测 Gateway 是否响应。"""
-    for url in ('http://127.0.0.1:18789/', 'http://127.0.0.1:18789/healthz'):
+    base = _get_gateway_base_url()
+    for url in (f'{base}/', f'{base}/healthz'):
         try:
             from urllib.request import urlopen
             resp = urlopen(url, timeout=3)
@@ -3086,38 +3127,28 @@ class Handler(BaseHTTPRequestHandler):
         if p == '/api/gateway/conversations':
             """列出 Gateway 所有会话（代理到 Gateway API）"""
             try:
-                cfg = json.loads(OCLAW_HOME.joinpath('openclaw.json').read_text())
-                token = cfg.get('gateway', {}).get('auth', {}).get('token', '')
+                token = _get_gateway_token()
             except Exception:
                 token = ''
             try:
-                url = 'http://127.0.0.1:18789/api/v1/conversations'
+                gw_base = _get_gateway_base_url()
+                url = f'{gw_base}/api/v1/conversations'
                 headers = {}
                 if token:
                     headers['Authorization'] = f'Bearer {token}'
                 req = Request(url, headers=headers)
                 resp = urlopen(req, timeout=10)
                 data = json.loads(resp.read().decode())
-                conversations = data if isinstance(data, list) else data.get('data', data.get('conversations', []))
-                self.send_json({'ok': True, 'conversations': conversations, 'total': len(conversations) if isinstance(conversations, list) else 0})
-            except urllib.error.HTTPError as e:
-                # Issue #3 修复：区分 HTTP 错误码，401/403 是认证问题，不是 Gateway 挂了
-                if e.code in (401, 403):
-                    self.send_json({'ok': False, 'error': f'Gateway 认证失败(token无效或过期)，请检查 openclaw.json 中的 gateway.auth.token 配置', 'code': e.code}, e.code)
-                elif e.code == 404:
-                    self.send_json({'ok': True, 'conversations': [], 'total': 0})
-                else:
-                    self.send_json({'ok': False, 'error': f'Gateway 返回 HTTP {e.code}: {str(e)[:80]}'}, e.code)
+                self.send_json({'ok': True, 'conversations': data if isinstance(data, list) else data.get('data', data.get('conversations', [])), 'total': len(data) if isinstance(data, list) else 0})
             except Exception as e:
-                # Issue #3 修复：先检查 Gateway 进程是否存活，给出更精确的错误提示
-                gw_alive = _check_gateway_alive()
-                gw_probe = _check_gateway_probe()
-                if not gw_alive:
-                    self.send_json({'ok': False, 'error': 'Gateway 进程未启动，请先运行 openclaw gateway start', 'gateway_status': 'offline'}, 502)
-                elif not gw_probe:
-                    self.send_json({'ok': False, 'error': f'Gateway 进程在运行但无响应(端口18789)，请检查 Gateway 日志。原始错误: {str(e)[:80]}', 'gateway_status': 'unresponsive'}, 502)
+                err_str = str(e)[:100]
+                # 区分连接失败 vs API 路径问题
+                if 'Connection refused' in err_str or 'timed out' in err_str.lower() or 'No route to host' in err_str:
+                    self.send_json({'ok': False, 'error': f'Gateway 无法连接: {err_str}'}, 502)
+                elif 'HTTP Error' in err_str or '404' in err_str or '403' in err_str:
+                    self.send_json({'ok': False, 'error': f'Gateway API 错误: {err_str}（Gateway 可能版本不兼容）'}, 502)
                 else:
-                    self.send_json({'ok': False, 'error': f'Gateway 连接失败: {str(e)[:100]}', 'gateway_status': 'error'}, 502)
+                    self.send_json({'ok': False, 'error': f'Gateway 连接失败: {err_str}'}, 502)
             return
 
         if p.startswith('/api/gateway/conversation/') and p.endswith('/delete'):
@@ -3127,12 +3158,11 @@ class Handler(BaseHTTPRequestHandler):
                 self.send_json({'ok': False, 'error': 'conversationId required'}, 400)
                 return
             try:
-                cfg = json.loads(OCLAW_HOME.joinpath('openclaw.json').read_text())
-                token = cfg.get('gateway', {}).get('auth', {}).get('token', '')
+                token = _get_gateway_token()
             except Exception:
                 token = ''
             try:
-                url = f'http://127.0.0.1:18789/api/v1/conversations/{_url_quote(conv_id, safe="")}'
+                url = f'{_get_gateway_base_url()}/api/v1/conversations/{_url_quote(conv_id, safe="")}'
                 headers = {}
                 if token:
                     headers['Authorization'] = f'Bearer {token}'
@@ -3151,13 +3181,12 @@ class Handler(BaseHTTPRequestHandler):
                 self.send_json({'ok': False, 'error': 'agentId 无效'}, 400)
                 return
             try:
-                cfg = json.loads(OCLAW_HOME.joinpath('openclaw.json').read_text())
-                token = cfg.get('gateway', {}).get('auth', {}).get('token', '')
+                token = _get_gateway_token()
             except Exception:
                 token = ''
             cleared = 0
             try:
-                url = 'http://127.0.0.1:18789/api/v1/conversations'
+                url = f'{_get_gateway_base_url()}/api/v1/conversations'
                 headers = {}
                 if token:
                     headers['Authorization'] = f'Bearer {token}'
@@ -3176,7 +3205,7 @@ class Handler(BaseHTTPRequestHandler):
                     if ':main' in str(conv_id).lower() or ':main' in title.lower():
                         continue
                     # 删除非 main 会话
-                    del_url = f'http://127.0.0.1:18789/api/v1/conversations/{_url_quote(str(conv_id), safe="")}'
+                    del_url = f'{_get_gateway_base_url()}/api/v1/conversations/{_url_quote(str(conv_id), safe="")}'
                     del_req = Request(del_url, method='DELETE', headers=headers)
                     try:
                         urlopen(del_req, timeout=10)
@@ -3184,23 +3213,13 @@ class Handler(BaseHTTPRequestHandler):
                     except Exception:
                         pass
                 self.send_json({'ok': True, 'message': f'已清理 {agent_id} 的 {cleared} 个非 main 会话', 'cleared': cleared})
-            except urllib.error.HTTPError as e:
-                # Issue #3 修复：区分 HTTP 错误码
-                if e.code in (401, 403):
-                    self.send_json({'ok': False, 'error': 'Gateway 认证失败(token无效或过期)，请检查 openclaw.json 配置', 'code': e.code}, e.code)
-                else:
-                    self.send_json({'ok': False, 'error': f'Gateway 返回 HTTP {e.code}: {str(e)[:80]}'}, e.code)
             except Exception as e:
-                gw_alive = _check_gateway_alive()
-                if not gw_alive:
-                    self.send_json({'ok': False, 'error': 'Gateway 进程未启动', 'gateway_status': 'offline'}, 502)
-                else:
-                    self.send_json({'ok': False, 'error': f'Gateway 连接失败: {str(e)[:100]}', 'gateway_status': 'error'}, 502)
+                self.send_json({'ok': False, 'error': f'Gateway 连接失败: {str(e)[:100]}'}, 502)
             return
 
         if p == '/api/gateway/sessions-url':
             """返回 Gateway 会话管理页面的 URL"""
-            self.send_json({'ok': True, 'url': 'http://127.0.0.1:18789/sessions'})
+            self.send_json({'ok': True, 'url': f'{_get_gateway_base_url()}/sessions'})
             return
 
         if p == '/api/archive-task':
