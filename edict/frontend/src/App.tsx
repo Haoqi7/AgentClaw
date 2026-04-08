@@ -36,6 +36,8 @@ export default function App() {
   const syncOk = sync?.ok;
 
   // Tab badge counts
+  const auditData = useStore((s) => s.auditData);
+
   const tabBadge = (key: string): string => {
     if (key === 'edicts') return String(activeEdicts.length);
     if (key === 'sessions') return String(tasks.filter((t) => !isEdict(t)).length);
@@ -45,9 +47,8 @@ export default function App() {
       return activeDepts + '活跃';
     }
     if (key === 'audit') {
-      const audit = useStore.getState().auditData;
-      if (!audit || !audit.last_check) return '';
-      const cnt = (audit.violations || []).length;
+      if (!auditData || !auditData.last_check) return '';
+      const cnt = (auditData.violations || []).length;
       return cnt > 0 ? cnt + '违规' : '正常';
     }
     return '';
