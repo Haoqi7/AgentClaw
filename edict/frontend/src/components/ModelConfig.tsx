@@ -150,7 +150,7 @@ export default function ModelConfig() {
               } catch { setChannelStatus('❌ 无法连接'); }
               setTimeout(() => setChannelStatus(''), 3000);
             }}>应用</button>
-          {channelStatus && <span style={{ fontSize: 12, color: channelStatus.startsWith('✅') ? 'var(--ok)' : 'var(--danger)' }}>{channelStatus}</span>}
+          {channelStatus && <span style={{ fontSize: 12, color: channelStatus.startsWith('✅') ? 'var(--success)' : 'var(--danger)' }}>{channelStatus}</span>}
         </div>
         <div style={{ fontSize: 11, color: 'var(--muted)' }}>自动派发时使用的 OpenClaw 通知渠道（需已在 openclaw.json 中配置对应 channel）</div>
       </div>

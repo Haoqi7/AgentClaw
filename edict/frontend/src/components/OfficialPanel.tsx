@@ -78,7 +78,7 @@ export default function OfficialPanel() {
                 onClick={() => setSelectedOfficial(o.id)}
               >
                 <span style={{ minWidth: 24, textAlign: 'center' }}>
-                  {o.merit_rank >= 1 && o.merit_rank <= 3 ? MEDALS[o.merit_rank - 1] : '#' + (o.merit_rank || 0)}
+                  {o.merit_rank <= 3 ? MEDALS[o.merit_rank - 1] : '#' + o.merit_rank}
                 </span>
                 <span>{o.emoji}</span>
                 <span style={{ flex: 1 }}>

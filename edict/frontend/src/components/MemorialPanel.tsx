@@ -233,7 +233,7 @@ function MemorialDetailModal({
             </div>
             <div style={{ display: 'flex', gap: 8 }}>
               <input
-                style={{ flex: 1, padding: '6px 12px', borderRadius: 6, border: '1px solid var(--line)', background: 'var(--panel2)', color: 'var(--text)', fontSize: 12, outline: 'none' }}
+                style={{ flex: 1, padding: '6px 12px', borderRadius: 6, border: '1px solid var(--line)', background: 'var(--panel2)', color: 'var(--fg)', fontSize: 12, outline: 'none' }}
                 placeholder={t.id}
                 value={deleteInput}
                 onChange={(e) => setDeleteInput(e.target.value)}

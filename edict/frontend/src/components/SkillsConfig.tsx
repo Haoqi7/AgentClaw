@@ -78,12 +78,9 @@ export default function SkillsConfig() {
   const [quickPickSource, setQuickPickSource] = useState<(typeof COMMUNITY_SOURCES)[0] | null>(null);
   const [quickPickAgent, setQuickPickAgent] = useState('');
 
-  const loadRemoteSkillsRef = useRef(loadRemoteSkills);
-  loadRemoteSkillsRef.current = loadRemoteSkills;
-
   useEffect(() => {
-    if (activeTab === 'remote') loadRemoteSkillsRef.current();
-  }, [activeTab]);
+    loadAgentConfig();
+  }, [loadAgentConfig]);
 
   useEffect(() => {
     if (activeTab === 'remote') loadRemoteSkills();
