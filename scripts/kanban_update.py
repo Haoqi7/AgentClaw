@@ -266,11 +266,31 @@ MAX_PROGRESS_LOG = 100  # 单任务最大进展日志条数
 
 
 def hook_notify_taizi(task_id, old_state, new_state, task):
-    """钩子：状态变化时异步通知太子（非阻塞）。
+    """钩子：状态变化时异步通知太子（非阻塞，含冷却去重）。
 
     用于 Menxia / Assigned / Done 等关键节点，
     让太子主动收到进展推送，无需轮询看板。
+    包含冷却去重：同一任务90秒内不重复通知太子。
     """
+    # 🔒 冷却去重：检查是否刚通知过太子
+    try:
+        last_notify = task.get('_lastNotify', {})
+        taizi_info = last_notify.get('taizi', {})
+        if taizi_info.get('done'):
+            last_at = taizi_info.get('at', '')
+            if last_at:
+                try:
+                    last_dt = datetime.datetime.fromisoformat(last_at.replace('Z', '+00:00'))
+                    now_dt = datetime.datetime.now(last_dt.tzinfo) if last_dt.tzinfo else datetime.datetime.now()
+                    elapsed = (now_dt - last_dt).total_seconds()
+                    if elapsed < _NOTIFY_COOLDOWN_SEC:
+                        log.info(f'🪝 钩子冷却跳过：{task_id} → taizi，{elapsed:.0f}s前已通知')
+                        return
+                except Exception:
+                    pass
+    except Exception:
+        pass
+
     title = task.get('title', '')
     old_label = STATE_ORG_MAP.get(old_state, old_state or '未知')
     new_label = STATE_ORG_MAP.get(new_state, new_state)
@@ -291,6 +311,18 @@ def hook_notify_taizi(task_id, old_state, new_state, task):
         log.info(f'🪝 钩子触发：已通知太子 | {task_id} {old_state}→{new_state}')
     except Exception as e:
         log.warning(f'🪝 钩子执行失败 (notify_taizi): {e}')
+
+    # 🔒 记录本次通知（写入 _lastNotify 以便冷却去重）
+    def _record_taizi_notify(tasks):
+        t = find_task(tasks, task_id)
+        if not t:
+            return tasks
+        t.setdefault('_lastNotify', {})['taizi'] = {'at': now_iso(), 'remark': f'hook:{old_state}→{new_state}', 'done': True}
+        return tasks
+    try:
+        atomic_json_update(TASKS_FILE, _record_taizi_notify, [])
+    except Exception:
+        pass
 
 
 # 状态变更钩子注册表（钩子函数已定义）
@@ -433,12 +465,21 @@ def _notify_agent(agent_id, task_id, from_org, to_org, title='', remark='', _ret
             if notify_count >= _MAX_NOTIFY_PER_TASK:
                 log.warning(f'🔒 全局去重：{task_id} 已通知 {notify_count} 次，达到上限 {_MAX_NOTIFY_PER_TASK}，停止通知')
                 return
-            # 🔒 单 Agent 去重：同一任务+同一Agent 只通知一次（不再基于30秒窗口）
+            # 🔒 冷却去重：同一任务+同一Agent需等待冷却时间才能再次通知
             last_notify = t.get('_lastNotify', {})
             agent_notify_info = last_notify.get(agent_id, {})
             if agent_notify_info.get('done'):
-                log.info(f'🔒 去重跳过：{task_id} → {agent_id}，该 Agent 已被通知过（状态级别去重）')
-                return
+                last_at = agent_notify_info.get('at', '')
+                if last_at:
+                    try:
+                        last_dt = datetime.datetime.fromisoformat(last_at.replace('Z', '+00:00'))
+                        now_dt = datetime.datetime.now(last_dt.tzinfo) if last_dt.tzinfo else datetime.datetime.now()
+                        elapsed = (now_dt - last_dt).total_seconds()
+                        if elapsed < _NOTIFY_COOLDOWN_SEC:
+                            log.info(f'🔒 冷却去重：{task_id} → {agent_id}，{elapsed:.0f}s前已通知，需等待 {_NOTIFY_COOLDOWN_SEC}s')
+                            return
+                    except Exception:
+                        pass
     except Exception:
         pass
     to_label = _AGENT_LABELS.get(agent_id, agent_id)
@@ -678,10 +719,11 @@ _VALID_TRANSITIONS = {
 _NO_NOTIFY_STATES = {'Done', 'Cancelled'}
 
 # ═══════════════════════════════════════════════════════════════════════
-# 🔒 会话去重：每个任务最大通知次数限制
+# 🔒 会话去重：冷却时间 + 最大通知次数
 # 防止 LLM 反复 spawn subagent 导致会话爆炸
 # ═══════════════════════════════════════════════════════════════════════
-_MAX_NOTIFY_PER_TASK = 16  # 单个任务最多通知（唤醒）16 次
+_MAX_NOTIFY_PER_TASK = 16       # 单个任务最多通知（唤醒）16 次
+_NOTIFY_COOLDOWN_SEC = 90       # 同一任务+同一Agent冷却时间（秒）
 
 
 def cmd_state(task_id, new_state, now_text=None):
@@ -728,21 +770,18 @@ def cmd_state(task_id, new_state, now_text=None):
         t['updatedAt'] = now_iso()
         
         # ═══════════════════════════════════════════════════════════════
-        # 🔓 状态转换时清除目标 Agent 的通知去重记录
-        # 原因：封驳→修改→重提 是正常流程，中书省修改后重提门下省
-        #   的时间通常 <120s，如果不去除重记录会导致门下省收不到通知
+        # ⚠️ 不再清除 _lastNotify[target_agent]！
+        # 旧逻辑：每次状态转换都清去重 → 导致去重完全失效 → 无限循环
+        # 新逻辑：依赖 _notify_agent 的冷却时间去重（90秒窗口）
         # ═══════════════════════════════════════════════════════════════
         target_agent = _resolve_agent_id(new_state)
-        if target_agent and new_state not in ('Done', 'Cancelled'):
-            t.setdefault('_lastNotify', {})
-            t['_lastNotify'].pop(target_agent, None)
-        
+
         # 🔒 记录当前活跃 Agent，用于后续去重
         if new_state in ('Doing', 'Next'):
             t['activeAgent'] = target_agent or t.get('org', '')
         elif new_state == 'Done':
             t.pop('activeAgent', None)  # 完成时清除
-            t.pop('_lastNotify', None)   # 清除去重记录
+            # 不清除 _lastNotify：任务已完成，不会再触发通知
         elif new_state == 'Review':
             t['activeAgent'] = 'shangshu'
         return tasks
@@ -775,23 +814,9 @@ def cmd_state(task_id, new_state, now_text=None):
                 remark=now_text or f"状态已变更为 {new_org_label}",
             )
 
-        # 📨 状态回退时，通知原部门（如封驳/退回场景）
-        if new_state == 'Zhongshu' and old_state[0] not in ('Pending', 'Taizi', None, ''):
-            # 从更后面的阶段退回中书省，通知原负责部门
-            old_agent_id = _resolve_agent_id(old_state[0])
-            if old_agent_id and old_agent_id != 'zhongshu':
-                tasks = load()
-                t = find_task(tasks, task_id)
-                task_title = t.get('title', '') if t else ''
-                old_org_label = STATE_ORG_MAP.get(old_state[0], old_state[0] or '未知')
-                _notify_agent(
-                    agent_id=old_agent_id,
-                    task_id=task_id,
-                    from_org='中书省',
-                    to_org=old_org_label,
-                    title=task_title,
-                    remark=f"任务已退回中书省，等待重新处理",
-                )
+        # 📨 状态回退时，不再额外通知原部门
+        # 旧逻辑：封驳时同时通知中书省和门下省 → 门下省收到"退回"通知后再次处理 → 循环
+        # 新逻辑：只通知新状态的负责 Agent（上方已处理），不额外通知回退源
         
         # 🪝 触发状态变更钩子（通知太子等）
         # 注意：需要在 modifier 外部获取更新后的 task
@@ -861,19 +886,9 @@ def cmd_flow(task_id, from_dept, to_dept, remark):
     _trigger_refresh()
     log.info(f'✅ {task_id} 流转记录: {from_dept} → {to_dept}')
 
-    # 📨 流转成功后，通知目标部门的 Agent
-    notify_agent_id = _resolve_agent_id(to_dept)
-    tasks = load()
-    t = find_task(tasks, task_id)
-    task_title = t.get('title', '') if t else ''
-    _notify_agent(
-        agent_id=notify_agent_id,
-        task_id=task_id,
-        from_org=from_dept,
-        to_org=to_dept,
-        title=task_title,
-        remark=clean_remark,
-    )
+    # ⚠️ 不再在此处调用 _notify_agent
+    # 旧逻辑：cmd_flow 和 cmd_state 双重通知 → 导致无限循环
+    # 新逻辑：通知统一由 cmd_state 触发，cmd_flow 只记录流转日志
 
 
 # ── 六部名称集合（用于 cmd_flow 校验：拒绝「六部」泛称）──

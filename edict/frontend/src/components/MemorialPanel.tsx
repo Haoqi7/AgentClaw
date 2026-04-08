@@ -222,43 +222,45 @@ function MemorialDetailModal({
             </div>
           )}
 
-          {/* Delete Confirmation Area */}
-          {confirmDelete && (
-            <div style={{ marginTop: 16, padding: 14, background: 'rgba(255,82,112,0.08)', border: '1px solid rgba(255,82,112,0.3)', borderRadius: 10 }}>
-              <div style={{ fontSize: 13, fontWeight: 700, color: 'var(--danger)', marginBottom: 8 }}>⚠️ 确认删除此奏折</div>
-              <div style={{ fontSize: 12, color: 'var(--muted)', marginBottom: 10 }}>
-                此操作不可撤销。请输入任务编号 <code style={{ background: 'var(--panel2)', padding: '2px 6px', borderRadius: 4 }}>{t.id}</code> 确认：
-              </div>
-              <div style={{ display: 'flex', gap: 8 }}>
-                <input
-                  style={{ flex: 1, padding: '6px 12px', borderRadius: 6, border: '1px solid var(--line)', background: 'var(--panel2)', color: 'var(--fg)', fontSize: 12, outline: 'none' }}
-                  placeholder={t.id}
-                  value={deleteInput}
-                  onChange={(e) => setDeleteInput(e.target.value)}
-                  onKeyDown={(e) => { if (e.key === 'Enter') handleConfirmDelete(); }}
-                />
-                <button className="btn" style={{ background: 'var(--danger)', color: '#fff', fontSize: 12, padding: '6px 16px', border: 'none', borderRadius: 6, cursor: 'pointer' }} onClick={handleConfirmDelete}>
-                  确认删除
-                </button>
-                <button className="btn btn-g" style={{ fontSize: 12, padding: '6px 16px' }} onClick={() => { setConfirmDelete(false); setDeleteInput(''); }}>
-                  取消
-                </button>
-              </div>
-            </div>
-          )}
+        </div>
 
-          <div style={{ display: 'flex', gap: 8, marginTop: 16, justifyContent: 'flex-end' }}>
-            <button className="btn btn-g" onClick={() => onExport(t)} style={{ fontSize: 12, padding: '6px 16px' }}>
-              📋 复制奏折
-            </button>
-            <button
-              className="btn"
-              onClick={() => setConfirmDelete(true)}
-              style={{ fontSize: 12, padding: '6px 16px', background: 'rgba(255,82,112,0.15)', color: 'var(--danger)', border: '1px solid rgba(255,82,112,0.3)', borderRadius: 6, cursor: 'pointer' }}
-            >
-              🗑️ 删除此奏折
-            </button>
+        {/* Delete Confirmation Area — outside scrollable body, always visible */}
+        {confirmDelete && (
+          <div style={{ marginTop: 12, padding: 14, background: 'rgba(255,82,112,0.08)', border: '1px solid rgba(255,82,112,0.3)', borderRadius: 10, flex-shrink: 0 }}>
+            <div style={{ fontSize: 13, fontWeight: 700, color: 'var(--danger)', marginBottom: 8 }}>⚠️ 确认删除此奏折</div>
+            <div style={{ fontSize: 12, color: 'var(--muted)', marginBottom: 10 }}>
+              此操作不可撤销。请输入任务编号 <code style={{ background: 'var(--panel2)', padding: '2px 6px', borderRadius: 4 }}>{t.id}</code> 确认：
+            </div>
+            <div style={{ display: 'flex', gap: 8 }}>
+              <input
+                style={{ flex: 1, padding: '6px 12px', borderRadius: 6, border: '1px solid var(--line)', background: 'var(--panel2)', color: 'var(--fg)', fontSize: 12, outline: 'none' }}
+                placeholder={t.id}
+                value={deleteInput}
+                onChange={(e) => setDeleteInput(e.target.value)}
+                onKeyDown={(e) => { if (e.key === 'Enter') handleConfirmDelete(); }}
+              />
+              <button className="btn" style={{ background: 'var(--danger)', color: '#fff', fontSize: 12, padding: '6px 16px', border: 'none', borderRadius: 6, cursor: 'pointer' }} onClick={handleConfirmDelete}>
+                确认删除
+              </button>
+              <button className="btn btn-g" style={{ fontSize: 12, padding: '6px 16px' }} onClick={() => { setConfirmDelete(false); setDeleteInput(''); }}>
+                取消
+              </button>
+            </div>
           </div>
+        )}
+
+        {/* Action buttons — sticky at bottom, outside scrollable area */}
+        <div style={{ display: 'flex', gap: 8, marginTop: 12, justifyContent: 'flex-end', flexShrink: 0, paddingTop: 10, borderTop: '1px solid var(--line)' }}>
+          <button className="btn btn-g" onClick={() => onExport(t)} style={{ fontSize: 12, padding: '6px 16px' }}>
+            📋 复制奏折
+          </button>
+          <button
+            className="btn"
+            onClick={() => setConfirmDelete(true)}
+            style={{ fontSize: 12, padding: '6px 16px', background: 'rgba(255,82,112,0.15)', color: 'var(--danger)', border: '1px solid rgba(255,82,112,0.3)', borderRadius: 6, cursor: 'pointer' }}
+          >
+            🗑️ 删除此奏折
+          </button>
         </div>
       </div>
     </div>
