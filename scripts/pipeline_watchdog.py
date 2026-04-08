@@ -589,7 +589,24 @@ def check_extreme_stall(task_id, flow_log, task_state, updated_at_str):
 
 
 def clear_agent_sessions(task):
-    """任务完成后清理相关 Agent 的会话链接。"""
+    """通过 Gateway API 清理任务相关 Agent 的会话（仅清理非 main 会话，保留主会话上下文）。
+    
+    注意：不再自动调用此函数！仅在用户手动触发时使用。
+    openclaw agent --agent xxx 默认使用 sessionKey agent:xxx:main 复用会话。
+    清空主会话会导致 Agent 丢失所有历史上下文，引发无限循环。
+    """
+    import urllib.request
+    import urllib.error
+    
+    # 读取 Gateway token
+    gateway_cfg = OCLAW_HOME / "openclaw.json"
+    token = ""
+    try:
+        cfg = json.loads(gateway_cfg.read_text())
+        token = cfg.get("gateway", {}).get("auth", {}).get("token", "")
+    except Exception:
+        pass
+    
     flow_log = task.get("flow_log", [])
     agents_to_clear = set()
     for entry in flow_log:
@@ -597,18 +614,41 @@ def clear_agent_sessions(task):
         if agent_id and agent_id not in ("huangshang", "皇上", "taizi"):
             agents_to_clear.add(agent_id)
     
+    cleared_total = 0
     for agent_id in agents_to_clear:
+        label = ID_TO_LABEL.get(agent_id, agent_id)
         try:
-            sessions_file = OCLAW_HOME / "agents" / agent_id / "sessions" / "sessions.json"
-            if sessions_file.exists():
-                data = json.loads(sessions_file.read_text())
-                if isinstance(data, dict) and data:
-                    # Clear all sessions for this agent
-                    sessions_file.write_text(json.dumps({}, ensure_ascii=False, indent=2))
-                    label = ID_TO_LABEL.get(agent_id, agent_id)
-                    log(f"已清理 {label} ({agent_id}) 的 {len(data)} 个会话")
+            # 列出该 Agent 的所有会话
+            url = f"http://127.0.0.1:18789/api/v1/conversations"
+            headers = {}
+            if token:
+                headers["Authorization"] = f"Bearer {token}"
+            req = urllib.request.Request(url, headers=headers)
+            resp = urllib.request.urlopen(req, timeout=10)
+            data = json.loads(resp.read().decode())
+            conversations = data if isinstance(data, list) else data.get("conversations", data.get("data", []))
+            
+            # 只删除非 main 会话（保留主会话上下文避免循环）
+            for conv in conversations:
+                conv_id = conv.get("id", "")
+                title = conv.get("title", "")
+                # main 会话的 title 通常包含 agent:xxx:main，保留它
+                if "main" in str(conv_id).lower() or "main" in title.lower():
+                    continue
+                # 删除非 main 会话
+                del_url = f"http://127.0.0.1:18789/api/v1/conversations/{conv_id}"
+                del_req = urllib.request.Request(del_url, method="DELETE", headers=headers)
+                try:
+                    urllib.request.urlopen(del_req, timeout=10)
+                    cleared_total += 1
+                except Exception:
+                    pass
+            
+            log(f"已通过 Gateway API 清理 {label} ({agent_id}) 的非 main 会话")
         except Exception as e:
-            log(f"清理 {agent_id} 会话失败: {e}")
+            log(f"通过 Gateway API 清理 {label} ({agent_id}) 会话失败: {e}")
+    
+    return cleared_total
 
 
 # ═══════════════════════════════════════════════════════════════════
@@ -638,10 +678,6 @@ def auto_archive_done_tasks(tasks, now_iso):
         except Exception:
             continue
     if archived_count > 0:
-        # 归档时清理相关 Agent 会话
-        for t in tasks:
-            if t.get("archived") and t.get("state") in ("Done", "Cancelled"):
-                clear_agent_sessions(t)
         save_tasks(tasks)
         log(f"自动归档 {archived_count} 个已完成任务")
     return archived_count
@@ -735,19 +771,6 @@ def _main_inner():
 
     # ── 自动归档 Done 超过 5 分钟的任务 ──
     auto_archive_done_tasks(tasks, now_iso)
-
-    # ── 清理最近2分钟内完成任务的 Agent 会话 ──
-    for t in tasks:
-        if t.get("state") in ("Done", "Cancelled") and not t.get("_sessions_cleared"):
-            updated_at = t.get("updatedAt", "")
-            if updated_at:
-                try:
-                    dt = datetime.datetime.fromisoformat(updated_at.replace("Z", "+00:00").replace("+08:00", ""))
-                    if (now - dt).total_seconds() < 2 * 60:
-                        clear_agent_sessions(t)
-                        t["_sessions_cleared"] = True
-                except Exception:
-                    pass
 
     # 过滤需要检查的任务：
     #   1. 只监察 JJC- 开头的旨意任务（不监察对话）

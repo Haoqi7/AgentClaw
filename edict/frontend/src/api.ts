@@ -122,6 +122,20 @@ export const api = {
   // ── 监察排除 ──
   auditExclude: (taskId: string, action: 'exclude' | 'include' = 'exclude') =>
     postJ<ActionResult & { excluded_count?: number }>(`${API_BASE}/api/audit-exclude`, { taskId, action }),
+
+  // ── 任务删除 ──
+  deleteTask: (taskId: string, confirmId?: string) =>
+    postJ<ActionResult>(`${API_BASE}/api/delete-task`, { taskId, confirmId: confirmId || '' }),
+
+  // ── Gateway 会话管理（代理） ──
+  gatewayConversations: () =>
+    fetchJ<GatewayConversationsResult>(`${API_BASE}/api/gateway/conversations`),
+  gatewayDeleteConversation: (conversationId: string) =>
+    postJ<ActionResult>(`${API_BASE}/api/gateway/conversation/${encodeURIComponent(conversationId)}/delete`, {}),
+  gatewayClearAgentSessions: (agentId: string) =>
+    postJ<ActionResult & { cleared?: number }>(`${API_BASE}/api/gateway/clear-agent-sessions`, { agentId }),
+  gatewaySessionsUrl: () =>
+    fetchJ<{ ok: boolean; url: string }>(`${API_BASE}/api/gateway/sessions-url`),
 };
 
 // ── Types ──
@@ -522,4 +536,28 @@ export interface PipelineAuditData {
   notifications: AuditNotification[];
   archived_violations?: AuditViolation[];
   archived_notifications?: AuditNotification[];
+}
+
+// ── Gateway 会话管理 ──
+
+export interface GatewayConversation {
+  id: string;
+  agent_id?: string;
+  agentId?: string;
+  title?: string;
+  created_at?: string;
+  createdAt?: string;
+  updated_at?: string;
+  updatedAt?: string;
+  message_count?: number;
+  messageCount?: number;
+  status?: string;
+  [key: string]: unknown;
+}
+
+export interface GatewayConversationsResult {
+  ok: boolean;
+  conversations?: GatewayConversation[];
+  total?: number;
+  error?: string;
 }

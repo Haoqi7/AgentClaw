@@ -13,7 +13,7 @@ Endpoints:
 """
 import json, pathlib, subprocess, sys, threading, argparse, datetime, logging, re, os, socket
 from http.server import BaseHTTPRequestHandler, HTTPServer
-from urllib.parse import urlparse
+from urllib.parse import urlparse, quote as _url_quote
 from urllib.request import Request, urlopen
 
 # 引入文件锁工具，确保与其他脚本并发安全
@@ -697,7 +697,8 @@ def handle_create_task(title, org='中书省', official='中书令', priority='n
     if title.lower() in _JUNK_TITLES:
         return {'ok': False, 'error': f'「{title}」不是有效旨意，请输入具体工作指令'}
     # 生成 task id: JJC-YYYYMMDD-NNN
-    today = datetime.datetime.now().strftime('%Y%m%d')
+    _BJT = datetime.timezone(datetime.timedelta(hours=8))
+    today = datetime.datetime.now(_BJT).strftime('%Y%m%d')
     tasks = load_tasks()
     today_ids = [t['id'] for t in tasks if t.get('id', '').startswith(f'JJC-{today}-')]
     seq = 1
@@ -3055,6 +3056,100 @@ class Handler(BaseHTTPRequestHandler):
                 return
             result = handle_delete_task(task_id, confirm_id)
             self.send_json(result)
+            return
+
+        # ── Gateway 会话管理代理 API ──
+        if p == '/api/gateway/conversations':
+            """列出 Gateway 所有会话（代理到 Gateway API）"""
+            try:
+                cfg = json.loads(OCLAW_HOME.joinpath('openclaw.json').read_text())
+                token = cfg.get('gateway', {}).get('auth', {}).get('token', '')
+            except Exception:
+                token = ''
+            try:
+                url = 'http://127.0.0.1:18789/api/v1/conversations'
+                headers = {}
+                if token:
+                    headers['Authorization'] = f'Bearer {token}'
+                req = Request(url, headers=headers)
+                resp = urlopen(req, timeout=10)
+                data = json.loads(resp.read().decode())
+                self.send_json({'ok': True, 'conversations': data if isinstance(data, list) else data.get('data', data.get('conversations', [])), 'total': len(data) if isinstance(data, list) else 0})
+            except Exception as e:
+                self.send_json({'ok': False, 'error': f'Gateway 连接失败: {str(e)[:100]}'}, 502)
+            return
+
+        if p.startswith('/api/gateway/conversation/') and p.endswith('/delete'):
+            """删除指定 Gateway 会话（代理到 Gateway API）"""
+            conv_id = p.replace('/api/gateway/conversation/', '').replace('/delete', '').strip()
+            if not conv_id:
+                self.send_json({'ok': False, 'error': 'conversationId required'}, 400)
+                return
+            try:
+                cfg = json.loads(OCLAW_HOME.joinpath('openclaw.json').read_text())
+                token = cfg.get('gateway', {}).get('auth', {}).get('token', '')
+            except Exception:
+                token = ''
+            try:
+                url = f'http://127.0.0.1:18789/api/v1/conversations/{_url_quote(conv_id, safe="")}'
+                headers = {}
+                if token:
+                    headers['Authorization'] = f'Bearer {token}'
+                req = Request(url, method='DELETE', headers=headers)
+                urlopen(req, timeout=10)
+                self.send_json({'ok': True, 'message': f'会话 {conv_id} 已删除'})
+            except Exception as e:
+                self.send_json({'ok': False, 'error': f'删除失败: {str(e)[:100]}'}, 502)
+            return
+
+        if p == '/api/gateway/clear-agent-sessions':
+            """清空指定 Agent 的所有非 main 会话（通过 Gateway API）"""
+            import urllib.request, urllib.error
+            agent_id = body.get('agentId', '').strip()
+            if not agent_id or not _SAFE_NAME_RE.match(agent_id):
+                self.send_json({'ok': False, 'error': 'agentId 无效'}, 400)
+                return
+            try:
+                cfg = json.loads(OCLAW_HOME.joinpath('openclaw.json').read_text())
+                token = cfg.get('gateway', {}).get('auth', {}).get('token', '')
+            except Exception:
+                token = ''
+            cleared = 0
+            try:
+                url = 'http://127.0.0.1:18789/api/v1/conversations'
+                headers = {}
+                if token:
+                    headers['Authorization'] = f'Bearer {token}'
+                req = Request(url, headers=headers)
+                resp = urlopen(req, timeout=10)
+                data = json.loads(resp.read().decode())
+                conversations = data if isinstance(data, list) else data.get('data', data.get('conversations', []))
+                for conv in conversations:
+                    conv_id = conv.get('id', '')
+                    conv_agent = conv.get('agent_id', conv.get('agentId', ''))
+                    title = str(conv.get('title', ''))
+                    # 匹配该 Agent 的会话
+                    if agent_id not in str(conv_id).lower() and agent_id not in conv_agent.lower() and agent_id not in title.lower():
+                        continue
+                    # 保留 main 会话
+                    if ':main' in str(conv_id).lower() or ':main' in title.lower():
+                        continue
+                    # 删除非 main 会话
+                    del_url = f'http://127.0.0.1:18789/api/v1/conversations/{_url_quote(str(conv_id), safe="")}'
+                    del_req = Request(del_url, method='DELETE', headers=headers)
+                    try:
+                        urlopen(del_req, timeout=10)
+                        cleared += 1
+                    except Exception:
+                        pass
+                self.send_json({'ok': True, 'message': f'已清理 {agent_id} 的 {cleared} 个非 main 会话', 'cleared': cleared})
+            except Exception as e:
+                self.send_json({'ok': False, 'error': f'Gateway 连接失败: {str(e)[:100]}'}, 502)
+            return
+
+        if p == '/api/gateway/sessions-url':
+            """返回 Gateway 会话管理页面的 URL"""
+            self.send_json({'ok': True, 'url': 'http://127.0.0.1:18789/sessions'})
             return
 
         if p == '/api/archive-task':

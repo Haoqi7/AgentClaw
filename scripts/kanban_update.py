@@ -86,8 +86,9 @@ try:
     from utils import now_iso  # noqa: E402
 except ImportError:
     def now_iso():
-        """降级实现：返回当前 ISO 格式时间"""
-        return datetime.datetime.now().isoformat()
+        """降级实现：返回北京时间 ISO 格式时间"""
+        _BJT = datetime.timezone(datetime.timedelta(hours=8))
+        return datetime.datetime.now(_BJT).isoformat()
     log.info('⚠️ utils 模块未找到，使用降级 now_iso 实现')
 
 STATE_ORG_MAP = {
@@ -421,8 +422,8 @@ def _notify_agent(agent_id, task_id, from_org, to_org, title='', remark='', _ret
 
     # ═══════════════════════════════════════════════════════════════════════
     # 🔒 会话去重检查：防止同一任务重复唤醒同一 Agent
+    # 改进：同一任务 + 同一 Agent + 同一目标部门(remark) 只通知一次
     # ═══════════════════════════════════════════════════════════════════════
-    DEDUP_WINDOW_SEC = 30  # 30s内不重复唤醒同一任务的同一 Agent
     try:
         tasks = load()
         t = find_task(tasks, task_id)
@@ -432,20 +433,12 @@ def _notify_agent(agent_id, task_id, from_org, to_org, title='', remark='', _ret
             if notify_count >= _MAX_NOTIFY_PER_TASK:
                 log.warning(f'🔒 全局去重：{task_id} 已通知 {notify_count} 次，达到上限 {_MAX_NOTIFY_PER_TASK}，停止通知')
                 return
-            # 🔒 单 Agent 去重
+            # 🔒 单 Agent 去重：同一任务+同一Agent 只通知一次（不再基于30秒窗口）
             last_notify = t.get('_lastNotify', {})
             agent_notify_info = last_notify.get(agent_id, {})
-            last_time = agent_notify_info.get('at', '')
-            if last_time:
-                try:
-                    dt = datetime.datetime.fromisoformat(last_time.replace('Z', '+00:00'))
-                    now = datetime.datetime.now(dt.tzinfo) if dt.tzinfo else datetime.datetime.now()
-                    elapsed = (now - dt).total_seconds()
-                    if elapsed < DEDUP_WINDOW_SEC:
-                        log.info(f'🔒 去重跳过：{task_id} → {agent_id}，上次通知仅 {elapsed:.0f}s 前')
-                        return
-                except Exception:
-                    pass
+            if agent_notify_info.get('done'):
+                log.info(f'🔒 去重跳过：{task_id} → {agent_id}，该 Agent 已被通知过（状态级别去重）')
+                return
     except Exception:
         pass
     to_label = _AGENT_LABELS.get(agent_id, agent_id)
@@ -499,13 +492,13 @@ def _notify_agent(agent_id, task_id, from_org, to_org, title='', remark='', _ret
         return
 
     # ═══════════════════════════════════════════════════════════════════════
-    # 🔒 会话去重：记录本次通知时间，用于后续去重判断
+    # 🔒 会话去重：记录本次通知（标记 done=true，后续不再重复通知）
     # ═══════════════════════════════════════════════════════════════════════
     def _record_notify(tasks):
         t = find_task(tasks, task_id)
         if not t:
             return tasks
-        t.setdefault('_lastNotify', {})[agent_id] = {'at': now_iso(), 'remark': remark[:60] if remark else ''}
+        t.setdefault('_lastNotify', {})[agent_id] = {'at': now_iso(), 'remark': remark[:60] if remark else '', 'done': True}
         return tasks
     try:
         atomic_json_update(TASKS_FILE, _record_notify, [])

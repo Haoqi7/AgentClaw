@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { useStore, isEdict, STATE_LABEL } from '../store';
-import type { Task, FlowEntry } from '../api';
+import { api, type Task, type FlowEntry } from '../api';
 
 export default function MemorialPanel() {
   const liveStatus = useStore((s) => s.liveStatus);
@@ -33,6 +33,20 @@ export default function MemorialPanel() {
       () => toast('✅ 奏折已复制为 Markdown', 'ok'),
       () => toast('复制失败', 'err')
     );
+  };
+
+  const handleDelete = async (t: Task) => {
+    try {
+      const r = await api.deleteTask(t.id, t.id);
+      if (r.ok) {
+        toast(`✅ ${t.id} 已删除`, 'ok');
+        setDetailTask(null);
+      } else {
+        toast(`❌ ${r.error || '删除失败'}`, 'err');
+      }
+    } catch {
+      toast('删除请求失败', 'err');
+    }
   };
 
   return (
@@ -94,7 +108,12 @@ export default function MemorialPanel() {
 
       {/* Detail Modal */}
       {detailTask && (
-        <MemorialDetailModal task={detailTask} onClose={() => setDetailTask(null)} onExport={exportMemorial} />
+        <MemorialDetailModal
+          task={detailTask}
+          onClose={() => setDetailTask(null)}
+          onExport={exportMemorial}
+          onDelete={handleDelete}
+        />
       )}
     </div>
   );
@@ -104,11 +123,16 @@ function MemorialDetailModal({
   task: t,
   onClose,
   onExport,
+  onDelete,
 }: {
   task: Task;
   onClose: () => void;
   onExport: (t: Task) => void;
+  onDelete: (t: Task) => void;
 }) {
+  const [confirmDelete, setConfirmDelete] = useState(false);
+  const [deleteInput, setDeleteInput] = useState('');
+  const toast = useStore((s) => s.toast);
   const fl = t.flow_log || [];
   const st = t.state || 'Unknown';
   const stIcon = st === 'Done' ? '✅' : st === 'Cancelled' ? '🚫' : '🔄';
@@ -127,6 +151,14 @@ function MemorialDetailModal({
     else if (f.remark && (f.remark.includes('完成') || f.remark.includes('回奏'))) resultLog.push(f);
     else execLog.push(f);
   }
+
+  const handleConfirmDelete = () => {
+    if (deleteInput.trim() !== t.id) {
+      toast('❌ 确认ID不匹配，请输入正确的任务编号', 'err');
+      return;
+    }
+    onDelete(t);
+  };
 
   const renderPhase = (title: string, icon: string, items: FlowEntry[]) => {
     if (!items.length) return null;
@@ -190,9 +222,41 @@ function MemorialDetailModal({
             </div>
           )}
 
+          {/* Delete Confirmation Area */}
+          {confirmDelete && (
+            <div style={{ marginTop: 16, padding: 14, background: 'rgba(255,82,112,0.08)', border: '1px solid rgba(255,82,112,0.3)', borderRadius: 10 }}>
+              <div style={{ fontSize: 13, fontWeight: 700, color: 'var(--danger)', marginBottom: 8 }}>⚠️ 确认删除此奏折</div>
+              <div style={{ fontSize: 12, color: 'var(--muted)', marginBottom: 10 }}>
+                此操作不可撤销。请输入任务编号 <code style={{ background: 'var(--panel2)', padding: '2px 6px', borderRadius: 4 }}>{t.id}</code> 确认：
+              </div>
+              <div style={{ display: 'flex', gap: 8 }}>
+                <input
+                  style={{ flex: 1, padding: '6px 12px', borderRadius: 6, border: '1px solid var(--line)', background: 'var(--panel2)', color: 'var(--fg)', fontSize: 12, outline: 'none' }}
+                  placeholder={t.id}
+                  value={deleteInput}
+                  onChange={(e) => setDeleteInput(e.target.value)}
+                  onKeyDown={(e) => { if (e.key === 'Enter') handleConfirmDelete(); }}
+                />
+                <button className="btn" style={{ background: 'var(--danger)', color: '#fff', fontSize: 12, padding: '6px 16px', border: 'none', borderRadius: 6, cursor: 'pointer' }} onClick={handleConfirmDelete}>
+                  确认删除
+                </button>
+                <button className="btn btn-g" style={{ fontSize: 12, padding: '6px 16px' }} onClick={() => { setConfirmDelete(false); setDeleteInput(''); }}>
+                  取消
+                </button>
+              </div>
+            </div>
+          )}
+
           <div style={{ display: 'flex', gap: 8, marginTop: 16, justifyContent: 'flex-end' }}>
             <button className="btn btn-g" onClick={() => onExport(t)} style={{ fontSize: 12, padding: '6px 16px' }}>
               📋 复制奏折
+            </button>
+            <button
+              className="btn"
+              onClick={() => setConfirmDelete(true)}
+              style={{ fontSize: 12, padding: '6px 16px', background: 'rgba(255,82,112,0.15)', color: 'var(--danger)', border: '1px solid rgba(255,82,112,0.3)', borderRadius: 6, cursor: 'pointer' }}
+            >
+              🗑️ 删除此奏折
             </button>
           </div>
         </div>

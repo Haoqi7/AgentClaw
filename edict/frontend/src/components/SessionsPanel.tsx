@@ -1,5 +1,6 @@
 import { useStore, isEdict, STATE_LABEL, timeAgo } from '../store';
 import type { Task } from '../api';
+import { api } from '../api';
 import { useState } from 'react';
 
 // Agent maps built from agentConfig
@@ -66,6 +67,9 @@ export default function SessionsPanel() {
   const setSessFilter = useStore((s) => s.setSessFilter);
   const { emojiMap, labelMap } = useAgentMaps();
   const [detailTask, setDetailTask] = useState<Task | null>(null);
+  const [clearingAgent, setClearingAgent] = useState<string | null>(null);
+  const [showAgentMenu, setShowAgentMenu] = useState(false);
+  const toast = useStore((s) => s.toast);
 
   const tasks = liveStatus?.tasks || [];
   const sessions = tasks.filter((t) => !isEdict(t));
@@ -77,8 +81,113 @@ export default function SessionsPanel() {
   // Unique agents for filter tabs
   const agentIds = [...new Set(sessions.map(extractAgent))];
 
+  // Gateway 会话管理
+  const openGatewaySessions = async () => {
+    try {
+      const r = await api.gatewaySessionsUrl();
+      if (r.ok && r.url) {
+        window.open(r.url, '_blank');
+      } else {
+        toast('⚠️ 无法获取 Gateway 地址，请手动访问 http://127.0.0.1:18789/sessions', 'err');
+      }
+    } catch {
+      toast('⚠️ Gateway 连接失败，请确认 Gateway 已启动', 'err');
+    }
+  };
+
+  // 清空指定 Agent 的非 main 会话
+  const clearAgentSessions = async (agentId: string) => {
+    setClearingAgent(agentId);
+    setShowAgentMenu(false);
+    try {
+      const r = await api.gatewayClearAgentSessions(agentId);
+      if (r.ok) {
+        toast(`✅ 已清理 ${labelMap[agentId] || agentId} 的 ${r.cleared || 0} 个非主会话`, 'ok');
+      } else {
+        toast(`❌ ${r.error || '清理失败'}`, 'err');
+      }
+    } catch {
+      toast('❌ Gateway 连接失败', 'err');
+    } finally {
+      setClearingAgent(null);
+    }
+  };
+
   return (
     <div>
+      {/* Header Actions */}
+      <div style={{ display: 'flex', gap: 8, marginBottom: 12, alignItems: 'center', flexWrap: 'wrap' }}>
+        <button
+          className="btn btn-g"
+          onClick={openGatewaySessions}
+          style={{ fontSize: 12, padding: '5px 14px' }}
+        >
+          🔗 Gateway 会话管理
+        </button>
+        <div style={{ position: 'relative' }}>
+          <button
+            className="btn"
+            onClick={() => setShowAgentMenu(!showAgentMenu)}
+            disabled={clearingAgent !== null}
+            style={{ fontSize: 12, padding: '5px 14px', background: 'rgba(255,82,112,0.12)', color: 'var(--danger)', border: '1px solid rgba(255,82,112,0.25)', borderRadius: 6, cursor: 'pointer' }}
+          >
+            {clearingAgent ? `⏳ 清理中...` : '🧹 清空Agent会话'}
+          </button>
+          {showAgentMenu && (
+            <div
+              style={{
+                position: 'absolute', top: '100%', left: 0, zIndex: 100,
+                background: 'var(--panel2)', border: '1px solid var(--line)',
+                borderRadius: 8, padding: 6, minWidth: 160, marginTop: 4,
+                boxShadow: '0 4px 16px rgba(0,0,0,0.2)'
+              }}
+            >
+              <div style={{ fontSize: 11, color: 'var(--muted)', padding: '4px 8px', marginBottom: 4 }}>选择要清理的 Agent：</div>
+              {agentIds.slice(0, 12).map((id) => (
+                <div
+                  key={id}
+                  onClick={() => clearAgentSessions(id)}
+                  style={{
+                    padding: '6px 10px', borderRadius: 6, cursor: 'pointer',
+                    fontSize: 12, display: 'flex', alignItems: 'center', gap: 6,
+                  }}
+                  onMouseEnter={(e) => (e.currentTarget.style.background = 'var(--panel)')}
+                  onMouseLeave={(e) => (e.currentTarget.style.background = 'transparent')}
+                >
+                  <span>{emojiMap[id] || '🏛️'}</span>
+                  <span>{labelMap[id] || id}</span>
+                  <span style={{ fontSize: 10, color: 'var(--muted)', marginLeft: 'auto' }}>
+                    {sessions.filter((t) => extractAgent(t) === id).length} 会话
+                  </span>
+                </div>
+              ))}
+              <div style={{ borderTop: '1px solid var(--line)', marginTop: 4, paddingTop: 4 }}>
+                <div
+                  onClick={() => clearAgentSessions('all')}
+                  style={{
+                    padding: '6px 10px', borderRadius: 6, cursor: 'pointer',
+                    fontSize: 12, color: 'var(--danger)', fontWeight: 600,
+                  }}
+                  onMouseEnter={(e) => (e.currentTarget.style.background = 'rgba(255,82,112,0.1)')}
+                  onMouseLeave={(e) => (e.currentTarget.style.background = 'transparent')}
+                >
+                  🧹 清空所有Agent
+                </div>
+              </div>
+              <div
+                onClick={() => setShowAgentMenu(false)}
+                style={{ padding: '4px 10px', marginTop: 2 }}
+              >
+                <span style={{ fontSize: 11, color: 'var(--muted)' }}>取消</span>
+              </div>
+            </div>
+          )}
+        </div>
+        <span style={{ fontSize: 11, color: 'var(--muted)', marginLeft: 'auto' }}>
+          共 {sessions.length} 个会话 · 仅清理非主会话（保留上下文）
+        </span>
+      </div>
+
       {/* Filters */}
       <div style={{ display: 'flex', gap: 6, marginBottom: 16, flexWrap: 'wrap' }}>
         {[
