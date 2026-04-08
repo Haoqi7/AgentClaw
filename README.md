@@ -62,7 +62,7 @@ openclaw init
 
 ```bash
 git clone https://github.com/Haoqi7/AgentClaw.git
-cd edict
+cd AgentClaw
 chmod +x install.sh && ./install.sh
 ```
 
