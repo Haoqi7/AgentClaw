@@ -74,13 +74,15 @@ def load_activity(session_file, limit=12):
         try:
             item = json.loads(ln)
             events.append(item)
-        except:
+        except Exception:
             continue
 
     # Process events to extract meaningful activity
     # We want to show what the agent is *thinking* or *doing*
     for item in reversed(events):
         msg = item.get('message') or {}
+        if not isinstance(msg, dict):
+            msg = {}
         role = msg.get('role')
         ts = item.get('timestamp') or ''
 
@@ -88,7 +90,8 @@ def load_activity(session_file, limit=12):
             tool = msg.get('toolName', '-')
             details = msg.get('details') or {}
             # If tool output is short, show it
-            content = msg.get('content', [{'text': ''}])[0].get('text', '')
+            content_items = msg.get('content') or []
+            content = (content_items[0] if content_items else {}).get('text', '')
             if len(content) < 50:
                 text = f"Tool '{tool}' returned: {content}"
             else:
