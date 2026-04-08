@@ -128,11 +128,13 @@ def _check_api_auth(handler):
     referer = handler.headers.get('Referer', '')
     host = handler.headers.get('Host', '')
     port = getattr(_check_api_auth, '_port', 7891)  # main() 设置
+    import re as _re
+    _port_pat = _re.compile(rf':({port})(/|$)')
     for src in (origin, referer):
-        if src and (f':{port}' in src or f':{port}/' in src):
+        if src and _port_pat.search(src):
             return True
     # 无 Origin 且 Host 匹配（如 curl localhost:7891）
-    if not origin and host and (f':{port}' in host or host.startswith(f'127.0.0.1:{port}') or host.startswith(f'localhost:{port}')):
+    if not origin and host and (host == f'127.0.0.1:{port}' or host == f'localhost:{port}' or host.startswith(f'127.0.0.1:{port}/') or host.startswith(f'localhost:{port}/')):
         return True
     auth_header = handler.headers.get('Authorization', '')
     if auth_header == f'Bearer {token}':
@@ -337,7 +339,7 @@ def read_skill_content(agent_id, skill_name):
     skill_path = pathlib.Path(sk.get('path', '')).resolve()
     # 路径遍历保护：确保路径在 OCLAW_HOME 或项目目录下
     allowed_roots = (OCLAW_HOME.resolve(), BASE.parent.resolve())
-    if not any(str(skill_path).startswith(str(root)) for root in allowed_roots):
+    if not any(str(skill_path).startswith(str(root) + os.sep) or skill_path == root for root in allowed_roots):
         return {'ok': False, 'error': '路径不在允许的目录范围内'}
     if not skill_path.exists():
         return {'ok': True, 'name': skill_name, 'agent': agent_id, 'content': '(SKILL.md 文件不存在)', 'path': str(skill_path)}
@@ -409,7 +411,9 @@ def add_remote_skill(agent_id, skill_name, source_url, description=''):
     
     # 下载或读取文件内容
     try:
-        if source_url.startswith('http://') or source_url.startswith('https://'):
+        if source_url.startswith('http://'):
+            return {'ok': False, 'error': 'URL 无效或不安全（仅支持 HTTPS）'}
+        if source_url.startswith('https://'):
             # HTTPS URL 校验
             if not validate_url(source_url, allowed_schemes=('https',)):
                 return {'ok': False, 'error': 'URL 无效或不安全（仅支持 HTTPS）'}
@@ -418,17 +422,22 @@ def add_remote_skill(agent_id, skill_name, source_url, description=''):
             req = Request(source_url, headers={'User-Agent': 'OpenClaw-SkillManager/1.0'})
             try:
                 resp = urlopen(req, timeout=10)
-                content = resp.read(10 * 1024 * 1024).decode('utf-8')  # 最多 10MB
-                if len(content) > 10 * 1024 * 1024:
+                raw = resp.read(10 * 1024 * 1024)
+                if len(raw) > 10 * 1024 * 1024:
                     return {'ok': False, 'error': '文件过大（最大 10MB）'}
+                content = raw.decode('utf-8', errors='replace')
             except Exception as e:
                 return {'ok': False, 'error': f'URL 无法访问: {str(e)[:100]}'}
         
         elif source_url.startswith('file://'):
             # file:// URL 格式
-            local_path = pathlib.Path(source_url[7:])
+            local_path = pathlib.Path(source_url[7:]).resolve()
             if not local_path.exists():
                 return {'ok': False, 'error': f'本地文件不存在: {local_path}'}
+            # 路径遍历防护
+            allowed_roots = (OCLAW_HOME.resolve(), BASE.parent.resolve())
+            if not any(str(local_path).startswith(str(root) + os.sep) or local_path == root for root in allowed_roots):
+                return {'ok': False, 'error': '路径不在允许的目录范围内'}
             content = local_path.read_text()
         
         elif source_url.startswith('/') or source_url.startswith('.'):
@@ -438,10 +447,9 @@ def add_remote_skill(agent_id, skill_name, source_url, description=''):
                 return {'ok': False, 'error': f'本地文件不存在: {local_path}'}
             # 路径遍历防护
             allowed_roots = (OCLAW_HOME.resolve(), BASE.parent.resolve())
-            if not any(str(local_path).startswith(str(root)) for root in allowed_roots):
+            if not any(str(local_path).startswith(str(root) + os.sep) or local_path == root for root in allowed_roots):
                 return {'ok': False, 'error': '路径不在允许的目录范围内'}
             content = local_path.read_text()
-        
         else:
             return {'ok': False, 'error': '不支持的 URL 格式（仅支持 https://, file://, 或本地路径）'}
     except Exception as e:

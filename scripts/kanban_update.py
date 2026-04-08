@@ -417,8 +417,8 @@ try:
         # 12分钟内无任何进展 → 发送催办
         msg = (
             "⏰ 自动催办通知\\n"
-            "任务ID: {task_id_escaped}\\n"
-            "任务标题: {title_escaped}\\n"
+            "任务ID: " + {task_id_escaped} + "\\n"
+            "任务标题: " + {title_escaped} + "\\n"
             f"已等待: {_DOING_STALL_SEC // 60} 分钟\\n\\n"
             "系统检测到该任务进入 Doing 状态后 12 分钟内无任何进展更新。\\n"
             "请立即确认任务状态并更新进展（progress 命令）。\\n\\n"

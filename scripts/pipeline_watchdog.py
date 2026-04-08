@@ -107,8 +107,13 @@ NAME_TO_ID = {
     "六部中": "_liubu_invalid",
 }
 
-# agent_id → 中文显示名
-ID_TO_LABEL = {v: k for k, v in NAME_TO_ID.items() if v != "huangshang"}
+# agent_id → 中文显示名（优先使用完整名称如"中书省"而非简称"中书"）
+ID_TO_LABEL = {}
+for _k, _v in NAME_TO_ID.items():
+    if _v == "huangshang":
+        continue
+    if _v not in ID_TO_LABEL or len(_k) > len(ID_TO_LABEL[_v]):
+        ID_TO_LABEL[_v] = _k
 ID_TO_LABEL.setdefault("huangshang", "皇上")
 
 # agent_id → 部门名称（用于 LEGAL_FLOWS / PARENT_MAP / REQUIRED_STEPS 匹配）
@@ -609,7 +614,9 @@ def check_extreme_stall(task_id, flow_log, task_state, updated_at_str):
     if not updated_at_str:
         return None
     try:
-        dt = datetime.datetime.fromisoformat(updated_at_str.replace("+08:00", "").replace("+00:00", "").replace("Z", "+08:00"))
+        dt = datetime.datetime.fromisoformat(updated_at_str.replace("Z", "+00:00").replace("+08:00", ""))
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=datetime.timezone(datetime.timedelta(hours=8)))
         now = datetime.datetime.now(_BJT)
         elapsed = (now - dt).total_seconds()
         if elapsed >= EXTREME_STALL_THRESHOLD:
@@ -710,6 +717,8 @@ def auto_archive_done_tasks(tasks, now_iso):
             continue
         try:
             dt = datetime.datetime.fromisoformat(updated_at.replace("Z", "+00:00").replace("+08:00", ""))
+            if dt.tzinfo is None:
+                dt = dt.replace(tzinfo=datetime.timezone(datetime.timedelta(hours=8)))
             now = datetime.datetime.now(_BJT)
             if (now - dt).total_seconds() >= AUTO_ARCHIVE_MINUTES * 60:
                 t["archived"] = True

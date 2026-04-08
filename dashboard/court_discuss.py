@@ -628,11 +628,11 @@ _SIMULATED_RESPONSES = {
         '臣建议增加测试验收环节，质量是底线，不能因赶工而降低标准。',
         '*正色道* 风险评估不可敷衍：边界条件、异常处理、日志规范都需审计过关。',
     ],
-    'gongbu': {
+    'gongbu': [
         '从技术架构来看，这个方案是可行的，但需考虑扩展性和模块化设计。',
         '臣可以先搭个原型出来，快速验证技术可行性，再迭代完善。',
         '*整了整官帽* 技术实现方面臣有建议——API设计和数据结构需要先理清……',
-    },
+    ],
     'libu': [
         '臣建议先拟一份正式文档，明确各方职责、验收标准和输出规范。',
         '此事当载入记录，臣来负责撰写方案文档和对外公告，确保规范统一。',
@@ -656,8 +656,8 @@ def _simulated_discuss(session: dict, user_message: str = None, decree: str = No
     for o in officials:
         oid = o['id']
         pool = _SIMULATED_RESPONSES.get(oid, [])
-        if isinstance(pool, set):
-            pool = list(pool)
+        if isinstance(pool, (set, dict)):
+            pool = list(pool.values() if isinstance(pool, dict) else pool)
         if not pool:
             pool = ['臣附议。', '臣有不同看法。', '臣需要再想想。']
 

@@ -9,7 +9,10 @@ export default function CourtCeremony() {
   useEffect(() => {
     const lastOpen = localStorage.getItem('openclaw_court_date');
     const today = new Date().toISOString().substring(0, 10);
-    const pref = JSON.parse(localStorage.getItem('openclaw_court_pref') || '{"enabled":true}');
+    let pref = { enabled: true };
+    try {
+      pref = JSON.parse(localStorage.getItem('openclaw_court_pref') || '{"enabled":true}');
+    } catch { /* localStorage 数据损坏时降级为默认值 */ }
     if (!pref.enabled || lastOpen === today) return;
     localStorage.setItem('openclaw_court_date', today);
     setShow(true);

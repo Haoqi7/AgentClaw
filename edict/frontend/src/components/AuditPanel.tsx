@@ -485,7 +485,7 @@ function TaskViolationGroup({ taskId, violations, isResolved }: { taskId: string
 
   return (
     <div style={{
-      borderRadius: 10, background: isResolved ? 'var(--panel1)' : 'var(--panel2)',
+      borderRadius: 10, background: isResolved ? 'var(--panel)' : 'var(--panel2)',
       border: `1px solid ${isResolved ? 'var(--line)' : 'var(--line)'}`,
       overflow: 'hidden', opacity: isResolved ? 0.55 : 1,
     }}>

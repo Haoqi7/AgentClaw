@@ -224,7 +224,7 @@ def main():
                 scan_files += 1
 
                 try:
-                    raw = json.loads(sessions_file.read_text())
+                    raw = json.loads(sessions_file.read_text(encoding='utf-8'))
                 except Exception:
                     continue
 
@@ -240,7 +240,7 @@ def main():
         mc_tasks_file = DATA / 'mission_control_tasks.json'
         if mc_tasks_file.exists():
             try:
-                mc_tasks = json.loads(mc_tasks_file.read_text())
+                mc_tasks = json.loads(mc_tasks_file.read_text(encoding='utf-8'))
                 if isinstance(mc_tasks, list):
                     tasks.extend(mc_tasks)
             except Exception:
@@ -308,7 +308,7 @@ def main():
         existing_tasks_file = DATA / 'tasks_source.json'
         if existing_tasks_file.exists():
             try:
-                existing = json.loads(existing_tasks_file.read_text())
+                existing = json.loads(existing_tasks_file.read_text(encoding='utf-8'))
                 jjc_existing = [t for t in existing if str(t.get('id', '')).startswith('JJC')]
                 
                 # 去掉 tasks 里已有的 JJC（以防重复），再把旨意放到最前面
