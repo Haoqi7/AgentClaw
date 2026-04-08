@@ -136,7 +136,7 @@ open http://127.0.0.1:7891
 
 ## docker部署
 从release下载对应版本，上传到docker。
-开放port：'7891'，'17889'
+开放port：'7891'，'18789'
 挂载 '/root/.openclaw'
 ## 🎯 进阶用法
 
