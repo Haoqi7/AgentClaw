@@ -83,7 +83,7 @@ except Exception as e:
 AGENTS_TO_REMOVE = {
     "taizi", "zhongshu", "menxia", "shangshu",
     "hubu", "libu", "bingbu", "xingbu", "gongbu",
-    "libu_hr", "zaochao"
+    "libu_hr", "zaochao", "jiancha"
 }
 
 agents_list = cfg.get('agents', {}).get('list', [])
