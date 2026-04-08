@@ -35,6 +35,9 @@ import datetime
 import fcntl
 import os
 
+# 北京时区 (UTC+8)
+_BJT = datetime.timezone(datetime.timedelta(hours=8))
+
 # ── 路径配置 ──────────────────────────────────────────────────────
 REPO_DIR = pathlib.Path(__file__).resolve().parent.parent
 DATA_DIR = REPO_DIR / "data"
@@ -44,13 +47,13 @@ EXCLUDE_FILE = DATA_DIR / "audit_exclude.json"
 OCLAW_HOME = pathlib.Path.home() / ".openclaw"
 
 # ── 超时阈值（秒）─────────────────────────────────────────────────
-BREAK_TIMEOUT_SEC = 60   # 1 分钟无回应判定为断链
+BREAK_TIMEOUT_SEC = 90   # 1.5 分钟无回应判定为断链
 RECENT_DONE_MINUTES = 10  # 最近 N 分钟内完成的任务也需检查（防止速通逃逸）
 AUTO_ARCHIVE_MINUTES = 5  # Done 超过 N 分钟自动归档
 
 # ── 日志工具 ──────────────────────────────────────────────────────
 def log(msg):
-    ts = datetime.datetime.now(datetime.timezone.utc).strftime("%H:%M:%S")
+    ts = datetime.datetime.now(_BJT).strftime("%H:%M:%S")
     print(f"[{ts}] [监察] {msg}", flush=True)
 
 
@@ -58,7 +61,7 @@ def _write_heartbeat():
     """写入心跳时间戳（main 入口处调用），即使后续逻辑崩溃也能证明监察在运行。"""
     try:
         audit = load_audit()
-        now_iso = datetime.datetime.now(datetime.timezone.utc).isoformat().replace("+00:00", "Z")
+        now_iso = datetime.datetime.now(_BJT).isoformat()
         audit["last_check"] = now_iso
         audit.pop("error", None)  # 清除上次的错误标记
         save_audit(audit)
@@ -292,14 +295,14 @@ def normalize_name(raw):
 
 
 def wake_agent(agent_id, reason=""):
-    """唤醒指定 Agent（异步，发送心跳消息）。返回 (success, detail)。"""
+    """唤醒指定 Agent（发送心跳消息 + 30秒后验证是否活跃）。返回 (success, detail)。"""
     if agent_id in ("huangshang", "皇上"):
         return False, "不唤醒皇上"
     label = ID_TO_LABEL.get(agent_id, agent_id)
     msg = (
         f"🔔 监察心跳通知\n"
         f"原因: {reason or '流程断链，需要你恢复在线'}\n"
-        f"时间: {datetime.datetime.now(datetime.timezone.utc).isoformat().replace('+00:00', 'Z')}\n"
+        f"时间: {datetime.datetime.now(_BJT).isoformat()}\n"
         f"请确认在线并继续处理待办任务。"
     )
     try:
@@ -309,6 +312,19 @@ def wake_agent(agent_id, reason=""):
             stderr=subprocess.DEVNULL,
         )
         log(f"已唤醒 {label} ({agent_id})")
+        # 30秒后验证 Agent 是否活跃
+        time.sleep(30)
+        if not is_agent_awake(agent_id):
+            log(f"{label} ({agent_id}) 唤醒后30秒仍无活动，尝试二次唤醒")
+            try:
+                subprocess.Popen(
+                    ["openclaw", "agent", "--agent", agent_id, "-m", msg, "--timeout", "120"],
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                )
+                log(f"已二次唤醒 {label} ({agent_id})")
+            except Exception as e2:
+                log(f"二次唤醒 {label} ({agent_id}) 失败: {e2}")
         return True, f"已向 {label} 发送唤醒消息"
     except Exception as e:
         log(f"唤醒 {label} ({agent_id}) 失败: {e}")
@@ -503,7 +519,7 @@ def check_broken_chain(task_id, flow_log):
     except Exception:
         return None
 
-    now = datetime.datetime.now(datetime.timezone.utc)
+    now = datetime.datetime.now(_BJT)
     elapsed = (now - last_at).total_seconds()
 
     if elapsed < BREAK_TIMEOUT_SEC:
@@ -540,6 +556,61 @@ def check_broken_chain(task_id, flow_log):
     }
 
 
+# 极端停滞阈值
+EXTREME_STALL_THRESHOLD = 30 * 60  # 30分钟无任何更新视为极端停滞
+
+
+def check_extreme_stall(task_id, flow_log, task_state, updated_at_str):
+    """检查任务是否极端停滞（30分钟无任何更新）。
+    适用于 Doing/Review/Assigned 等活跃状态。
+    """
+    if task_state in ("Done", "Cancelled", "Blocked"):
+        return None
+    if not updated_at_str:
+        return None
+    try:
+        dt = datetime.datetime.fromisoformat(updated_at_str.replace("+08:00", "").replace("+00:00", "").replace("Z", "+08:00"))
+        now = datetime.datetime.now(_BJT)
+        elapsed = (now - dt).total_seconds()
+        if elapsed >= EXTREME_STALL_THRESHOLD:
+            label = ID_TO_LABEL.get(
+                normalize_name(flow_log[-1].get("to", "")) if flow_log else "",
+                "未知"
+            ) if flow_log else "未知"
+            return {
+                "type": "极端停滞",
+                "detail": f"任务在 {task_state} 状态已停滞 {int(elapsed // 60)} 分钟无更新（阈值 {EXTREME_STALL_THRESHOLD // 60} 分钟）",
+                "elapsed_sec": int(elapsed),
+                "target_label": label,
+            }
+    except Exception:
+        pass
+    return None
+
+
+def clear_agent_sessions(task):
+    """任务完成后清理相关 Agent 的会话链接。"""
+    flow_log = task.get("flow_log", [])
+    agents_to_clear = set()
+    for entry in flow_log:
+        agent_id = normalize_name(entry.get("to", ""))
+        if agent_id and agent_id not in ("huangshang", "皇上", "taizi"):
+            agents_to_clear.add(agent_id)
+    
+    for agent_id in agents_to_clear:
+        try:
+            sessions_file = OCLAW_HOME / "agents" / agent_id / "sessions" / "sessions.json"
+            if sessions_file.exists():
+                data = json.loads(sessions_file.read_text())
+                if isinstance(data, dict) and data:
+                    # Clear all sessions for this agent
+                    sessions_file.write_text(json.dumps({}, ensure_ascii=False, indent=2))
+                    label = ID_TO_LABEL.get(agent_id, agent_id)
+                    log(f"已清理 {label} ({agent_id}) 的 {len(data)} 个会话")
+        except Exception as e:
+            log(f"清理 {agent_id} 会话失败: {e}")
+
+
 # ═══════════════════════════════════════════════════════════════════
 #  自动归档
 # ═══════════════════════════════════════════════════════════════════
@@ -558,8 +629,8 @@ def auto_archive_done_tasks(tasks, now_iso):
         if not updated_at:
             continue
         try:
-            dt = datetime.datetime.fromisoformat(updated_at.replace("Z", "+00:00"))
-            now = datetime.datetime.now(datetime.timezone.utc)
+            dt = datetime.datetime.fromisoformat(updated_at.replace("Z", "+00:00").replace("+08:00", ""))
+            now = datetime.datetime.now(_BJT)
             if (now - dt).total_seconds() >= AUTO_ARCHIVE_MINUTES * 60:
                 t["archived"] = True
                 t["archivedAt"] = now_iso
@@ -567,6 +638,10 @@ def auto_archive_done_tasks(tasks, now_iso):
         except Exception:
             continue
     if archived_count > 0:
+        # 归档时清理相关 Agent 会话
+        for t in tasks:
+            if t.get("archived") and t.get("state") in ("Done", "Cancelled"):
+                clear_agent_sessions(t)
         save_tasks(tasks)
         log(f"自动归档 {archived_count} 个已完成任务")
     return archived_count
@@ -582,8 +657,8 @@ def _is_recently_done(task):
     if not updated_at:
         return False
     try:
-        dt = datetime.datetime.fromisoformat(updated_at.replace("Z", "+00:00"))
-        now = datetime.datetime.now(datetime.timezone.utc)
+        dt = datetime.datetime.fromisoformat(updated_at.replace("Z", "+00:00").replace("+08:00", ""))
+        now = datetime.datetime.now(_BJT)
         return (now - dt).total_seconds() < RECENT_DONE_MINUTES * 60
     except Exception:
         return False
@@ -643,7 +718,7 @@ def _main_inner():
     if not tasks:
         # 即使没有任务也写入审计日志（标记监察在运行）
         audit = load_audit()
-        now_iso = datetime.datetime.now(datetime.timezone.utc).isoformat().replace("+00:00", "Z")
+        now_iso = datetime.datetime.now(_BJT).isoformat()
         audit["last_check"] = now_iso
         audit["watched_tasks"] = []
         audit["watched_count"] = 0
@@ -652,14 +727,27 @@ def _main_inner():
         log("本轮检查完成，无任务")
         return
 
-    now = datetime.datetime.now(datetime.timezone.utc)
-    now_iso = now.isoformat().replace("+00:00", "Z")
+    now = datetime.datetime.now(_BJT)
+    now_iso = now.isoformat()
 
     # 加载排除列表
     exclude_list = load_exclude_list()
 
     # ── 自动归档 Done 超过 5 分钟的任务 ──
     auto_archive_done_tasks(tasks, now_iso)
+
+    # ── 清理最近2分钟内完成任务的 Agent 会话 ──
+    for t in tasks:
+        if t.get("state") in ("Done", "Cancelled") and not t.get("_sessions_cleared"):
+            updated_at = t.get("updatedAt", "")
+            if updated_at:
+                try:
+                    dt = datetime.datetime.fromisoformat(updated_at.replace("Z", "+00:00").replace("+08:00", ""))
+                    if (now - dt).total_seconds() < 2 * 60:
+                        clear_agent_sessions(t)
+                        t["_sessions_cleared"] = True
+                except Exception:
+                    pass
 
     # 过滤需要检查的任务：
     #   1. 只监察 JJC- 开头的旨意任务（不监察对话）
@@ -782,6 +870,21 @@ def _main_inner():
                     "title": title,
                     "type": "直接执行越权",
                     "detail": direct_exec,
+                    "detected_at": now_iso,
+                }
+                new_violations.append(violation)
+
+        # ── 检查 2.7：极端停滞检测 ──
+        updated_at_str = task.get("updatedAt", "")
+        stall_info = check_extreme_stall(task_id, flow_log, task_state, updated_at_str)
+        if stall_info:
+            v_key = (task_id, "极端停滞", -1, stall_info["detail"])
+            if v_key not in existing_violation_keys:
+                violation = {
+                    "task_id": task_id,
+                    "title": title,
+                    "type": "极端停滞",
+                    "detail": stall_info["detail"],
                     "detected_at": now_iso,
                 }
                 new_violations.append(violation)
@@ -982,7 +1085,7 @@ if __name__ == "__main__":
         # 确保即使崩溃也更新 last_check 并标记错误
         try:
             audit = load_audit()
-            now_iso = datetime.datetime.now(datetime.timezone.utc).isoformat().replace("+00:00", "Z")
+            now_iso = datetime.datetime.now(_BJT).isoformat()
             audit["last_check"] = now_iso
             audit["error"] = str(e)[:500]
             save_audit(audit)

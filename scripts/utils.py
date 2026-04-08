@@ -5,6 +5,8 @@
 """
 import json, pathlib, datetime
 
+# 北京时区 (UTC+8)
+_BJT = datetime.timezone(datetime.timedelta(hours=8))
 
 def read_json(path, default=None):
     """安全读取 JSON 文件，失败返回 default"""
@@ -15,8 +17,8 @@ def read_json(path, default=None):
 
 
 def now_iso():
-    """返回 UTC ISO 8601 时间字符串（末尾 Z）"""
-    return datetime.datetime.now(datetime.timezone.utc).isoformat().replace('+00:00', 'Z')
+    """返回北京时间 ISO 8601 时间字符串（末尾 +08:00）"""
+    return datetime.datetime.now(_BJT).isoformat()
 
 
 def today_str(fmt='%Y%m%d'):

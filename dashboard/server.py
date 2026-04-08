@@ -277,6 +277,22 @@ def handle_archive_task(task_id, archived, archive_all_done=False):
     return {'ok': True, 'message': f'{task_id} {label}'}
 
 
+def handle_delete_task(task_id, confirm_id=''):
+    """删除任务（仅允许删除 Done/Cancelled 状态的任务）。"""
+    if task_id != confirm_id:
+        return {'ok': False, 'error': f'确认ID不匹配: 需要输入 "{task_id}" 进行二次确认'}
+    tasks = load_tasks()
+    task = next((t for t in tasks if t.get('id') == task_id), None)
+    if not task:
+        return {'ok': False, 'error': f'任务 {task_id} 不存在'}
+    if task.get('state') not in ('Done', 'Cancelled'):
+        return {'ok': False, 'error': f'只能删除已完成或已取消的任务，当前状态: {task.get("state")}'}
+    tasks = [t for t in tasks if t.get('id') != task_id]
+    save_tasks(tasks)
+    log.info(f'删除任务: {task_id} | {task.get("title", "")[:40]}')
+    return {'ok': True, 'message': f'任务 {task_id} 已删除'}
+
+
 def update_task_todos(task_id, todos):
     """Update the todos list for a task."""
     tasks = load_tasks()
@@ -799,6 +815,7 @@ _AGENT_DEPTS = [
     {'id':'gongbu',  'label':'工部',  'emoji':'🔧', 'role':'工部尚书', 'rank':'正二品'},
     {'id':'libu_hr', 'label':'吏部',  'emoji':'👔', 'role':'吏部尚书', 'rank':'正二品'},
     {'id':'zaochao', 'label':'钦天监','emoji':'📰', 'role':'朝报官',   'rank':'正三品'},
+    {'id':'jiancha', 'label':'御史台','emoji':'🛡️', 'role':'监察御史', 'rank':'正三品'},
 ]
 
 
@@ -3027,6 +3044,16 @@ class Handler(BaseHTTPRequestHandler):
                 self.send_json({'ok': False, 'error': 'taskId and action(stop/cancel/resume) required'}, 400)
                 return
             result = handle_task_action(task_id, action, reason)
+            self.send_json(result)
+            return
+
+        if p == '/api/delete-task':
+            task_id = body.get('taskId', '').strip()
+            confirm_id = body.get('confirmId', '').strip()
+            if not task_id:
+                self.send_json({'ok': False, 'error': 'taskId required'}, 400)
+                return
+            result = handle_delete_task(task_id, confirm_id)
             self.send_json(result)
             return
 
