@@ -25,8 +25,8 @@ openclaw init
 ## 第二步：克隆并安装三省六部
 
 ```bash
-git clone https://github.com/cft0808/edict.git
-cd edict
+git clone https://github.com/Haoqi7/AgentClaw.git
+cd AgentClaw
 chmod +x install.sh && ./install.sh
 ```
 
@@ -141,7 +141,7 @@ python3 dashboard/server.py
 ```bash
 # 方法一：为任意 Agent 配置后重新运行 install.sh（推荐）
 openclaw agents add taizi          # 按提示输入 Anthropic API Key
-cd edict && ./install.sh            # 自动同步到所有 Agent
+cd AgentClaw && ./install.sh        # 自动同步到所有 Agent
 
 # 方法二：手动复制 auth 文件
 MAIN_AUTH=$(find ~/.openclaw/agents -name auth-profiles.json | head -1)
