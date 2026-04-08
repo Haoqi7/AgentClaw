@@ -44,8 +44,30 @@ logging.basicConfig(level=logging.INFO, format='%(asctime)s [%(name)s] %(message
 try:
     from file_lock import atomic_json_read, atomic_json_update  # noqa: E402
 except ImportError:
-    # 降级实现：使用 fcntl 文件锁（读写共用同一个锁文件）
-    import fcntl
+    # 降级实现：使用文件锁（兼容 Windows/Linux/macOS）
+    import os as _os
+    _IS_WIN = _os.name == 'nt'
+    if _IS_WIN:
+        import msvcrt as _msvcrt
+    else:
+        import fcntl as _fcntl_mod
+    
+    def _acquire_lock(lock_f, exclusive=True):
+        """平台无关的文件锁获取"""
+        if _IS_WIN:
+            _msvcrt.locking(lock_f.fileno(), _msvcrt.LK_LOCK if exclusive else _msvcrt.LK_NBLCK, 1)
+        else:
+            _fcntl_mod.flock(lock_f.fileno(), _fcntl_mod.LOCK_EX if exclusive else _fcntl_mod.LOCK_SH)
+    
+    def _release_lock(lock_f):
+        """平台无关的文件锁释放"""
+        try:
+            if _IS_WIN:
+                _msvcrt.locking(lock_f.fileno(), _msvcrt.LK_UNLCK, 1)
+            else:
+                _fcntl_mod.flock(lock_f.fileno(), _fcntl_mod.LOCK_UN)
+        except Exception:
+            pass
     
     def atomic_json_read(path, default):
         """降级读取：使用文件锁"""
@@ -53,19 +75,24 @@ except ImportError:
             return default
         # 锁文件：原文件名 + .lock
         lock_path = path.with_suffix(path.suffix + '.lock')
-        with open(lock_path, 'a') as lock_f:  # 'a' 模式，不会清空文件
-            fcntl.flock(lock_f.fileno(), fcntl.LOCK_SH)  # 共享锁（读锁）
+        lock_f = open(lock_path, 'a')  # 'a' 模式，不会清空文件
+        try:
+            _acquire_lock(lock_f, exclusive=False)
             try:
                 with open(path, 'r') as f:
                     return json.load(f)
-            finally:
-                fcntl.flock(lock_f.fileno(), fcntl.LOCK_UN)
+            except Exception:
+                return default
+        finally:
+            _release_lock(lock_f)
+            lock_f.close()
     
     def atomic_json_update(path, modifier, default):
         """降级更新：使用文件锁"""
         lock_path = path.with_suffix(path.suffix + '.lock')
-        with open(lock_path, 'a') as lock_f:  # 'a' 模式，不会清空文件
-            fcntl.flock(lock_f.fileno(), fcntl.LOCK_EX)  # 排他锁（写锁）
+        lock_f = open(lock_path, 'a')  # 'a' 模式，不会清空文件
+        try:
+            _acquire_lock(lock_f, exclusive=True)
             try:
                 if path.exists():
                     with open(path, 'r') as f:
@@ -76,8 +103,11 @@ except ImportError:
                 with open(path, 'w') as f:
                     json.dump(new_data, f, indent=2, ensure_ascii=False)
                 return new_data
-            finally:
-                fcntl.flock(lock_f.fileno(), fcntl.LOCK_UN)
+            except Exception:
+                raise
+        finally:
+            _release_lock(lock_f)
+            lock_f.close()
     
     log.warning('⚠️ file_lock 模块未找到，使用降级文件锁实现')
 
