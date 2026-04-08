@@ -32,8 +32,15 @@ import subprocess
 import sys
 import time
 import datetime
-import fcntl
 import os
+import threading
+
+# 平台兼容：Windows 使用 msvcrt，Linux/macOS 使用 fcntl
+_IS_WINDOWS = os.name == 'nt'
+if _IS_WINDOWS:
+    import msvcrt
+else:
+    import fcntl
 
 # 北京时区 (UTC+8)
 _BJT = datetime.timezone(datetime.timedelta(hours=8))
@@ -216,6 +223,31 @@ SAN_SHENG_DEPTS = {"中书省", "门下省", "尚书省"}
 #  数据读写（带文件锁，防止并发读写导致数据丢失）
 # ═══════════════════════════════════════════════════════════════════
 
+def _lock_file(lock_f, exclusive=True):
+    """平台无关的文件锁获取"""
+    if _IS_WINDOWS:
+        try:
+            msvcrt.locking(lock_f.fileno(), msvcrt.LK_LOCK if exclusive else msvcrt.LK_NBLCK, 1)
+        except (IOError, OSError):
+            if not exclusive:
+                pass  # 共享锁失败时降级为无锁读取
+            else:
+                raise
+    else:
+        fcntl.flock(lock_f.fileno(), fcntl.LOCK_EX if exclusive else fcntl.LOCK_SH)
+
+
+def _unlock_file(lock_f):
+    """平台无关的文件锁释放"""
+    try:
+        if _IS_WINDOWS:
+            msvcrt.locking(lock_f.fileno(), msvcrt.LK_UNLCK, 1)
+        else:
+            fcntl.flock(lock_f.fileno(), fcntl.LOCK_UN)
+    except Exception:
+        pass
+
+
 def _locked_read_json(filepath, default):
     """带共享锁读取 JSON 文件（允许多个读者并发，阻止写者）"""
     if not pathlib.Path(filepath).exists():
@@ -223,13 +255,13 @@ def _locked_read_json(filepath, default):
     lock_path = pathlib.Path(str(filepath) + '.lock')
     lock_f = open(lock_path, 'a')
     try:
-        fcntl.flock(lock_f.fileno(), fcntl.LOCK_SH)
+        _lock_file(lock_f, exclusive=False)
         with open(filepath, 'r', encoding='utf-8') as f:
             return json.load(f)
     except Exception:
         return default
     finally:
-        fcntl.flock(lock_f.fileno(), fcntl.LOCK_UN)
+        _unlock_file(lock_f)
         lock_f.close()
 
 
@@ -238,7 +270,7 @@ def _locked_write_json(filepath, data):
     lock_path = pathlib.Path(str(filepath) + '.lock')
     lock_f = open(lock_path, 'a')
     try:
-        fcntl.flock(lock_f.fileno(), fcntl.LOCK_EX)
+        _lock_file(lock_f, exclusive=True)
         tmp_path = pathlib.Path(str(filepath) + '.tmp')
         tmp_path.write_text(
             json.dumps(data, ensure_ascii=False, indent=2),
@@ -248,7 +280,7 @@ def _locked_write_json(filepath, data):
     except Exception as e:
         log(f"写入文件失败 {filepath}: {e}")
     finally:
-        fcntl.flock(lock_f.fileno(), fcntl.LOCK_UN)
+        _unlock_file(lock_f)
         lock_f.close()
 
 
@@ -295,7 +327,11 @@ def normalize_name(raw):
 
 
 def wake_agent(agent_id, reason=""):
-    """唤醒指定 Agent（发送心跳消息 + 30秒后验证是否活跃）。返回 (success, detail)。"""
+    """唤醒指定 Agent（异步发送心跳消息，不阻塞主循环）。返回 (success, detail)。
+    
+    修复：原实现中 time.sleep(30) 会阻塞整个 watchdog 主循环，导致
+    其他任务检查全部延迟。改为使用后台线程异步验证。
+    """
     if agent_id in ("huangshang", "皇上"):
         return False, "不唤醒皇上"
     label = ID_TO_LABEL.get(agent_id, agent_id)
@@ -312,19 +348,23 @@ def wake_agent(agent_id, reason=""):
             stderr=subprocess.DEVNULL,
         )
         log(f"已唤醒 {label} ({agent_id})")
-        # 30秒后验证 Agent 是否活跃
-        time.sleep(30)
-        if not is_agent_awake(agent_id):
-            log(f"{label} ({agent_id}) 唤醒后30秒仍无活动，尝试二次唤醒")
-            try:
-                subprocess.Popen(
-                    ["openclaw", "agent", "--agent", agent_id, "-m", msg, "--timeout", "120"],
-                    stdout=subprocess.DEVNULL,
-                    stderr=subprocess.DEVNULL,
-                )
-                log(f"已二次唤醒 {label} ({agent_id})")
-            except Exception as e2:
-                log(f"二次唤醒 {label} ({agent_id}) 失败: {e2}")
+        # 异步验证：30秒后在后台线程中检查 Agent 是否活跃，不阻塞主循环
+        def _verify_agent():
+            time.sleep(30)
+            if not is_agent_awake(agent_id):
+                log(f"{label} ({agent_id}) 唤醒后30秒仍无活动，尝试二次唤醒")
+                try:
+                    subprocess.Popen(
+                        ["openclaw", "agent", "--agent", agent_id, "-m", msg, "--timeout", "120"],
+                        stdout=subprocess.DEVNULL,
+                        stderr=subprocess.DEVNULL,
+                    )
+                    log(f"已二次唤醒 {label} ({agent_id})")
+                except Exception as e2:
+                    log(f"二次唤醒 {label} ({agent_id}) 失败: {e2}")
+            else:
+                log(f"{label} ({agent_id}) 唤醒后已活跃")
+        threading.Thread(target=_verify_agent, daemon=True).start()
         return True, f"已向 {label} 发送唤醒消息"
     except Exception as e:
         log(f"唤醒 {label} ({agent_id}) 失败: {e}")
@@ -714,7 +754,15 @@ def _acquire_watchdog_lock():
     """尝试获取 watchdog 单实例锁。返回 (lock_file, success)。"""
     try:
         lock_f = open(_WATCHDOG_LOCK_FILE, 'w')
-        fcntl.flock(lock_f.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        if _IS_WINDOWS:
+            # Windows: 尝试获取排他锁，失败则说明已有实例
+            try:
+                msvcrt.locking(lock_f.fileno(), msvcrt.LK_NBLCK, 1)
+            except (IOError, OSError):
+                lock_f.close()
+                return None, False
+        else:
+            fcntl.flock(lock_f.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
         lock_f.write(str(os.getpid()))
         lock_f.flush()
         return lock_f, True
@@ -726,7 +774,7 @@ def _release_watchdog_lock(lock_f):
     """释放 watchdog 单实例锁。"""
     if lock_f:
         try:
-            fcntl.flock(lock_f.fileno(), fcntl.LOCK_UN)
+            _unlock_file(lock_f)
             lock_f.close()
         except Exception:
             pass
