@@ -32,9 +32,24 @@ log = logging.getLogger('server')
 logging.basicConfig(level=logging.INFO, format='%(asctime)s [%(name)s] %(message)s', datefmt='%H:%M:%S')
 
 CHANNELS_DIR = pathlib.Path(__file__).parent.parent / 'edict' / 'backend' / 'app' / 'channels'
-if str(CHANNELS_DIR.parent) not in sys.path:
+# 修复：channels 模块为可选依赖，导入失败时降级为空实现，避免服务崩溃
+NOTIFICATION_CHANNELS = {}
+def get_channel(channel_type):
+    """获取渠道通知类（降级实现：无 channels 模块时返回 None）"""
+    return None
+def get_channel_info():
+    """获取渠道信息（降级实现）"""
+    return []
+
+if CHANNELS_DIR.is_dir() and str(CHANNELS_DIR.parent) not in sys.path:
     sys.path.insert(0, str(CHANNELS_DIR.parent))
-from channels import get_channel, get_channel_info, CHANNELS as NOTIFICATION_CHANNELS
+try:
+    from channels import get_channel as _get_channel, get_channel_info as _get_channel_info, CHANNELS as _CHANNELS
+    get_channel = _get_channel
+    get_channel_info = _get_channel_info
+    NOTIFICATION_CHANNELS = _CHANNELS
+except ImportError:
+    log.warning('⚠️ channels 模块未找到（edict/backend/app/channels/），多渠道通知功能不可用')
 
 OCLAW_HOME = pathlib.Path.home() / '.openclaw'
 MAX_REQUEST_BODY = 1 * 1024 * 1024  # 1 MB
