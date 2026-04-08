@@ -471,13 +471,15 @@ def _resolve_agent_id(target):
 def _notify_agent(agent_id, task_id, from_org, to_org, title='', remark='', _retry=0):
     """异步通知目标 Agent 有新任务/流转（针对性增强版：部门差异化通知+唤醒重试+确认回执）。
 
-    - 使用 openclaw sessions spawn 触发目标 Agent 会话。
+    - 使用 openclaw agent --agent <id> 触发目标 Agent 会话。
     - 非阻塞：通过 Popen 异步执行，不延迟主流程。
     - 容错：通知失败仅记录日志，不影响看板写入结果。
     - 🎯 针对性通知：根据 _AGENT_NOTIFY_PROFILES 为每个部门生成专属通知内容，
       包含该部门的核心职责提醒和具体执行步骤指导。
     - 唤醒重试：首次失败后 3 秒重试一次。
     - 🔒 会话去重：同一任务 + 同一目标 Agent 在短时间内不重复唤醒。
+    - 🔒 会话复用：通知消息包含 sessions_spawn/sessions_send 使用指导，
+      首次通知时引导创建会话，后续通知强制复用已有会话，防止会话爆炸。
     """
     if not agent_id:
         return
@@ -521,6 +523,19 @@ def _notify_agent(agent_id, task_id, from_org, to_org, title='', remark='', _ret
     confirm_fmt = profile.get('confirm_fmt', '已收到 {task_id} {title}').format(task_id=task_id, title=title)
     deadline = profile.get('deadline', '10分钟内确认')
 
+    # 🔒 判断是否为首次通知该 Agent（用于指导会话复用）
+    is_first_notify = True
+    try:
+        tasks_check = load()
+        t_check = find_task(tasks_check, task_id)
+        if t_check:
+            last_notify = t_check.get('_lastNotify', {})
+            agent_info = last_notify.get(agent_id, {})
+            if agent_info.get('done'):
+                is_first_notify = False
+    except Exception:
+        pass
+
     # 组装针对性通知消息
     parts = [
         f"📢 任务通知 → {to_label} - {task_id}",
@@ -543,6 +558,25 @@ def _notify_agent(agent_id, task_id, from_org, to_org, title='', remark='', _ret
     parts.append(f"  立即回复确认：「{confirm_fmt}」")
     parts.append(f"  要求：{deadline}")
     parts.append(f"")
+
+    # 🔒 会话复用强制指令（Issue #1 修复：防止会话爆炸）
+    if is_first_notify:
+        parts.append(f"⚠️ 【会话管理 - 首次通知】")
+        parts.append(f"这是本任务首次通知 {to_label}。")
+        parts.append(f"如果你需要与其他部门通信：")
+        parts.append(f"  · 首次调用某部门 → 使用 sessions_spawn 创建子会话")
+        parts.append(f"  · 后续与同一部门的通信 → 必须使用 sessions_send 复用已有子会话")
+        parts.append(f"  · 禁止对同一部门多次使用 sessions_spawn 创建重复会话！")
+        parts.append(f"  · 保存 sessions_spawn 返回的 sessionKey，后续用 sessions_send 发送")
+    else:
+        parts.append(f"⚠️ 【会话管理 - 非首次通知】")
+        parts.append(f"本任务已有会话记录。如果你之前已经用 sessions_spawn 创建过子会话，")
+        parts.append(f"必须使用 sessions_send 复用已有子会话进行通信，")
+        parts.append(f"禁止再次使用 sessions_spawn 创建新的重复会话！")
+        parts.append(f"查找已有的 sessionKey 使用 sessions_send 即可。")
+
+    parts.append(f"")
+    parts.append(f"⚠️ 看板已有此任务，请勿重复创建。")
     parts.append(f"请立即处理！")
 
     message = '\n'.join(parts)

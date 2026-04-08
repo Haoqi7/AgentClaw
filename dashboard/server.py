@@ -15,6 +15,7 @@ import json, pathlib, subprocess, sys, threading, argparse, datetime, logging, r
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from urllib.parse import urlparse, quote as _url_quote
 from urllib.request import Request, urlopen
+import urllib.error
 
 # 引入文件锁工具，确保与其他脚本并发安全
 scripts_dir = str(pathlib.Path(__file__).parent.parent / 'scripts')
@@ -3097,9 +3098,26 @@ class Handler(BaseHTTPRequestHandler):
                 req = Request(url, headers=headers)
                 resp = urlopen(req, timeout=10)
                 data = json.loads(resp.read().decode())
-                self.send_json({'ok': True, 'conversations': data if isinstance(data, list) else data.get('data', data.get('conversations', [])), 'total': len(data) if isinstance(data, list) else 0})
+                conversations = data if isinstance(data, list) else data.get('data', data.get('conversations', []))
+                self.send_json({'ok': True, 'conversations': conversations, 'total': len(conversations) if isinstance(conversations, list) else 0})
+            except urllib.error.HTTPError as e:
+                # Issue #3 修复：区分 HTTP 错误码，401/403 是认证问题，不是 Gateway 挂了
+                if e.code in (401, 403):
+                    self.send_json({'ok': False, 'error': f'Gateway 认证失败(token无效或过期)，请检查 openclaw.json 中的 gateway.auth.token 配置', 'code': e.code}, e.code)
+                elif e.code == 404:
+                    self.send_json({'ok': True, 'conversations': [], 'total': 0})
+                else:
+                    self.send_json({'ok': False, 'error': f'Gateway 返回 HTTP {e.code}: {str(e)[:80]}'}, e.code)
             except Exception as e:
-                self.send_json({'ok': False, 'error': f'Gateway 连接失败: {str(e)[:100]}'}, 502)
+                # Issue #3 修复：先检查 Gateway 进程是否存活，给出更精确的错误提示
+                gw_alive = _check_gateway_alive()
+                gw_probe = _check_gateway_probe()
+                if not gw_alive:
+                    self.send_json({'ok': False, 'error': 'Gateway 进程未启动，请先运行 openclaw gateway start', 'gateway_status': 'offline'}, 502)
+                elif not gw_probe:
+                    self.send_json({'ok': False, 'error': f'Gateway 进程在运行但无响应(端口18789)，请检查 Gateway 日志。原始错误: {str(e)[:80]}', 'gateway_status': 'unresponsive'}, 502)
+                else:
+                    self.send_json({'ok': False, 'error': f'Gateway 连接失败: {str(e)[:100]}', 'gateway_status': 'error'}, 502)
             return
 
         if p.startswith('/api/gateway/conversation/') and p.endswith('/delete'):
@@ -3166,8 +3184,18 @@ class Handler(BaseHTTPRequestHandler):
                     except Exception:
                         pass
                 self.send_json({'ok': True, 'message': f'已清理 {agent_id} 的 {cleared} 个非 main 会话', 'cleared': cleared})
+            except urllib.error.HTTPError as e:
+                # Issue #3 修复：区分 HTTP 错误码
+                if e.code in (401, 403):
+                    self.send_json({'ok': False, 'error': 'Gateway 认证失败(token无效或过期)，请检查 openclaw.json 配置', 'code': e.code}, e.code)
+                else:
+                    self.send_json({'ok': False, 'error': f'Gateway 返回 HTTP {e.code}: {str(e)[:80]}'}, e.code)
             except Exception as e:
-                self.send_json({'ok': False, 'error': f'Gateway 连接失败: {str(e)[:100]}'}, 502)
+                gw_alive = _check_gateway_alive()
+                if not gw_alive:
+                    self.send_json({'ok': False, 'error': 'Gateway 进程未启动', 'gateway_status': 'offline'}, 502)
+                else:
+                    self.send_json({'ok': False, 'error': f'Gateway 连接失败: {str(e)[:100]}', 'gateway_status': 'error'}, 502)
             return
 
         if p == '/api/gateway/sessions-url':

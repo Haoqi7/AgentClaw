@@ -57,6 +57,9 @@ OCLAW_HOME = pathlib.Path.home() / ".openclaw"
 BREAK_TIMEOUT_SEC = 90   # 1.5 分钟无回应判定为断链
 RECENT_DONE_MINUTES = 10  # 最近 N 分钟内完成的任务也需检查（防止速通逃逸）
 AUTO_ARCHIVE_MINUTES = 5  # Done 超过 N 分钟自动归档
+# Issue #2 修复：六部断链时仅通知尚书省，不升级到太子/中书省
+# 六部 → 尚书省 属于内部调度链路，不需要跨级汇报
+LIU_BU_DEPT_IDS = {"gongbu", "bingbu", "hubu", "libu", "xingbu", "libu_hr"}
 
 # ── 日志工具 ──────────────────────────────────────────────────────
 def log(msg):
@@ -988,6 +991,11 @@ def _main_inner():
             }
             new_violations.append(violation)
 
+            # ── Issue #2 修复：区分六部断链和三省断链 ──
+            # 六部断链：只唤醒六部 + 通知尚书省重新派发（不升级到太子/中书省）
+            # 三省断链：保持原有逻辑（唤醒 + 通知上级）
+            is_liubu_broken = target_id in LIU_BU_DEPT_IDS
+
             # ── 介入处理：唤醒目标部门 ──
             if target_id and target_id not in woken_agents:
                 wake_ok, wake_detail = wake_agent(target_id, f"任务 {task_id} 流程断链，{from_label}已等你 {broken['elapsed_sec'] // 60} 分钟")
@@ -1003,53 +1011,86 @@ def _main_inner():
                     "detail": wake_detail,
                 })
 
-            # ── 介入处理：检查直接上级 + 通知 ──
+            # ── 介入处理：通知上级 ──
             if parent_id:
                 parent_label = ID_TO_LABEL.get(parent_id, parent_id)
-                if not is_agent_awake(parent_id) and parent_id not in woken_agents:
-                    wake_ok, wake_detail = wake_agent(parent_id, f"任务 {task_id} 流程断链，需要你重新派发给{target_label}")
-                    woken_agents.add(parent_id)
+
+                # Issue #2 修复：六部断链时，仅通知尚书省，不唤醒，不升级
+                if is_liubu_broken:
+                    # 六部断链 → 只通知尚书省重新派发，不唤醒尚书省（它通常在线）
+                    # 不需要通知太子或中书省
+                    notify_msg = (
+                        f"🛡️ 监察通知\n"
+                        f"任务ID: {task_id}\n"
+                        f"任务标题: {title}\n"
+                        f"问题: {target_label} 已超时未接旨（{broken['elapsed_sec'] // 60} 分钟无回应）\n"
+                        f"处理: 监察已将 {target_label} 唤醒\n"
+                        f"行动: 请你使用 sessions_send（非 sessions_spawn）向 {target_label} 重新派发任务：\n"
+                        f"\n"
+                        f"注意：如果之前已经为该任务创建过 {target_label} 的子会话，\n"
+                        f"请使用 sessions_send 复用已有子会话，不要再次 sessions_spawn。\n"
+                        f"只有确认该任务的 {target_label} 子会话不存在时，才使用 sessions_spawn。\n"
+                        f"\n"
+                        f"⚠️ 监察不会派发任务，请你执行派发。\n"
+                        f"⚠️ 严禁使用 sessions_yield，必须使用 sessions_spawn 或 sessions_send！"
+                    )
+                    notify_ok, notify_detail = notify_agent(parent_id, notify_msg)
                     audit["notifications"].append({
-                        "type": "断链唤醒",
+                        "type": "断链通知",
                         "to": parent_label,
                         "task_id": task_id,
-                        "summary": f"唤醒上级{parent_label}重新派发",
+                        "summary": f"{target_label}超时未接旨，通知{parent_label}重新派发",
                         "sent_at": now_iso,
-                        "status": "sent" if wake_ok else "failed",
-                        "detail": wake_detail,
+                        "status": "sent" if notify_ok else "failed",
+                        "detail": notify_detail,
                     })
+                    log(f"六部断链（{target_label}），仅通知尚书省重新派发，不升级")
+                else:
+                    # 三省断链：保持原有逻辑（唤醒上级 + 通知重新派发）
+                    if not is_agent_awake(parent_id) and parent_id not in woken_agents:
+                        wake_ok, wake_detail = wake_agent(parent_id, f"任务 {task_id} 流程断链，需要你重新派发给{target_label}")
+                        woken_agents.add(parent_id)
+                        audit["notifications"].append({
+                            "type": "断链唤醒",
+                            "to": parent_label,
+                            "task_id": task_id,
+                            "summary": f"唤醒上级{parent_label}重新派发",
+                            "sent_at": now_iso,
+                            "status": "sent" if wake_ok else "failed",
+                            "detail": wake_detail,
+                        })
 
-                # 通知上级重新派发（无论上级是否刚被唤醒，都发通知）
-                notify_msg = (
-                    f"🛡️ 监察通知\n"
-                    f"任务ID: {task_id}\n"
-                    f"任务标题: {title}\n"
-                    f"问题: {target_label} 已超时未接旨（{broken['elapsed_sec'] // 60} 分钟无回应）\n"
-                    f"处理: 监察已将 {target_label} 唤醒\n"
-                    f"行动: 请 {parent_label} 使用以下命令重新向 {target_label} 派发任务：\n"
-                    f"\n"
-                    f"sessions_spawn\n"
-                    f"{{\n"
-                    f'  "agentId": "{target_id}",\n'
-                    f'  "task": "📋 [任务内容]",\n'
-                    f'  "mode": "session",\n'
-                    f'  "thread": true,\n'
-                    f'  "label": "{task_id} {target_label}"\n'
-                    f"}}\n"
-                    f"\n"
-                    f"⚠️ 监察不会派发任务，请 {parent_label} 执行派发。\n"
-                    f"⚠️ 严禁使用 sessions_yield，必须使用 sessions_spawn！"
-                )
-                notify_ok, notify_detail = notify_agent(parent_id, notify_msg)
-                audit["notifications"].append({
-                    "type": "断链通知",
-                    "to": parent_label,
-                    "task_id": task_id,
-                    "summary": f"{target_label}超时未接旨，通知{parent_label}重新派发",
-                    "sent_at": now_iso,
-                    "status": "sent" if notify_ok else "failed",
-                    "detail": notify_detail,
-                })
+                    # 通知上级重新派发（无论上级是否刚被唤醒，都发通知）
+                    notify_msg = (
+                        f"🛡️ 监察通知\n"
+                        f"任务ID: {task_id}\n"
+                        f"任务标题: {title}\n"
+                        f"问题: {target_label} 已超时未接旨（{broken['elapsed_sec'] // 60} 分钟无回应）\n"
+                        f"处理: 监察已将 {target_label} 唤醒\n"
+                        f"行动: 请 {parent_label} 使用以下命令重新向 {target_label} 派发任务：\n"
+                        f"\n"
+                        f"sessions_spawn\n"
+                        f"{{\n"
+                        f'  "agentId": "{target_id}",\n'
+                        f'  "task": "📋 [任务内容]",\n'
+                        f'  "mode": "session",\n'
+                        f'  "thread": true,\n'
+                        f'  "label": "{task_id} {target_label}"\n'
+                        f"}}\n"
+                        f"\n"
+                        f"⚠️ 监察不会派发任务，请 {parent_label} 执行派发。\n"
+                        f"⚠️ 严禁使用 sessions_yield，必须使用 sessions_spawn！"
+                    )
+                    notify_ok, notify_detail = notify_agent(parent_id, notify_msg)
+                    audit["notifications"].append({
+                        "type": "断链通知",
+                        "to": parent_label,
+                        "task_id": task_id,
+                        "summary": f"{target_label}超时未接旨，通知{parent_label}重新派发",
+                        "sent_at": now_iso,
+                        "status": "sent" if notify_ok else "failed",
+                        "detail": notify_detail,
+                    })
 
     # ── 严重违规通知太子（越权 + 直接执行越权 + 流程跳步）──
     serious = [v for v in new_violations if v["type"] in ("越权调用", "直接执行越权")]
