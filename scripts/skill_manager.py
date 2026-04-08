@@ -256,24 +256,20 @@ SKILL_AGENT_MAPPING = {
 
 
 def import_official_hub(agent_ids: list) -> bool:
-    """从官方 Skills Hub 导入指定的 skills 到指定 agents。
-    如果未指定 agents，使用该 skill 的推荐 agents。
-    """
-    if not agent_ids:
+    use_recommended = not agent_ids
+
+    if use_recommended:
         print('❌ 未指定 agent，使用推荐配置...\n')
-        for skill_name, recommended_agents in SKILL_AGENT_MAPPING.items():
-            agent_ids.extend(recommended_agents)
-        agent_ids = list(set(agent_ids))
-    
+
     total = 0
     success = 0
     failed = []
-    
+
     for skill_name, url in OFFICIAL_SKILLS_HUB.items():
-        # 确定目标 agents
-        target_agents = agent_ids
-        if not agent_ids:
+        if use_recommended:
             target_agents = SKILL_AGENT_MAPPING.get(skill_name, ['menxia'])
+        else:
+            target_agents = agent_ids
         
         print(f'\n📥 正在导入 skill: {skill_name}')
         print(f'   目标 agents: {", ".join(target_agents)}')
