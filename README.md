@@ -12,7 +12,7 @@
 
 ## 4 步上手
 
-> **前提条件**：需要 **Node.js >= 22**（[下载 Node.js](https://nodejs.org/)）
+> **前提条件**：需要 **Node.js >= 22+（[下载 Node.js](https://nodejs.org/)）
 >
 > 检查版本：`node -v`
 
@@ -22,12 +22,7 @@
 ```bash
 npm install -g @qingchencloud/openclaw-zh@latest
 ```
-
-**docker目前固定为此版本**
-
-```bash
-npm install -g @qingchencloud/openclaw-zh@2026.4.2-zh.1
-```
+**docker目前固定为此版本** `/openclaw-zh@2026.4.2-zh.1`
 
 ### 第 2 步：初始化（推荐守护进程模式）
 
@@ -76,7 +71,7 @@ chmod +x install.sh && ./install.sh
 - ✅ 写入各省部 SOUL.md 人格文件
 - ✅ 注册 Agent 及权限矩阵到 `openclaw.json`
 - ✅ 配置旨意数据清洗规则
-- ✅ 构建 React 前端到 `dashboard/dist/`（需 Node.js 18+）
+- ✅ 构建 React 前端到 `dashboard/dist/`（需 Node.js 22+）
 - ✅ 初始化数据目录
 - ✅ 执行首次数据同步
 - ✅ 重启 Gateway 使配置生效
