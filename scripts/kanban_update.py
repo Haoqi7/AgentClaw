@@ -430,7 +430,7 @@ try:
         )
         print(f"[stall-watchdog] {task_id_escaped} 已催办 {agent_label_escaped}", flush=True)
 except Exception as e:
-    print(f"[stall-watchdog] {task_id_escaped} 检查失败: {{e}}", flush=True)
+    print(f"[stall-watchdog] {task_id_escaped} 检查失败: {e}", flush=True)
 '''
     try:
         subprocess.Popen(
