@@ -1229,7 +1229,7 @@ def cmd_flow(task_id, from_dept, to_dept, remark):
         print(f'[看板] 流转被拒绝: {err_to}', flush=True)
         return
     
-    # 🔒 流转去重：同一任务相同 from→to 在 60 秒内不重复记录
+    # 🔒 流转去重检测
     DEDUP_FLOW_SEC = 60
     try:
         existing_tasks = load()
@@ -1237,11 +1237,25 @@ def cmd_flow(task_id, from_dept, to_dept, remark):
         if existing_task:
             for entry in reversed(existing_task.get('flow_log', [])):
                 if entry.get('from') == from_dept and entry.get('to') == to_dept:
+                    # ── 新增：检测是否为任务创建时自动生成的流转记录 ──
+                    # 自动生成的记录特征：remark 包含 "太子转交旨意至" 或 "下旨"
+                    auto_remark_patterns = ['太子转交旨意至', '下旨：', '太子整理旨意']
+                    entry_remark = entry.get('remark', '')
+                    is_auto_generated = any(p in entry_remark for p in auto_remark_patterns)
+                    
+                    if is_auto_generated:
+                        # 自动生成的记录，跳过并提示
+                        log.info(f'🔒 流转去重跳过：{task_id} {from_dept}→{to_dept} 已由 create 命令自动生成')
+                        print(f'[看板] ⏭️ 流转记录已存在（create 自动生成），无需重复添加', flush=True)
+                        return
+                    
+                    # 60 秒内的重复记录
                     try:
                         dt = datetime.datetime.fromisoformat((entry.get('at', '') or '').replace('Z', '+00:00'))
                         now = datetime.datetime.now(dt.tzinfo) if dt.tzinfo else datetime.datetime.now()
                         if (now - dt).total_seconds() < DEDUP_FLOW_SEC:
                             log.info(f'🔒 流转去重跳过：{task_id} {from_dept}→{to_dept} 在 {DEDUP_FLOW_SEC}s 内已记录')
+                            print(f'[看板] ⏭️ 流转记录在 {DEDUP_FLOW_SEC}s 内已存在，跳过', flush=True)
                             return
                     except Exception:
                         pass
