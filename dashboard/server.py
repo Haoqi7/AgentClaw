@@ -60,6 +60,13 @@ _DEFAULT_ORIGINS = {
     'http://127.0.0.1:5173', 'http://localhost:5173',  # Vite dev server
 }
 
+# ── Fix Docker 部署：外部可访问 URL 配置 ──
+# 优先级: EDICT_EXTERNAL_URL 环境变量 > 从请求头 Host 推断 > 默认值
+_EDICT_EXTERNAL_URL = None
+_ext_url_env = os.environ.get('EDICT_EXTERNAL_URL', '').strip()
+if _ext_url_env:
+    _EDICT_EXTERNAL_URL = _ext_url_env.rstrip('/')
+
 # ── Fix #6: CORS 配置支持 Docker 部署的自定义端口 ──
 # 通过环境变量 EDICT_CORS_ORIGINS 添加额外允许的 Origin（逗号分隔）
 # 例如: EDICT_CORS_ORIGINS=http://myhost:8080,http://192.168.1.100:3000
@@ -97,11 +104,78 @@ _MIME_TYPES = {
 }
 
 
+def _infer_external_base(handler):
+    """从请求头推断外部可访问的基础 URL（scheme://host:port）。
+
+    优先使用 EDICT_EXTERNAL_URL 环境变量，否则从 Host 头推断。
+    返回值形如 'http://192.168.1.100:7891'（不含尾部斜杠）。
+    """
+    # 1. 环境变量显式配置（最高优先级）
+    if _EDICT_EXTERNAL_URL:
+        return _EDICT_EXTERNAL_URL
+    # 2. 从 Host 头推断
+    host_hdr = handler.headers.get('Host', '').strip()
+    if host_hdr:
+        # Host 头可能是 'hostname:port' 或仅 'hostname' 或 '[ipv6]:port'
+        return f'http://{host_hdr}'
+    # 3. 兜底默认
+    return f'http://127.0.0.1:{_DASHBOARD_PORT}'
+
+
+def _get_external_gateway_url(handler):
+    """获取浏览器可直接访问的 Gateway 外部 URL。
+
+    策略（方案 C 混合）:
+    1. EDICT_EXTERNAL_GATEWAY_URL 环境变量（显式 Gateway 外部地址）
+    2. 基于请求 Host 头 + Gateway 端口偏移推断
+    3. EDICT_EXTERNAL_URL + Gateway 端口偏移
+    4. 兜底回退到 _get_gateway_base_url()（容器内部地址）
+    """
+    # 1. 显式 Gateway 外部地址
+    env_gw_ext = os.environ.get('EDICT_EXTERNAL_GATEWAY_URL', '').strip()
+    if env_gw_ext:
+        return env_gw_ext.rstrip('/')
+    # 2/3. 从外部基础 URL 推断（替换端口号为 Gateway 端口）
+    try:
+        internal_gw = _get_gateway_base_url()
+        from urllib.parse import urlparse
+        parsed = urlparse(internal_gw)
+        gw_port = parsed.port or 18789
+        external_base = _infer_external_base(handler)
+        ext_parsed = urlparse(external_base)
+        ext_host = ext_parsed.hostname or ''
+        # 仅当推断出的外部主机不是 localhost/127.0.0.1 时才替换
+        if ext_host and ext_host not in ('127.0.0.1', 'localhost', '::1'):
+            return f'http://{ext_host}:{gw_port}'
+    except Exception:
+        pass
+    # 4. 兜底
+    return _get_gateway_base_url()
+
+
+def _get_external_dashboard_url(handler=None):
+    """获取浏览器可直接访问的 Dashboard 外部 URL。
+
+    用于通知推送链接等场景。
+    """
+    if handler:
+        return _infer_external_base(handler)
+    if _EDICT_EXTERNAL_URL:
+        return _EDICT_EXTERNAL_URL
+    return f'http://127.0.0.1:{_DASHBOARD_PORT}'
+
+
 def cors_headers(h):
     req_origin = h.headers.get('Origin', '')
+    # Fix #6: 将 EDICT_EXTERNAL_URL 对应的 origin 也加入白名单
+    ext_origin = None
+    if _EDICT_EXTERNAL_URL:
+        ext_origin = _EDICT_EXTERNAL_URL
     if ALLOWED_ORIGIN:
         origin = ALLOWED_ORIGIN
     elif req_origin in _DEFAULT_ORIGINS or req_origin in _EXTRA_CORS_ORIGINS:
+        origin = req_origin
+    elif ext_origin and req_origin == ext_origin:
         origin = req_origin
     else:
         # Fix #6: 如果请求的 Origin 端口与当前服务端口一致但主机名不同（Docker 映射），
@@ -132,6 +206,8 @@ def _get_gateway_base_url():
     """获取 Gateway 基础 URL（支持环境变量/配置文件覆盖，默认 127.0.0.1:18789）。
     
     优先级: 环境变量 EDICT_GATEWAY_URL > openclaw.json 配置 > 默认值
+    
+    Fix #3: 对 0.0.0.0 进行归一化处理，避免拼接出不可连接的 URL。
     """
     # 优先使用环境变量
     env_url = os.environ.get('EDICT_GATEWAY_URL', '').strip()
@@ -147,6 +223,9 @@ def _get_gateway_base_url():
             return url.rstrip('/')
         host = gw.get('host', '127.0.0.1')
         port = gw.get('port', 18789)
+        # Fix #3: 0.0.0.0 / [::] / :: 归一化为 127.0.0.1（与 pipeline_watchdog.py 保持一致）
+        if host in ('0.0.0.0', '::', '[::]', '::1', '[::1]'):
+            host = '127.0.0.1'
         if host and port:
             return f'http://{host}:{port}'
     except Exception:
@@ -732,7 +811,7 @@ def push_notification():
     date_fmt = date_str[:4] + '年' + date_str[4:6] + '月' + date_str[6:] + '日' if len(date_str) == 8 else date_str
     title = f'📰 天下要闻 · {date_fmt}'
     content = f'共 **{total}** 条要闻已更新\n{summary}'
-    url = f'http://127.0.0.1:{_DASHBOARD_PORT}'
+    url = _get_external_dashboard_url()
     success = channel_cls.send(webhook, title, content, url)
     print(f'[{channel_cls.label}] 推送{"成功" if success else "失败"}')
 
@@ -3231,8 +3310,8 @@ class Handler(BaseHTTPRequestHandler):
             return
 
         if p == '/api/gateway/sessions-url':
-            """返回 Gateway 会话管理页面的 URL"""
-            self.send_json({'ok': True, 'url': f'{_get_gateway_base_url()}/sessions'})
+            """返回 Gateway 会话管理页面的 URL（Fix #1: 使用浏览器可访问的外部地址）"""
+            self.send_json({'ok': True, 'url': f'{_get_external_gateway_url(self)}/sessions'})
             return
 
         if p == '/api/archive-task':
@@ -3503,6 +3582,9 @@ def main():
     ALLOWED_ORIGIN = args.cors
     _DASHBOARD_PORT = args.port
     _check_api_auth._port = args.port  # 供同源放行判断使用
+    # Fix #6: 将 EDICT_EXTERNAL_URL 对应的 origin 也加入白名单
+    if _EDICT_EXTERNAL_URL:
+        _DEFAULT_ORIGINS = _DEFAULT_ORIGINS | {_EDICT_EXTERNAL_URL}
     _DEFAULT_ORIGINS = _DEFAULT_ORIGINS | {
         f'http://127.0.0.1:{args.port}', f'http://localhost:{args.port}',
     }

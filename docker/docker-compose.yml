@@ -12,6 +12,16 @@ services:
     environment:
       - TZ=Asia/Shanghai
       - EDICT_DASHBOARD_PORT=7891
+      # ── Fix #5/#6: Docker 部署外部 URL 配置 ──
+      # EDICT_EXTERNAL_URL: 看板外部访问地址（浏览器可访问的地址），不设置则自动从请求 Host 头推断
+      # 示例: EDICT_EXTERNAL_URL=http://192.168.1.100:7891
+      # - EDICT_EXTERNAL_URL=http://YOUR_SERVER_IP:7891
+      # EDICT_EXTERNAL_GATEWAY_URL: Gateway 外部访问地址（可选，不设置则基于 EDICT_EXTERNAL_URL 或 Host 头推断）
+      # 示例: EDICT_EXTERNAL_GATEWAY_URL=http://192.168.1.100:18789
+      # - EDICT_EXTERNAL_GATEWAY_URL=http://YOUR_SERVER_IP:18789
+      # EDICT_CORS_ORIGINS: 额外允许的 CORS Origin（逗号分隔，可选）
+      # 示例: EDICT_CORS_ORIGINS=http://192.168.1.100:7891,http://myhost:8080
+      # - EDICT_CORS_ORIGINS=
     volumes:
       - ../data:/data
       - ../logs:/app/AgentClaw/logs

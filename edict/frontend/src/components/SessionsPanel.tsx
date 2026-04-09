@@ -88,7 +88,8 @@ export default function SessionsPanel() {
       if (r.ok && r.url) {
         window.open(r.url, '_blank');
       } else {
-        toast('⚠️ 无法获取 Gateway 地址，请手动访问 http://127.0.0.1:18789/sessions', 'err');
+        // Fix #2: 不再硬编码 localhost，提示用户通过看板所在地址访问 Gateway
+        toast('⚠️ 无法获取 Gateway 地址，请确认 Gateway 已启动并配置了正确的外部访问地址', 'err');
       }
     } catch {
       toast('⚠️ Gateway 连接失败，请确认 Gateway 已启动', 'err');
