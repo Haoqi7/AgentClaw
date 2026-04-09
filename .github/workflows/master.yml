@@ -1,4 +1,4 @@
-name: Build and Push to Docker Hub & Release
+name: Build and Release Docker Image (Manual)
 
 on:
   workflow_dispatch:
@@ -19,7 +19,7 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Resolve tag
+      - name: Resolve metadata
         id: meta
         run: |
           if [ -n "${{ github.event.inputs.tag }}" ]; then
@@ -41,33 +41,31 @@ jobs:
           username: ${{ secrets.DOCKER_USERNAME }}
           password: ${{ secrets.DOCKER_TOKEN }}
 
-      # 一次构建，同时完成：推送到 Docker Hub + 导出到本地文件
-      - name: Build, push and export
+      # 构建并推送多架构镜像到 Docker Hub
+      - name: Build and push multi-arch to Docker Hub
         uses: docker/build-push-action@v5
         with:
           context: .
           file: docker/Dockerfile
           platforms: linux/amd64,linux/arm64
           push: true
-          outputs: |
-            type=image,name=haoqi7/openclaw,push-by-digest=true
-            type=docker,dest=out/openclaw-${{ steps.meta.outputs.tag }}.docker.tar
           tags: |
             haoqi7/openclaw:${{ steps.meta.outputs.tag }}
             haoqi7/openclaw:latest
 
-      - name: Compress Docker image (if needed)
-        shell: bash
+      # 导出 amd64 tar 文件（用于 GitHub Release）
+      - name: Export amd64 image to tar
         run: |
-          cd out
-          size=$(stat -c%s *.tar)
-          if [ "$size" -gt 2000000000 ]; then
-            echo "File > 2GB, compressing..."
-            zstd -19 -T0 *.tar -o openclaw-${{ steps.meta.outputs.tag }}.docker.tar.zst
-            rm *.tar
-          fi
+          mkdir -p out
+          docker buildx build \
+            --platform linux/amd64 \
+            -f docker/Dockerfile \
+            -t haoqi7/openclaw:${{ steps.meta.outputs.tag }} \
+            --output type=docker,dest=out/openclaw-${{ steps.meta.outputs.tag }}.tar \
+            .
 
-      - name: Create GitHub Release and upload
+      # 创建 GitHub Release 并上传
+      - name: Create GitHub Release and upload assets
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ steps.meta.outputs.tag }}
@@ -76,9 +74,3 @@ jobs:
           prerelease: false
           generate_release_notes: true
           files: out/*
-
-      - name: Upload to GitHub Release (alternative)
-        uses: actions/upload-artifact@v4
-        with:
-          name: docker-image
-          path: out/
