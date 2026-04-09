@@ -310,8 +310,8 @@ cfg = json.loads(cfg_path.read_text())
 AGENTS = [
   {"id": "taizi",    "subagents": {"allowAgents": ["zhongshu"]}},
     {"id": "zhongshu", "subagents": {"allowAgents": ["menxia", "shangshu"]}},
-    {"id": "menxia",   "subagents": {"allowAgents": ["shangshu", "zhongshu"]}},
-  {"id": "shangshu", "subagents": {"allowAgents": ["zhongshu", "menxia", "hubu", "libu", "bingbu", "xingbu", "gongbu", "libu_hr"]}},
+    {"id": "menxia",   "subagents": {"allowAgents": ["zhongshu"]}},
+  {"id": "shangshu", "subagents": {"allowAgents": ["zhongshu", "hubu", "libu", "bingbu", "xingbu", "gongbu", "libu_hr"]}},
     {"id": "hubu",     "subagents": {"allowAgents": ["shangshu"]}},
     {"id": "libu",     "subagents": {"allowAgents": ["shangshu"]}},
     {"id": "bingbu",   "subagents": {"allowAgents": ["shangshu"]}},
