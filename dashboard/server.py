@@ -144,8 +144,8 @@ def _get_external_gateway_url(handler):
         external_base = _infer_external_base(handler)
         ext_parsed = urlparse(external_base)
         ext_host = ext_parsed.hostname or ''
-        # 仅当推断出的外部主机不是 localhost/127.0.0.1 时才替换
-        if ext_host and ext_host not in ('127.0.0.1', 'localhost', '::1'):
+        # 只要有有效的 host，就用它构造 Gateway URL（移除 localhost/127.0.0.1 限制）
+        if ext_host:
             return f'http://{ext_host}:{gw_port}'
     except Exception:
         pass
@@ -975,25 +975,29 @@ _AGENT_LABELS = {d['id']: d['label'] for d in _AGENT_DEPTS}
 def _check_gateway_alive():
     """检测 Gateway 是否在运行。
 
-    Windows 上不要依赖 pgrep；优先通过本地端口探测判断。
+    使用纯内部判断机制，不依赖外部 HTTP 请求或用户访问的 IP/Port：
+    1. 本地 TCP 端口探测（最可靠，适用于所有环境含 Docker）
+    2. 进程名检测 pgrep（Linux/macOS 兜底）
     """
-    if _check_gateway_probe():
-        return True
+    # 1. 本地 TCP 端口探测 —— 无论是物理机还是 Docker，同容器内 127.0.0.1 始终可达
     try:
         gw_url = _get_gateway_base_url()
-        from urllib.parse import urlparse
         parsed = urlparse(gw_url)
-        gw_host = parsed.hostname or '127.0.0.1'
         gw_port = parsed.port or 18789
-        if os.name == 'nt':
-            with socket.create_connection((gw_host, gw_port), timeout=2):
-                return True
-            return False
-        result = subprocess.run(['pgrep', '-f', 'openclaw-gateway'],
-                                capture_output=True, text=True, timeout=5)
-        return result.returncode == 0
+        with socket.create_connection(('127.0.0.1', gw_port), timeout=2):
+            return True
     except Exception:
-        return False
+        pass
+    # 2. 进程名检测兜底（Linux/macOS）
+    if os.name != 'nt':
+        try:
+            result = subprocess.run(['pgrep', '-f', 'openclaw-gateway'],
+                                    capture_output=True, text=True, timeout=5)
+            if result.returncode == 0:
+                return True
+        except Exception:
+            pass
+    return False
 
 
 def _check_gateway_probe():
