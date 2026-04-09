@@ -682,79 +682,6 @@ def check_session_violation(task_id, flow_log, session_keys, task_state=""):
     return violations
 
 
-# ═══════════════════════════════════════════════════════════════════════
-# 🔧 方案 A 新增：子代理越权通信检测（会话隔离审计）
-#
-# 检测子代理是否违反会话隔离规则：
-#   - 子代理只能与创建它的直接上级通信（通过 sessions_send 返回主会话）
-#   - 子代理无权调用其他部门
-#   - 任何非 LEGAL_FLOWS 中的跨部门通信都被视为违规
-#
-# 这个检测与 check_illegal_flow 互补：
-#   - check_illegal_flow 检测单个 flow 的合法性
-#   - check_agent_isolation_violation 检测子代理是否绕过父级直接联系其他 Agent
-# ═══════════════════════════════════════════════════════════════════════
-
-# 子代理的合法通信对象（仅限直接上级，用于会话隔离检测）
-# key = 子代理 agent_id, value = 允许通信的目标 set
-_ISOLATED_AGENT_ALLOWED_TARGETS = {
-    "menxia":   {"zhongshu", "中书省"},           # 门下省只能回复中书省
-    "shangshu": {"zhongshu", "中书省"},           # 尚书省只能回中书省（汇总返回）
-    "gongbu":   {"shangshu", "尚书省"},           # 工部只能回尚书省
-    "bingbu":   {"shangshu", "尚书省"},           # 兵部只能回尚书省
-    "hubu":     {"shangshu", "尚书省"},           # 户部只能回尚书省
-    "libu":     {"shangshu", "尚书省"},           # 礼部只能回尚书省
-    "xingbu":   {"shangshu", "尚书省"},           # 刑部只能回尚书省
-    "libu_hr":  {"shangshu", "尚书省", "吏部"},   # 吏部只能回尚书省
-    "zhongshu": {"taizi", "太子", "menxia", "门下省", "shangshu", "尚书省"},  # 中书省允许调门下/尚书+回太子
-    "taizi":    {"zhongshu", "中书省", "皇上"},    # 太子只能调中书省+回皇上
-}
-
-def check_agent_isolation_violation(task_id, flow_log, task_state=""):
-    """检测子代理是否违反会话隔离规则。
-
-    核心规则：子代理只能与创建它的父级 Agent 通信，禁止跨级或越权通信。
-    例如：门下省只能回复中书省，不能直接联系太子或尚书省。
-          六部只能回复尚书省，不能直接联系中书省或太子。
-
-    返回违规列表。
-    """
-    violations = []
-    if task_state in ("Done", "Cancelled"):
-        return violations
-
-    for i, entry in enumerate(flow_log):
-        src = normalize_name(entry.get("from", ""))
-        dst = normalize_name(entry.get("to", ""))
-        if not src or not dst or src == dst:
-            continue
-
-        src_dept = ID_TO_DEPT.get(src, src)
-        dst_dept = ID_TO_DEPT.get(dst, dst)
-
-        # 检查源 Agent 是否有隔离限制
-        if src not in _ISOLATED_AGENT_ALLOWED_TARGETS:
-            continue
-
-        allowed = _ISOLATED_AGENT_ALLOWED_TARGETS[src]
-        if dst_dept in allowed or dst in allowed:
-            continue  # 合法通信
-
-        # 检查是否在 LEGAL_FLOWS 中（全局合法流转除外）
-        if (src_dept, dst_dept) in LEGAL_FLOWS or (src, dst_dept) in LEGAL_FLOWS:
-            continue
-
-        # 违规：子代理向非授权目标发送消息
-        violations.append(
-            f"会话隔离违规：{src_dept}（{src}）→ {dst_dept}（{dst}）。"
-            f"根据会话隔离规则，{src_dept} 只能与 {', '.join(allowed)} 通信，"
-            f"不允许向 {dst_dept} 发送消息。"
-            f"子代理应将结果返回给创建它的主会话，不得跨级或越权通信。"
-        )
-
-    return violations
-
-
 # 极端停滞阈值
 EXTREME_STALL_THRESHOLD = 30 * 60  # 30分钟无任何更新视为极端停滞
 
@@ -1343,20 +1270,6 @@ def _main_inner():
                     "title": title,
                     "type": sv_type,
                     "detail": sv_detail,
-                    "detected_at": now_iso,
-                }
-                new_violations.append(violation)
-
-        # ── 检查 2.9：🔧 方案 A 新增 — 子代理会话隔离违规检测 ──
-        isolation_violations = check_agent_isolation_violation(task_id, flow_log, task_state)
-        for iv_detail in isolation_violations:
-            iv_key = (task_id, "会话隔离违规", -1, iv_detail)
-            if iv_key not in existing_violation_keys:
-                violation = {
-                    "task_id": task_id,
-                    "title": title,
-                    "type": "会话隔离违规",
-                    "detail": iv_detail,
                     "detected_at": now_iso,
                 }
                 new_violations.append(violation)

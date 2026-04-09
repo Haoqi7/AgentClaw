@@ -1015,13 +1015,16 @@ def cmd_create(task_id, title, state, org, official, remark=None):
     atomic_json_update(TASKS_FILE, modifier, [])
     _trigger_refresh()
 
-    # ═══════════════════════════════════════════════════════════════════════
-    # 🔧 方案 A 修复：移除程序层自动通知
-    # 旧逻辑：创建任务后自动调用 _notify_agent() 通知目标 Agent
-    # 问题：与 LLM 层的 sessions_spawn/sessions_send 形成双通知 → 会话爆炸
-    # 新逻辑：仅由 LLM Agent 通过 sessions_spawn/sessions_send 负责通信
-    #   程序层只负责看板数据记录，不主动通知任何执行层 Agent
-    # ═══════════════════════════════════════════════════════════════════════
+    # 📨 通知初始状态的负责 Agent
+    notify_agent_id = _resolve_agent_id(state) or _resolve_agent_id(actual_org)
+    _notify_agent(
+        agent_id=notify_agent_id,
+        task_id=task_id,
+        from_org='皇上',
+        to_org=actual_org,
+        title=title,
+        remark=clean_remark,
+    )
 
     log.info(f'✅ 创建 {task_id} | {title[:30]} | state={state}')
 
@@ -1125,13 +1128,23 @@ def cmd_state(task_id, new_state, now_text=None):
     else:
         log.info(f'✅ {task_id} 状态更新: {old_state[0]} → {new_state}')
 
-        # ═══════════════════════════════════════════════════════════════════════
-        # 🔧 方案 A 修复：移除程序层自动通知
-        # 旧逻辑：状态转换后自动调用 _notify_agent() 通知目标 Agent
-        # 问题：与 LLM 层的 sessions_spawn/sessions_send 形成双通知 → 会话爆炸
-        # 新逻辑：仅由 LLM Agent 通过 sessions_spawn/sessions_send 负责通信
-        #   程序层只负责看板数据记录，不主动通知任何执行层 Agent
-        # ═══════════════════════════════════════════════════════════════════════
+        # 📨 状态转换成功后，通知新状态的负责 Agent
+        if new_state not in _NO_NOTIFY_STATES:
+            notify_agent_id = _resolve_agent_id(new_state)
+            # 读取任务标题用于通知内容
+            tasks = load()
+            t = find_task(tasks, task_id)
+            task_title = t.get('title', '') if t else ''
+            old_org_label = STATE_ORG_MAP.get(old_state[0], old_state[0] or '未知')
+            new_org_label = STATE_ORG_MAP.get(new_state, new_state)
+            _notify_agent(
+                agent_id=notify_agent_id,
+                task_id=task_id,
+                from_org=old_org_label,
+                to_org=new_org_label,
+                title=task_title,
+                remark=now_text or f"状态已变更为 {new_org_label}",
+            )
 
         # 📨 状态回退时，不再额外通知原部门
         # 旧逻辑：封驳时同时通知中书省和门下省 → 门下省收到"退回"通知后再次处理 → 循环
