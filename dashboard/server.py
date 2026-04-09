@@ -59,6 +59,17 @@ _DEFAULT_ORIGINS = {
     'http://127.0.0.1:7891', 'http://localhost:7891',
     'http://127.0.0.1:5173', 'http://localhost:5173',  # Vite dev server
 }
+
+# ── Fix #6: CORS 配置支持 Docker 部署的自定义端口 ──
+# 通过环境变量 EDICT_CORS_ORIGINS 添加额外允许的 Origin（逗号分隔）
+# 例如: EDICT_CORS_ORIGINS=http://myhost:8080,http://192.168.1.100:3000
+_EXTRA_CORS_ORIGINS = set()
+_cors_env = os.environ.get('EDICT_CORS_ORIGINS', '').strip()
+if _cors_env:
+    for _origin in _cors_env.split(','):
+        _origin = _origin.strip().rstrip('/')
+        if _origin:
+            _EXTRA_CORS_ORIGINS.add(_origin)
 _SAFE_NAME_RE = re.compile(r'^[a-zA-Z0-9_\-\u4e00-\u9fff]+$')
 
 BASE = pathlib.Path(__file__).parent
@@ -90,9 +101,11 @@ def cors_headers(h):
     req_origin = h.headers.get('Origin', '')
     if ALLOWED_ORIGIN:
         origin = ALLOWED_ORIGIN
-    elif req_origin in _DEFAULT_ORIGINS:
+    elif req_origin in _DEFAULT_ORIGINS or req_origin in _EXTRA_CORS_ORIGINS:
         origin = req_origin
     else:
+        # Fix #6: 如果请求的 Origin 端口与当前服务端口一致但主机名不同（Docker 映射），
+        # 也放行，因为 Docker 端口映射会导致外部主机名:端口与内部不同
         origin = f'http://127.0.0.1:{_DASHBOARD_PORT}'
     h.send_header('Access-Control-Allow-Origin', origin)
     h.send_header('Access-Control-Allow-Methods', 'GET, POST, OPTIONS')

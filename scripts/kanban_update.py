@@ -649,9 +649,9 @@ def cmd_session_keys_save(task_id, agent_a, agent_b, session_key):
     
     try:
         atomic_json_update(TASKS_FILE, modifier, [])
-        action = '更新' if True else '保存'
+        action = '更新' if is_update else '保存'
         log.info(f'🔑 session-key {action}: {task_id} | {pair} = {session_key[:40]}...')
-        print(f'[session-keys] ✅ 已{"更新" if True else "保存"} {pair} 的 sessionKey', flush=True)
+        print(f'[session-keys] ✅ 已{"更新" if is_update else "保存"} {pair} 的 sessionKey', flush=True)
     except Exception as e:
         log.error(f'session-keys save 失败: {e}')
         print(f'[session-keys] ❌ 保存失败: {e}', flush=True)

@@ -601,6 +601,66 @@ def check_broken_chain(task_id, flow_log):
     }
 
 
+def check_session_violation(task_id, flow_log, session_keys):
+    """检查任务是否存在会话违规（重复 spawn、该用 send 却 spawn）。
+    
+    检测逻辑：
+    1. session_keys 已有 key 的 pair，如果同一 from→to 出现了超过 1 次 spawn 记录
+      → 说明 Agent 可能没有遵守 send 规范，记为警告
+    2. 同一 from→to 对（排除中书↔门下的合法多轮）出现超过 3 次无 key 通信
+      → 可能的会话爆炸，记为违规
+    
+    返回违规列表。
+    """
+    if not session_keys:
+        return []
+    
+    violations = []
+    
+    # 统计每个 from→to 对的出现次数（排除自身消息和自己发给自己的）
+    pair_counts = {}
+    for entry in flow_log:
+        f = normalize_name(entry.get("from", ""))
+        t = normalize_name(entry.get("to", ""))
+        if not f or not t or f == t:
+            continue
+        pair = (f, t)
+        pair_counts[pair] = pair_counts.get(pair, 0) + 1
+    
+    # 检查每个已注册的 session_key pair
+    for pair_key, key_entry in session_keys.items():
+        agents = key_entry.get("agents", [])
+        if len(agents) < 2:
+            continue
+        a, b = agents[0].lower(), agents[1].lower()
+        
+        # 双向检查
+        for (src, dst) in [(a, b), (b, a)]:
+            count = pair_counts.get((src, dst), 0)
+            # 中书↔门下合法多轮（最多 3 轮 = 最多 6 次双向通信）
+            if {a, b} == {"zhongshu", "menxia"}:
+                if count > 7:  # 3轮往返 = 6次 + 1次初始提交 = 7
+                    dept_from = ID_TO_DEPT.get(src, src)
+                    dept_to = ID_TO_DEPT.get(dst, dst)
+                    violations.append(
+                        f"会话可疑：{dept_from} → {dept_to} 通信 {count} 次"
+                        f"（已超过中书↔门下 3 轮审议的正常范围 {7} 次，"
+                        f"可能存在会话爆炸风险）"
+                    )
+            else:
+                # 其他 pair：有 key 的情况下超过 2 次就可疑
+                if count > 2:
+                    dept_from = ID_TO_DEPT.get(src, src)
+                    dept_to = ID_TO_DEPT.get(dst, dst)
+                    violations.append(
+                        f"会话违规：{dept_from} → {dept_to} 通信 {count} 次"
+                        f"（已有 sessionKey 应复用会话，但检测到多次 spawn，"
+                        f"请使用 sessions_send 复用会话而非 sessions_spawn）"
+                    )
+    
+    return violations
+
+
 # 极端停滞阈值
 EXTREME_STALL_THRESHOLD = 30 * 60  # 30分钟无任何更新视为极端停滞
 
@@ -665,8 +725,22 @@ def clear_agent_sessions(task):
     for agent_id in agents_to_clear:
         label = ID_TO_LABEL.get(agent_id, agent_id)
         try:
-            # 列出该 Agent 的所有会话
-            url = f"http://127.0.0.1:18789/api/v1/conversations"
+            # 优先从环境变量/配置文件读取 Gateway URL，兼容 Docker 端口映射
+            _gw_base = os.environ.get('EDICT_GATEWAY_URL', '').strip()
+            if not _gw_base:
+                try:
+                    _gw_cfg = json.loads(OCLAW_HOME.joinpath('openclaw.json').read_text())
+                    _gw_gw = _gw_cfg.get('gateway', {})
+                    _gw_url = _gw_gw.get('url', '').strip()
+                    if _gw_url:
+                        _gw_base = _gw_url.rstrip('/')
+                    else:
+                        _gw_host = _gw_gw.get('host', '127.0.0.1')
+                        _gw_port = _gw_gw.get('port', 18789)
+                        _gw_base = f'http://{_gw_host}:{_gw_port}'
+                except Exception:
+                    _gw_base = 'http://127.0.0.1:18789'
+            url = f"{_gw_base}/api/v1/conversations"
             headers = {}
             if token:
                 headers["Authorization"] = f"Bearer {token}"
@@ -683,7 +757,7 @@ def clear_agent_sessions(task):
                 if "main" in str(conv_id).lower() or "main" in title.lower():
                     continue
                 # 删除非 main 会话
-                del_url = f"http://127.0.0.1:18789/api/v1/conversations/{conv_id}"
+                del_url = f"{_gw_base}/api/v1/conversations/{conv_id}"
                 del_req = urllib.request.Request(del_url, method="DELETE", headers=headers)
                 try:
                     urllib.request.urlopen(del_req, timeout=10)
@@ -886,6 +960,78 @@ def _main_inner():
         v_key = (v.get("task_id", ""), v.get("type", ""), v.get("flow_index", -1), v.get("detail", ""))
         existing_violation_keys.add(v_key)
 
+    # ── Fix #2: 清理已解决任务的陈旧违规 ──
+    # 如果违规对应的任务已完成(Done)/已取消(Cancelled)且已归档，
+    # 或任务已不存在于活跃列表中，则将其从 violations 中移除，
+    # 防止陈旧违规永久堆积。
+    _active_task_ids = {t.get('id', '') for t in tasks if t.get('state', '') not in ('Done', 'Cancelled')}
+    _stale_violations = []
+    for _v in audit.get("violations", []):
+        _v_task = _v.get("task_id", "")
+        if _v_task and _v_task not in _active_task_ids:
+            _stale_violations.append(_v)
+    if _stale_violations:
+        _stale_count = len(_stale_violations)
+        # 只保留仍属于活跃任务的违规
+        audit["violations"] = [v for v in audit.get("violations", []) if v.get("task_id", "") in _active_task_ids or not v.get("task_id")]
+        # 将清理的违规归档
+        audit.setdefault("archived_violations", [])
+        audit["archived_violations"].extend(_stale_violations)
+        # 限制归档大小，只保留最近 500 条
+        if len(audit["archived_violations"]) > 500:
+            audit["archived_violations"] = audit["archived_violations"][-500:]
+        log(f"已清理 {_stale_count} 条已解决任务的陈旧违规")
+
+    # ── Fix #2 原因A: 自动修复活跃任务的过时违规 ──
+    # 对于仍在活跃的任务，如果 flow_log 已经包含了之前报缺失的步骤，
+    # 则该违规已经自动修复，应从 violations 中移除。
+    # 这解决了中书↔门下多轮审议期间，watchdog 在 flow_log 尚未更新时
+    # 误报跳步违规后永远留在审计日志中的问题。
+    _resolved_violations = []
+    _tasks_by_id = {t.get('id', ''): t for t in tasks}
+    for _v in audit.get("violations", []):
+        if _v.get("type") != "流程跳步":
+            continue  # 只处理流程跳步类违规的自动修复
+        _v_task = _v.get("task_id", "")
+        _v_detail = _v.get("detail", "")
+        if not _v_task or not _v_detail:
+            continue
+        _task_obj = _tasks_by_id.get(_v_task)
+        if not _task_obj:
+            continue
+        # 从违规详情中提取缺失的步骤 (from → to)
+        # 违规格式: "流程跳步：缺少必要环节 门下省 → 中书省"
+        # 或: "流程跳步：XXX 已执行，但缺少前置环节 门下省 → 中书省"
+        import re as _re
+        _step_match = _re.search(r'缺少(?:必要环节|前置环节)\s+(\S+)\s*→\s*(\S+)', _v_detail)
+        if not _step_match:
+            continue
+        _missing_from = _step_match.group(1)
+        _missing_to = _step_match.group(2)
+        # 检查当前 flow_log 是否已包含该步骤
+        _v_flow = _task_obj.get("flow_log", [])
+        _step_now_exists = False
+        for _entry in _v_flow:
+            _ef = _entry.get("from", "")
+            _et = _entry.get("to", "")
+            if _missing_from in _ef and _missing_to in _et:
+                _step_now_exists = True
+                break
+        if _step_now_exists:
+            _resolved_violations.append(_v)
+    if _resolved_violations:
+        _resolved_count = len(_resolved_violations)
+        _resolved_ids = {id(_v) for _v in _resolved_violations}
+        audit["violations"] = [_v for _v in audit.get("violations", []) if id(_v) not in _resolved_ids]
+        audit.setdefault("resolved_violations", [])
+        for _rv in _resolved_violations:
+            _rv["resolved_at"] = now_iso
+            _rv["resolve_reason"] = "流程已补全缺失步骤，违规自动修复"
+            audit["resolved_violations"].append(_rv)
+        if len(audit["resolved_violations"]) > 500:
+            audit["resolved_violations"] = audit["resolved_violations"][-500:]
+        log(f"已自动修复 {_resolved_count} 条过时跳步违规（flow_log 已补全缺失步骤）")
+
     for task in active:
         task_id = task.get("id", "?")
         title = task.get("title", "")
@@ -901,6 +1047,19 @@ def _main_inner():
         sched = task.get("_scheduler") or {}
         if sched.get("_taiziManual"):
             continue
+
+        # ── Fix #2: 优雅期 — 如果任务刚在 60 秒内更新过，跳过本轮检查 ──
+        # 防止 flow_log 还未被 Agent 更新时误报跳步违规
+        _task_updated = task.get("updatedAt", "")
+        if _task_updated:
+            try:
+                _udt = datetime.datetime.fromisoformat(_task_updated.replace("Z", "+00:00").replace("+08:00", ""))
+                if _udt.tzinfo is None:
+                    _udt = _udt.replace(tzinfo=datetime.timezone(datetime.timedelta(hours=8)))
+                if (now - _udt).total_seconds() < 60:
+                    continue  # 刚更新不到 60 秒，给 Agent 时间写 flow_log
+            except Exception:
+                pass
 
         # ── 检查 1：越权调用（逐条检查）──
         for i, entry in enumerate(flow_log):
@@ -927,9 +1086,12 @@ def _main_inner():
                     new_violations.append(violation)
 
         # ── 检查 2：流程跳步（改进：含后向检查）──
+        # Fix #5: 去重 key 使用 detail 内容哈希而非固定 flow_index=-1，
+        # 使得不同阶段产生的不同缺失步骤可以被分别记录
         skips = check_skip_steps(task_id, flow_log)
         for skip_detail in skips:
-            v_key = (task_id, "流程跳步", -1, skip_detail)
+            _skip_hash = hash(skip_detail) & 0xFFFFFFFF  # 用 detail 内容的哈希区分不同跳步
+            v_key = (task_id, "流程跳步", _skip_hash, skip_detail)
             if v_key not in existing_violation_keys:
                 violation = {
                     "task_id": task_id,
@@ -968,6 +1130,23 @@ def _main_inner():
                     "detected_at": now_iso,
                 }
                 new_violations.append(violation)
+
+        # ── 检查 2.8：会话违规检测（session-keys 合规性）──
+        session_keys = task.get('session_keys', {})
+        if session_keys:
+            session_violations = check_session_violation(task_id, flow_log, session_keys)
+            for sv_detail in session_violations:
+                sv_type = "会话可疑" if "可疑" in sv_detail else "会话违规"
+                v_key = (task_id, sv_type, -1, sv_detail)
+                if v_key not in existing_violation_keys:
+                    violation = {
+                        "task_id": task_id,
+                        "title": title,
+                        "type": sv_type,
+                        "detail": sv_detail,
+                        "detected_at": now_iso,
+                    }
+                    new_violations.append(violation)
 
         # ── 检查 3：断链超时 ──
         broken = check_broken_chain(task_id, flow_log)
@@ -1077,7 +1256,26 @@ def _main_inner():
     serious = [v for v in new_violations if v["type"] in ("越权调用", "直接执行越权")]
     skip_violations = [v for v in new_violations if v["type"] == "流程跳步"]
     
-    if serious or skip_violations:
+    # ── Fix #2 原因B: 跳步通报冷却机制 ──
+    # 防止中书↔门下多轮审议期间，每次流转都触发通知太子。
+    # 同一任务的跳步违规在 _SKIP_NOTIFY_COOLDOWN 秒内只通知一次。
+    _SKIP_NOTIFY_COOLDOWN = 300  # 5 分钟冷却
+    _skip_notify_last = audit.get("last_skip_notify_at", "")
+    _skip_notify_task = audit.get("last_skip_notify_task", "")
+    _skip_should_notify = True
+    if skip_violations and not serious:
+        # 纯跳步违规（无越权）时启用冷却
+        _skip_task_ids = list(set(v["task_id"] for v in skip_violations))
+        if _skip_notify_last and _skip_notify_task in _skip_task_ids:
+            try:
+                _last_dt = datetime.datetime.fromisoformat(_skip_notify_last.replace("Z", "+00:00"))
+                if (now - _last_dt).total_seconds() < _SKIP_NOTIFY_COOLDOWN:
+                    _skip_should_notify = False
+                    log(f"跳步通报冷却中（{_skip_notify_task}，{(now - _last_dt).total_seconds():.0f}s前已通知），跳过本轮")
+            except Exception:
+                pass
+
+    if serious or (skip_violations and _skip_should_notify):
         lines = []
         if serious:
             for v in serious:
@@ -1109,6 +1307,10 @@ def _main_inner():
             "status": "sent" if notify_ok else "failed",
             "detail": notify_detail,
         })
+        # 记录跳步通报时间（用于冷却去重）
+        if skip_violations and not serious:
+            audit["last_skip_notify_at"] = now_iso
+            audit["last_skip_notify_task"] = skip_violations[0]["task_id"]
 
     # ── 写入审计日志（重新读取最新数据防止覆盖并发写入）──
     audit = load_audit()  # 重新读取，获取可能被其他进程更新的数据
