@@ -34,7 +34,7 @@
   # python3 kanban_update.py session-keys list   JJC-xxx
 """
 import datetime
-import json, pathlib, sys, subprocess, logging, os, re, uuid, threading, threading
+import json, pathlib, sys, subprocess, logging, os, re, threading
 
 _BASE = pathlib.Path(os.environ['EDICT_HOME']) if 'EDICT_HOME' in os.environ else pathlib.Path(__file__).resolve().parent.parent
 TASKS_FILE = _BASE / 'data' / 'tasks_source.json'
@@ -92,9 +92,10 @@ except ImportError:
             lock_f.close()
     
     def atomic_json_update(path, modifier, default):
-        """降级更新：使用文件锁"""
+        """降级更新：使用文件锁 + 临时文件原子写入"""
+        import tempfile
         lock_path = path.with_suffix(path.suffix + '.lock')
-        lock_f = open(lock_path, 'a')  # 'a' 模式，不会清空文件
+        lock_f = open(lock_path, 'a')
         try:
             _acquire_lock(lock_f, exclusive=True)
             try:
@@ -104,8 +105,15 @@ except ImportError:
                 else:
                     data = default
                 new_data = modifier(data)
-                with open(path, 'w') as f:
-                    json.dump(new_data, f, indent=2, ensure_ascii=False)
+                fd, tmp_path = tempfile.mkstemp(dir=path.parent, suffix='.tmp')
+                try:
+                    with os.fdopen(fd, 'w') as f:
+                        json.dump(new_data, f, indent=2, ensure_ascii=False)
+                    os.replace(tmp_path, str(path))
+                except Exception:
+                    if os.path.exists(tmp_path):
+                        os.unlink(tmp_path)
+                    raise
                 return new_data
             except Exception:
                 raise
@@ -617,27 +625,7 @@ def _notify_agent(agent_id, task_id, from_org, to_org, title='', remark='', _ret
         pass  # 去重记录写入失败不影响主流程
 
 
-def _extract_session_key_from_json(json_str):
-    """从 openclaw --json 输出中提取 sessionKey。"""
-    if not json_str:
-        return None
-    try:
-        # openclaw --json 输出可能是纯 JSON 也可能包含前缀噪声
-        # 尝试找到第一个 { 到最后一个 } 之间的 JSON
-        start = json_str.find('{')
-        end = json_str.rfind('}')
-        if start >= 0 and end > start:
-            candidate = json_str[start:end+1]
-            data = json.loads(candidate)
-            key = data.get('sessionKey')
-            if key and key != 'null':
-                return str(key)
-    except (json.JSONDecodeError, ValueError):
-        pass
-    return None
-
-
-def agent_communicate(task_id, from_agent, to_agent, message, timeout=120, _async=False):
+def agent_communicate(task_id, from_agent, to_agent, message, timeout=120):
     """统一通信入口：自动判断 spawn/send，强制复用 session（程序层核心保障）。
 
     调用方只需提供 task_id + from/to + message，无需关心底层 spawn/send。
@@ -650,7 +638,6 @@ def agent_communicate(task_id, from_agent, to_agent, message, timeout=120, _asyn
         to_agent: 接收方 agent_id 或部门名（如 'menxia' 或 '门下省'）
         message: 消息内容
         timeout: 命令超时秒数
-        _async: 是否异步执行（不等待结果），默认 False
 
     Returns:
         sessionKey str 或 None
@@ -743,18 +730,6 @@ def _normalize_pair(agent_a, agent_b):
     return f'{parts[0]}:{parts[1]}'
 
 
-def _resolve_agent_id_for_pair(name):
-    """将部门名称或 agent_id 统一解析为 agent_id。"""
-    if not name:
-        return ''
-    name = name.strip().lower()
-    # 直接匹配 agent_id
-    if name in _ORG_AGENT_MAP.values() or name in ('taizi', 'main', 'huangshang'):
-        return name
-    # 通过部门名反查
-    return _ORG_AGENT_MAP.get(name, '') or _STATE_AGENT_MAP.get(name, '')
-
-
 def _extract_session_key_from_json(output_text):
     """从 openclaw CLI 的 --json 输出中提取 sessionKey。
     
@@ -798,30 +773,6 @@ def _lookup_session_key(task_id, agent_a, agent_b):
         return entry.get('sessionKey') if entry else None
     except Exception:
         return None
-
-
-def _extract_session_key(output):
-    """从 openclaw CLI 的 --json 输出中提取 sessionKey。
-    
-    当 CLI 使用 --json 参数时，返回值格式为:
-    {"sessionKey": "agent:xxx:subagent:uuid", "sessionId": "...", "reply": "..."}
-    
-    若解析失败或 sessionKey 为 null，返回 None。
-    """
-    if not output:
-        return None
-    try:
-        data = json.loads(output.strip())
-        key = data.get('sessionKey')
-        if key and str(key).strip() not in ('null', 'None', ''):
-            return str(key).strip()
-    except (json.JSONDecodeError, TypeError, ValueError, AttributeError):
-        pass
-    # 正则兜底：从非纯 JSON 输出中提取
-    m = re.search(r'"sessionKey"\s*:\s*"([^"]+)"', output)
-    if m and m.group(1).strip() not in ('null', 'None', ''):
-        return m.group(1).strip()
-    return None
 
 
 def cmd_session_keys_save(task_id, agent_a, agent_b, session_key):

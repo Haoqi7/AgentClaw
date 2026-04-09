@@ -28,7 +28,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent))
 from utils import now_iso, safe_name, read_json
 
-OCLAW_HOME = Path.home() / '.openclaw'
+OCLAW_HOME = Path(os.environ.get('OPENCLAW_HOME', Path.home() / '.openclaw'))
 
 
 def _download_file(url: str, timeout: int = 30, retries: int = 3) -> str:
@@ -75,7 +75,12 @@ def add_remote(agent_id: str, name: str, source_url: str, description: str = '')
     if not safe_name(agent_id) or not safe_name(name):
         print(f'❌ 错误：agent_id 或 skill 名称含非法字符')
         return False
-    
+
+    # URL scheme 验证：仅允许 http/https
+    if not source_url.startswith(('http://', 'https://')):
+        print(f'❌ 错误: 不支持的 URL scheme，仅允许 http/https', file=sys.stderr)
+        return False
+
     # 设置 workspace
     workspace = OCLAW_HOME / f'workspace-{agent_id}' / 'skills' / name
     workspace.mkdir(parents=True, exist_ok=True)
@@ -230,8 +235,8 @@ _HUB_BASE_ENV = 'OPENCLAW_SKILLS_HUB_BASE'
 
 def _get_hub_url(skill_name):
     """获取 skill 的 Hub URL，支持环境变量覆盖"""
-    base = (Path.home() / '.openclaw' / 'skills-hub-url').read_text().strip() \
-        if (Path.home() / '.openclaw' / 'skills-hub-url').exists() else None
+    base = (OCLAW_HOME / 'skills-hub-url').read_text().strip() \
+        if (OCLAW_HOME / 'skills-hub-url').exists() else None
     base = base or os.environ.get(_HUB_BASE_ENV) or OFFICIAL_SKILLS_HUB_BASE
     return f'{base.rstrip("/")}/{skill_name}/SKILL.md'
 

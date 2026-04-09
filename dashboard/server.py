@@ -178,9 +178,8 @@ def cors_headers(h):
     elif ext_origin and req_origin == ext_origin:
         origin = req_origin
     else:
-        # Fix #6: 如果请求的 Origin 端口与当前服务端口一致但主机名不同（Docker 映射），
-        # 也放行，因为 Docker 端口映射会导致外部主机名:端口与内部不同
-        origin = f'http://127.0.0.1:{_DASHBOARD_PORT}'
+        # 未知 Origin，不设置 Allow-Origin（安全：避免任意域反射）
+        return
     h.send_header('Access-Control-Allow-Origin', origin)
     h.send_header('Access-Control-Allow-Methods', 'GET, POST, OPTIONS')
     h.send_header('Access-Control-Allow-Headers', 'Content-Type')
@@ -262,7 +261,7 @@ def _check_api_auth(handler):
         if src and _port_pat.search(src):
             return True
     # 无 Origin 且 Host 匹配（如 curl localhost:7891）
-    if not origin and host and (host == f'127.0.0.1:{port}' or host == f'localhost:{port}' or host.startswith(f'127.0.0.1:{port}/') or host.startswith(f'localhost:{port}/')):
+    if not origin and host and (host == f'127.0.0.1:{port}' or host == f'localhost:{port}'):
         return True
     auth_header = handler.headers.get('Authorization', '')
     if auth_header == f'Bearer {token}':
@@ -550,7 +549,7 @@ def add_remote_skill(agent_id, skill_name, source_url, description=''):
             req = Request(source_url, headers={'User-Agent': 'OpenClaw-SkillManager/1.0'})
             try:
                 resp = urlopen(req, timeout=10)
-                raw = resp.read(10 * 1024 * 1024)
+                raw = resp.read(10 * 1024 * 1024 + 1)
                 if len(raw) > 10 * 1024 * 1024:
                     return {'ok': False, 'error': '文件过大（最大 10MB）'}
                 content = raw.decode('utf-8', errors='replace')
@@ -969,6 +968,8 @@ _AGENT_DEPTS = [
     {'id':'zaochao', 'label':'钦天监','emoji':'📰', 'role':'朝报官',   'rank':'正三品'},
     {'id':'jiancha', 'label':'御史台','emoji':'🛡️', 'role':'监察御史', 'rank':'正三品'},
 ]
+
+_AGENT_LABELS = {d['id']: d['label'] for d in _AGENT_DEPTS}
 
 
 def _check_gateway_alive():

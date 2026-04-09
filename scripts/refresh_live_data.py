@@ -94,7 +94,7 @@ def main():
             })
 
     payload = {
-        'generatedAt': datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+        'generatedAt': datetime.datetime.now(datetime.timezone.utc).strftime('%Y-%m-%d %H:%M:%S'),
         'taskSource': 'tasks_source.json' if (DATA / 'tasks_source.json').exists() else 'tasks.json',
         'officials': officials,
         'tasks': tasks,

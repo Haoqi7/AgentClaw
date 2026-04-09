@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """应用 data/pending_model_changes.json → openclaw.json，并重启 Gateway"""
-import json, pathlib, subprocess, datetime, shutil, logging, glob
+import json, os, pathlib, subprocess, datetime, shutil, logging, glob
 from file_lock import atomic_json_write, atomic_json_read
 
 log = logging.getLogger('model_change')
@@ -8,7 +8,8 @@ logging.basicConfig(level=logging.INFO, format='%(asctime)s [%(name)s] %(message
 
 BASE = pathlib.Path(__file__).parent.parent
 DATA = BASE / 'data'
-OPENCLAW_CFG = pathlib.Path.home() / '.openclaw' / 'openclaw.json'
+OPENCLAW_HOME = pathlib.Path(os.environ.get('OPENCLAW_HOME', pathlib.Path.home() / '.openclaw'))
+OPENCLAW_CFG = OPENCLAW_HOME / 'openclaw.json'
 PENDING = DATA / 'pending_model_changes.json'
 CHANGE_LOG = DATA / 'model_change_log.json'
 MAX_BACKUPS = 10
@@ -64,6 +65,7 @@ def main():
         if not found:
             errors.append({'change': change, 'error': f'agent {ag_id} not found'})
 
+    bak = None
     if applied:
         # 只有内容真正变化时才备份和写入
         new_cfg = dict(cfg)
@@ -98,7 +100,7 @@ def main():
         except Exception as e:
             log.error(f'gateway restart failed: {e}')
             # 回滚配置
-            if bak.exists():
+            if bak and bak.exists():
                 shutil.copy2(bak, OPENCLAW_CFG)
                 log.warning('rolled back openclaw.json from backup')
                 rollback = True

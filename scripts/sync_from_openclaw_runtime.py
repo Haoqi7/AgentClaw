@@ -1,7 +1,5 @@
 #!/usr/bin/env python3
-import json
-import pathlib
-import time
+import json, os, pathlib, time
 import datetime
 import traceback
 import logging
@@ -14,7 +12,8 @@ BASE = pathlib.Path(__file__).resolve().parent.parent
 DATA = BASE / 'data'
 DATA.mkdir(exist_ok=True)
 SYNC_STATUS = DATA / 'sync_status.json'
-SESSIONS_ROOT = pathlib.Path.home() / '.openclaw' / 'agents'
+OPENCLAW_HOME = pathlib.Path(os.environ.get('OPENCLAW_HOME', pathlib.Path.home() / '.openclaw'))
+SESSIONS_ROOT = OPENCLAW_HOME / 'agents'
 
 
 def write_status(**kwargs):

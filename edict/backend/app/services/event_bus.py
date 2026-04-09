@@ -196,11 +196,23 @@ class EventBus:
 
 # ── 全局单例 ──
 _bus: EventBus | None = None
+_bus_lock = None
+
+
+def _get_bus_lock():
+    import asyncio
+    global _bus_lock
+    if _bus_lock is None:
+        _bus_lock = asyncio.Lock()
+    return _bus_lock
 
 
 async def get_event_bus() -> EventBus:
     global _bus
-    if _bus is None:
-        _bus = EventBus()
-        await _bus.connect()
+    if _bus is not None:
+        return _bus
+    async with _get_bus_lock():
+        if _bus is None:
+            _bus = EventBus()
+            await _bus.connect()
     return _bus

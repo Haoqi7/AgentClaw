@@ -4,7 +4,7 @@ import json
 import logging
 from pathlib import Path
 
-from fastapi import APIRouter
+from fastapi import APIRouter, HTTPException
 
 log = logging.getLogger("edict.api.agents")
 router = APIRouter()
@@ -40,7 +40,7 @@ async def get_agent(agent_id: str):
     """获取 Agent 详情。"""
     meta = AGENT_META.get(agent_id)
     if not meta:
-        return {"error": f"Agent '{agent_id}' not found"}, 404
+        raise HTTPException(status_code=404, detail=f"Agent '{agent_id}' not found")
 
     # 尝试读取 SOUL.md
     soul_path = Path(__file__).parents[4] / "agents" / agent_id / "SOUL.md"

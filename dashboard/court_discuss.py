@@ -114,7 +114,7 @@ _sessions: dict[str, dict] = {}
 
 def create_session(topic: str, official_ids: list[str], task_id: str = '') -> dict:
     """创建新的朝堂议政会话。"""
-    session_id = str(uuid.uuid4())[:8]
+    session_id = str(uuid.uuid4())[:12]
 
     officials = []
     for oid in official_ids:

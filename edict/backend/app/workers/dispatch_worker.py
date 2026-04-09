@@ -184,7 +184,7 @@ class DispatchWorker:
             except FileNotFoundError:
                 return {"returncode": -1, "stdout": "", "stderr": "openclaw command not found"}
 
-        loop = asyncio.get_event_loop()
+        loop = asyncio.get_running_loop()
         return await loop.run_in_executor(None, _run)
 
 
@@ -196,7 +196,7 @@ async def run_dispatcher():
     )
     worker = DispatchWorker()
 
-    loop = asyncio.get_event_loop()
+    loop = asyncio.get_running_loop()
     for sig in (signal.SIGTERM, signal.SIGINT):
         loop.add_signal_handler(sig, lambda: asyncio.create_task(worker.stop()))
 

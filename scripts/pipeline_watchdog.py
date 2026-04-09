@@ -252,56 +252,58 @@ def _unlock_file(lock_f):
     except Exception:
         pass
 
+try:
+    from file_lock import atomic_json_read, atomic_json_write
+except ImportError:
+    # Fallback: keep inline implementations
+    def atomic_json_read(filepath, default):
+        """带共享锁读取 JSON 文件（允许多个读者并发，阻止写者）"""
+        if not pathlib.Path(filepath).exists():
+            return default
+        lock_path = pathlib.Path(str(filepath) + '.lock')
+        lock_f = open(lock_path, 'a')
+        try:
+            _lock_file(lock_f, exclusive=False)
+            with open(filepath, 'r', encoding='utf-8') as f:
+                return json.load(f)
+        except Exception:
+            return default
+        finally:
+            _unlock_file(lock_f)
+            lock_f.close()
 
-def _locked_read_json(filepath, default):
-    """带共享锁读取 JSON 文件（允许多个读者并发，阻止写者）"""
-    if not pathlib.Path(filepath).exists():
-        return default
-    lock_path = pathlib.Path(str(filepath) + '.lock')
-    lock_f = open(lock_path, 'a')
-    try:
-        _lock_file(lock_f, exclusive=False)
-        with open(filepath, 'r', encoding='utf-8') as f:
-            return json.load(f)
-    except Exception:
-        return default
-    finally:
-        _unlock_file(lock_f)
-        lock_f.close()
-
-
-def _locked_write_json(filepath, data):
-    """带排他锁写入 JSON 文件（阻止所有其他读写）+ 原子写入"""
-    lock_path = pathlib.Path(str(filepath) + '.lock')
-    lock_f = open(lock_path, 'a')
-    try:
-        _lock_file(lock_f, exclusive=True)
-        tmp_path = pathlib.Path(str(filepath) + '.tmp')
-        tmp_path.write_text(
-            json.dumps(data, ensure_ascii=False, indent=2),
-            encoding='utf-8',
-        )
-        os.replace(str(tmp_path), str(filepath))
-    except Exception as e:
-        log(f"写入文件失败 {filepath}: {e}")
-    finally:
-        _unlock_file(lock_f)
-        lock_f.close()
+    def atomic_json_write(filepath, data):
+        """带排他锁写入 JSON 文件（阻止所有其他读写）+ 原子写入"""
+        lock_path = pathlib.Path(str(filepath) + '.lock')
+        lock_f = open(lock_path, 'a')
+        try:
+            _lock_file(lock_f, exclusive=True)
+            tmp_path = pathlib.Path(str(filepath) + '.tmp')
+            tmp_path.write_text(
+                json.dumps(data, ensure_ascii=False, indent=2),
+                encoding='utf-8',
+            )
+            os.replace(str(tmp_path), str(filepath))
+        except Exception as e:
+            log(f"写入文件失败 {filepath}: {e}")
+        finally:
+            _unlock_file(lock_f)
+            lock_f.close()
 
 
 def load_tasks():
     """安全读取 tasks_source.json（带文件锁）"""
-    return _locked_read_json(TASKS_FILE, [])
+    return atomic_json_read(TASKS_FILE, [])
 
 
 def load_audit():
     """读取历史审计日志（带文件锁）"""
-    return _locked_read_json(AUDIT_FILE, {"last_check": "", "violations": [], "notifications": []})
+    return atomic_json_read(AUDIT_FILE, {"last_check": "", "violations": [], "notifications": []})
 
 
 def save_audit(audit):
     """写入审计日志（带文件锁 + 原子写入）"""
-    _locked_write_json(AUDIT_FILE, audit)
+    atomic_json_write(AUDIT_FILE, audit)
 
 
 def load_exclude_list():
@@ -316,7 +318,7 @@ def load_exclude_list():
 
 def save_tasks(tasks):
     """写入任务文件（带文件锁 + 原子写入）"""
-    _locked_write_json(TASKS_FILE, tasks)
+    atomic_json_write(TASKS_FILE, tasks)
 
 
 # ═══════════════════════════════════════════════════════════════════

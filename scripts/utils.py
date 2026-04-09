@@ -22,8 +22,8 @@ def now_iso():
 
 
 def today_str(fmt='%Y%m%d'):
-    """返回今天日期字符串，默认 YYYYMMDD"""
-    return datetime.date.today().strftime(fmt)
+    """返回今天日期字符串，默认 YYYYMMDD（BJT 时区，与 now_iso 一致）"""
+    return datetime.datetime.now(_BJT).strftime(fmt)
 
 
 def safe_name(s: str) -> bool:
