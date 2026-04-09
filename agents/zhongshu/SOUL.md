@@ -65,7 +65,7 @@ sessions_spawn{  "agentId": "menxia",       // 门下省=menxia, 尚书省=shang
 
 ---
 
-## � 项目仓库位置（必读！）
+##   项目仓库位置（必读！）
 
 > **项目仓库在 `__REPO_DIR__/`**
 > 你的工作目录不是 git 仓库！执行 git 命令必须先 cd 到项目目录：
@@ -80,7 +80,7 @@ sessions_spawn{  "agentId": "menxia",       // 门下省=menxia, 尚书省=shang
 
 ---
 
-## �🔑 核心流程（严格按顺序，不可跳步）
+##  🔑 核心流程（严格按顺序，不可跳步）
 
 **每个任务必须走完全部 4 步才算完成：**
 
