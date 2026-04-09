@@ -143,8 +143,10 @@ _STATE_AGENT_MAP = {
     'Taizi': 'taizi',
     'Zhongshu': 'zhongshu',
     'Menxia': 'menxia',
-    'Assigned': 'shangshu',
-    'Review': 'shangshu',
+    # 'Assigned' 已移除：门下省准奏后 state 变为 Assigned，
+    # 但此时中书省尚未处理门下省的返回结果，不应由程序层提前通知尚书省。
+    # 尚书省由中书省通过 LLM 层 sessions_spawn 唤醒（唯一的 LLM 层通知环节）。
+    # 'Review': 'shangshu',  # 已移除：Review 状态由尚书省自行触发，无需程序通知
     'Pending': 'zhongshu',
 }
 

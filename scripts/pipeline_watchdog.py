@@ -682,6 +682,150 @@ def check_session_violation(task_id, flow_log, session_keys, task_state=""):
     return violations
 
 
+# ═══════════════════════════════════════════════════════════════════
+#  跨 Agent 越权通信检测（方案 B+ 增强）
+# ═══════════════════════════════════════════════════════════════════
+
+# 子代理允许的通信白名单：每个 Agent 只能与其直接上级/下级通信
+# 格式：(from_agent_id, to_agent_id) → 是否合法
+_CHILD_AGENT_ALLOWED_PAIRS = {
+    # 上行：上级调用下级
+    ("taizi", "zhongshu"),
+    ("zhongshu", "menxia"),
+    ("zhongshu", "shangshu"),
+    ("shangshu", "gongbu"),
+    ("shangshu", "bingbu"),
+    ("shangshu", "hubu"),
+    ("shangshu", "libu"),
+    ("shangshu", "xingbu"),
+    ("shangshu", "libu_hr"),
+    # 下行：下级返回上级
+    ("zhongshu", "taizi"),
+    ("menxia", "zhongshu"),
+    ("shangshu", "zhongshu"),
+    ("gongbu", "shangshu"),
+    ("bingbu", "shangshu"),
+    ("hubu", "shangshu"),
+    ("libu", "shangshu"),
+    ("xingbu", "shangshu"),
+    ("libu_hr", "shangshu"),
+    # 自身内部消息
+    ("taizi", "taizi"),
+    ("zhongshu", "zhongshu"),
+    ("menxia", "menxia"),
+    ("shangshu", "shangshu"),
+    ("gongbu", "gongbu"),
+    ("bingbu", "bingbu"),
+    ("hubu", "hubu"),
+    ("libu", "libu"),
+    ("xingbu", "xingbu"),
+    ("libu_hr", "libu_hr"),
+    # 监察系统（jiancha）可通知所有部门
+    ("jiancha", "taizi"),
+    ("jiancha", "zhongshu"),
+    ("jiancha", "menxia"),
+    ("jiancha", "shangshu"),
+    ("jiancha", "gongbu"),
+    ("jiancha", "bingbu"),
+    ("jiancha", "hubu"),
+    ("jiancha", "libu"),
+    ("jiancha", "xingbu"),
+    ("jiancha", "libu_hr"),
+}
+
+# 子代理绝对禁止的通信对（即使不在上面的白名单中）
+# 这些是跨层级或跨部门的越权通信
+_FORBIDDEN_CROSS_PAIRS = {
+    # 六部之间禁止互相通信
+    ("bingbu", "gongbu"), ("gongbu", "bingbu"),
+    ("bingbu", "hubu"), ("hubu", "bingbu"),
+    ("bingbu", "libu"), ("libu", "bingbu"),
+    ("bingbu", "xingbu"), ("xingbu", "bingbu"),
+    ("bingbu", "libu_hr"), ("libu_hr", "bingbu"),
+    ("gongbu", "hubu"), ("hubu", "gongbu"),
+    ("gongbu", "libu"), ("libu", "gongbu"),
+    ("gongbu", "xingbu"), ("xingbu", "gongbu"),
+    ("gongbu", "libu_hr"), ("libu_hr", "gongbu"),
+    ("hubu", "libu"), ("libu", "hubu"),
+    ("hubu", "xingbu"), ("xingbu", "hubu"),
+    ("hubu", "libu_hr"), ("libu_hr", "hubu"),
+    ("libu", "xingbu"), ("xingbu", "libu"),
+    ("libu", "libu_hr"), ("libu_hr", "libu"),
+    ("xingbu", "libu_hr"), ("libu_hr", "xingbu"),
+    # 六部禁止直接给中书省/门下省/太子发消息
+    ("bingbu", "taizi"), ("gongbu", "taizi"), ("hubu", "taizi"),
+    ("libu", "taizi"), ("xingbu", "taizi"), ("libu_hr", "taizi"),
+    ("bingbu", "menxia"), ("gongbu", "menxia"), ("hubu", "menxia"),
+    ("libu", "menxia"), ("xingbu", "menxia"), ("libu_hr", "menxia"),
+    # 门下省禁止直接调用尚书省或六部
+    ("menxia", "shangshu"),
+    ("menxia", "gongbu"), ("menxia", "bingbu"), ("menxia", "hubu"),
+    ("menxia", "libu"), ("menxia", "xingbu"), ("menxia", "libu_hr"),
+    # 太子禁止直接调用门下省/尚书省/六部
+    ("taizi", "menxia"),
+    ("taizi", "shangshu"),
+    ("taizi", "gongbu"), ("taizi", "bingbu"), ("taizi", "hubu"),
+    ("taizi", "libu"), ("taizi", "xingbu"), ("taizi", "libu_hr"),
+}
+
+
+def check_cross_agent_violation(task_id, flow_log, task_state=""):
+    """检测子代理越权通信（方案 B+ 增强）。
+
+    检测逻辑：
+    1. 六部之间互相通信 → 越权（六部只能与尚书省通信）
+    2. 子代理跨层级通信 → 越权（如六部直接给太子发消息）
+    3. 子代理调用非上下级部门 → 越权（如门下省直接调用尚书省）
+
+    注意：
+    - 太子调度系统（from='太子调度'）的 flow_log 不检测
+    - 已终态的任务不检测
+    """
+    violations = []
+
+    if task_state in ("Done", "Cancelled"):
+        return violations
+
+    detected_pairs = set()
+    for entry in flow_log:
+        f = normalize_name(entry.get("from", ""))
+        t = normalize_name(entry.get("to", ""))
+        if not f or not t or f == t:
+            continue
+        # 跳过太子调度系统
+        dept_f = ID_TO_DEPT.get(f, f)
+        if dept_f == "太子调度":
+            continue
+        # 跳过皇上的消息
+        if f in ("huangshang", "皇上"):
+            continue
+
+        pair = (f, t)
+        if pair in detected_pairs:
+            continue  # 同一对只检测一次
+        detected_pairs.add(pair)
+
+        # 检查是否在禁止列表中
+        if pair in _FORBIDDEN_CROSS_PAIRS:
+            label_from = ID_TO_DEPT.get(f, f)
+            label_to = ID_TO_DEPT.get(t, t)
+            violations.append(
+                f"子代理越权通信：{label_from} → {label_to}。"
+                f"该通信对不在 allowAgents 白名单中，违反会话隔离规则。"
+                f"子代理只能与创建它的直接上级通信，禁止跨部门/跨层级通信。"
+            )
+        # 额外检查：既不在 allowed 也不在 forbidden 中，且不是监察系统
+        elif pair not in _CHILD_AGENT_ALLOWED_PAIRS and f != "jiancha" and t != "jiancha":
+            label_from = ID_TO_DEPT.get(f, f)
+            label_to = ID_TO_DEPT.get(t, t)
+            violations.append(
+                f"可疑跨部门通信：{label_from} → {label_to}。"
+                f"该通信对不在合法通信白名单中，请确认是否为预期行为。"
+            )
+
+    return violations
+
+
 # 极端停滞阈值
 EXTREME_STALL_THRESHOLD = 30 * 60  # 30分钟无任何更新视为极端停滞
 
@@ -1270,6 +1414,26 @@ def _main_inner():
                     "title": title,
                     "type": sv_type,
                     "detail": sv_detail,
+                    "detected_at": now_iso,
+                }
+                new_violations.append(violation)
+
+        # ── 检查 2.9：跨 Agent 越权通信检测（方案 B+ 增强）──
+        cross_violations = check_cross_agent_violation(task_id, flow_log, task_state)
+        for cv_detail in cross_violations:
+            if "越权通信" in cv_detail:
+                cv_type = "子代理越权通信"
+            elif "可疑跨部门" in cv_detail:
+                cv_type = "可疑跨部门通信"
+            else:
+                cv_type = "通信违规"
+            v_key = (task_id, cv_type, -1, cv_detail)
+            if v_key not in existing_violation_keys:
+                violation = {
+                    "task_id": task_id,
+                    "title": title,
+                    "type": cv_type,
+                    "detail": cv_detail,
                     "detected_at": now_iso,
                 }
                 new_violations.append(violation)

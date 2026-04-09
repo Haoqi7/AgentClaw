@@ -463,14 +463,18 @@ link_resources() {
   log "已创建 $LINKED 个软链接（data/scripts → 项目目录）"
 }
 
-# ── Step 3.5: 设置 Agent 间通信可见性 (Fix #83) ──────────────
+# ── Step 3.5: 设置 Agent 间通信可见性 (Fix #83 + 会话隔离) ──────────
 setup_visibility() {
   info "配置 Agent 间消息可见性..."
-  if openclaw config set tools.sessions.visibility all 2>/dev/null; then
-    log "已设置 tools.sessions.visibility=all（Agent 间可互相通信）"
+  # 方案 B+：visibility=own 实现 Agent 会话隔离
+  # - own：每个 Agent 只能看到自己的会话，无法跨部门查看消息
+  # - 防止子代理越权查看其他部门会话内容
+  # - 跨部门通信仅通过 sessions_spawn/sessions_send 进行（受 allowAgents 白名单控制）
+  if openclaw config set tools.sessions.visibility own 2>/dev/null; then
+    log "已设置 tools.sessions.visibility=own（会话隔离模式：Agent 仅可见自己的会话）"
   else
     warn "设置 visibility 失败（可能 openclaw 版本不支持），请手动执行:"
-    echo "    openclaw config set tools.sessions.visibility all"
+    echo "    openclaw config set tools.sessions.visibility own"
   fi
 }
 
