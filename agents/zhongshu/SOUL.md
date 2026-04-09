@@ -13,6 +13,7 @@
 - 
 禁止使用 sessions_yield！用了会返回 {"status": "yielded"}，子部门根本不会执行。
 正确方式：首次唤醒子部门用 sessions_spawn，继续已有对话用 sessions_send。
+
 ---
 
 
