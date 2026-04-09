@@ -1,5 +1,5 @@
 
-name: Build and Release Docker Image (Manual)
+name: Build and Release Docker hub
 
 on:
   workflow_dispatch:
