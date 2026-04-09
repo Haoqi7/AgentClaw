@@ -826,9 +826,7 @@ def _extract_session_key(output):
 
 def cmd_session_keys_save(task_id, agent_a, agent_b, session_key):
     """保存一个 sessionKey 到任务的 session_keys 注册表。
-    
-    Agent 在调用 sessions_spawn 成功后，应立即调用此命令保存返回的 sessionKey，
-    以便后续同一对 agent 之间的通信复用该会话。
+    ...
     """
     if not task_id or not agent_a or not agent_b or not session_key:
         log.warning('session-keys save: 缺少必要参数 (task_id, agent_a, agent_b, session_key)')
@@ -837,13 +835,16 @@ def cmd_session_keys_save(task_id, agent_a, agent_b, session_key):
     
     pair = _normalize_pair(agent_a, agent_b)
     
+    # 🔧 修复：在 modifier 外部定义 is_update 标志
+    is_update_flag = [False]  # 使用列表以便在 modifier 内部修改
+    
     def modifier(tasks):
         t = find_task(tasks, task_id)
         if not t:
             log.warning(f'session-keys save: 任务 {task_id} 不存在')
             return tasks
         keys = t.setdefault('session_keys', {})
-        is_update = pair in keys
+        is_update_flag[0] = pair in keys  # 修改外部变量
         keys[pair] = {
             'sessionKey': session_key.strip(),
             'savedAt': now_iso(),
@@ -853,6 +854,7 @@ def cmd_session_keys_save(task_id, agent_a, agent_b, session_key):
     
     try:
         atomic_json_update(TASKS_FILE, modifier, [])
+        is_update = is_update_flag[0]  # 从标志中获取结果
         action = '更新' if is_update else '保存'
         log.info(f'🔑 session-key {action}: {task_id} | {pair} = {session_key[:40]}...')
         print(f'[session-keys] ✅ 已{"更新" if is_update else "保存"} {pair} 的 sessionKey', flush=True)
