@@ -1,5 +1,4 @@
-
-name: Build and Release Docker hub
+name: Build and Push to Docker Hub & Release
 
 on:
   workflow_dispatch:
@@ -8,10 +7,6 @@ on:
         description: "Release tag (e.g. v1.0.0). If empty, auto-generate."
         required: false
         default: ""
-      image_name:
-        description: "Image name (without owner)."
-        required: false
-        default: "openclaw"
 
 permissions:
   contents: write
@@ -19,162 +14,60 @@ permissions:
 jobs:
   build-and-release:
     runs-on: ubuntu-22.04
-    env:
-      DEFAULT_IMAGE_NAME: openclaw
-      MAX_ASSET_SIZE: 2147483648
 
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Resolve metadata
+      - name: Resolve tag
         id: meta
-        shell: bash
         run: |
-          set -euo pipefail
-          INPUT_TAG="${{ github.event.inputs.tag }}"
-          if [ -n "$INPUT_TAG" ]; then
-            TAG="$INPUT_TAG"
+          if [ -n "${{ github.event.inputs.tag }}" ]; then
+            TAG="${{ github.event.inputs.tag }}"
           else
             TAG="v$(date +'%Y.%m.%d')-${GITHUB_RUN_NUMBER}"
           fi
-
-          IMAGE_NAME="${{ github.event.inputs.image_name }}"
-          if [ -z "$IMAGE_NAME" ]; then
-            IMAGE_NAME="${DEFAULT_IMAGE_NAME}"
-          fi
-
           echo "tag=$TAG" >> "$GITHUB_OUTPUT"
-          echo "image_name=$IMAGE_NAME" >> "$GITHUB_OUTPUT"
-          
-      - name: Set up QEMU       
+
+      - name: Set up QEMU
         uses: docker/setup-qemu-action@v3
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
-      # Login to Docker Hub
       - name: Login to Docker Hub
         uses: docker/login-action@v3
         with:
           username: ${{ secrets.DOCKER_USERNAME }}
           password: ${{ secrets.DOCKER_TOKEN }}
 
-      # Build single-arch docker archive for GitHub Release
-      - name: Build amd64 docker archive
-        shell: bash
-        run: |
-          set -euo pipefail
-          mkdir -p out
-          docker buildx build \
-            --platform linux/amd64 \
-            -f docker/Dockerfile \
-            -t "${{ steps.meta.outputs.image_name }}:${{ steps.meta.outputs.tag }}-amd64" \
-            --output type=docker,dest=out/${{ steps.meta.outputs.image_name }}-${{ steps.meta.outputs.tag }}-amd64.docker.tar \
-            .
-
-      # Build and push multi-arch image to Docker Hub
-      - name: Build and push to Docker Hub
+      # 一次构建，同时完成：推送到 Docker Hub + 导出到本地文件
+      - name: Build, push and export
         uses: docker/build-push-action@v5
         with:
           context: .
           file: docker/Dockerfile
           platforms: linux/amd64,linux/arm64
           push: true
+          outputs: |
+            type=image,name=haoqi7/openclaw,push-by-digest=true
+            type=docker,dest=out/openclaw-${{ steps.meta.outputs.tag }}.docker.tar
           tags: |
-            haoqi7/${{ steps.meta.outputs.image_name }}:${{ steps.meta.outputs.tag }}
-            haoqi7/${{ steps.meta.outputs.image_name }}:latest
+            haoqi7/openclaw:${{ steps.meta.outputs.tag }}
+            haoqi7/openclaw:latest
 
-      - name: Install zstd
+      - name: Compress Docker image (if needed)
         shell: bash
         run: |
-          set -euo pipefail
-          sudo apt-get update
-          sudo apt-get install -y zstd
-
-      - name: Normalize artifacts for GitHub Release size limit
-        id: normalize
-        shell: bash
-        run: |
-          set -euo pipefail
           cd out
-          shopt -s nullglob
+          size=$(stat -c%s *.tar)
+          if [ "$size" -gt 2000000000 ]; then
+            echo "File > 2GB, compressing..."
+            zstd -19 -T0 *.tar -o openclaw-${{ steps.meta.outputs.tag }}.docker.tar.zst
+            rm *.tar
+          fi
 
-          RELEASE_FILES=()
-
-          process_file () {
-            local f="$1"
-            local size
-            size=$(stat -c%s "$f")
-            echo "Processing $f ($size bytes)"
-
-            if [ "$size" -lt "${MAX_ASSET_SIZE}" ]; then
-              RELEASE_FILES+=("$f")
-              return
-            fi
-
-            echo "File >= 2GB, compressing with zstd: $f"
-            zstd -19 -T0 "$f" -o "${f}.zst"
-            rm -f "$f"
-
-            local zf="${f}.zst"
-            local zsize
-            zsize=$(stat -c%s "$zf")
-            echo "Compressed $zf ($zsize bytes)"
-
-            if [ "$zsize" -lt "${MAX_ASSET_SIZE}" ]; then
-              RELEASE_FILES+=("$zf")
-              return
-            fi
-
-            echo "Still >= 2GB, splitting into 1900MB parts: $zf"
-            split -b 1900m -d -a 3 "$zf" "${zf}.part."
-            rm -f "$zf"
-
-            for p in ${zf}.part.*; do
-              RELEASE_FILES+=("$p")
-            done
-          }
-
-          for f in *.tar; do
-            process_file "$f"
-          done
-
-          cat > RESTORE.md <<'EOF'
-          # Restore Docker Images
-
-          ## 1) If you downloaded a single `.tar`
-          ```bash
-          docker load -i <file>.tar
-          ```
-
-          ## 2) If you downloaded a `.tar.zst`
-          ```bash
-          zstd -d <file>.tar.zst
-          docker load -i <file>.tar
-          ```
-
-          ## 3) If you downloaded split parts (`.part.000`, `.part.001`, ...)
-          ```bash
-          cat <file>.zst.part.* > merged.tar.zst
-          zstd -d merged.tar.zst -o merged.tar
-          docker load -i merged.tar
-          ```
-          EOF
-
-          RELEASE_FILES+=("RESTORE.md")
-          sha256sum "${RELEASE_FILES[@]}" > SHA256SUMS.txt
-          RELEASE_FILES+=("SHA256SUMS.txt")
-
-          {
-            echo "files<<EOF"
-            for f in "${RELEASE_FILES[@]}"; do
-              echo "out/$f"
-            done
-            echo "EOF"
-          } >> "$GITHUB_OUTPUT"
-
-      - name: Create/Update GitHub Release and upload assets
+      - name: Create GitHub Release and upload
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ steps.meta.outputs.tag }}
@@ -182,4 +75,10 @@ jobs:
           draft: false
           prerelease: false
           generate_release_notes: true
-          files: ${{ steps.normalize.outputs.files }}
+          files: out/*
+
+      - name: Upload to GitHub Release (alternative)
+        uses: actions/upload-artifact@v4
+        with:
+          name: docker-image
+          path: out/
