@@ -111,6 +111,7 @@ create_workspaces() {
   for agent in "${AGENTS[@]}"; do
     cat > "$OC_HOME/workspace-$agent/AGENTS.md" << 'AGENTS_EOF'
 
+
 # AGENTS.md · 工作协议
 
 ## 🔒 身份锚定铁律
@@ -195,21 +196,20 @@ sessions_send --to [上级部门] "✅ 完成 JJC-xxx：[产出摘要]"
 
 ---
 
-## 📡 Subagent 调用规则（会话模式 - 统一标准）
+## 📡 Subagent 调用规则（静默模式 - 统一标准）
 
 ### 调用方式
 - **首次调用某个部门** → 使用 `sessions_spawn`
 - **继续已有对话** → 使用 `sessions_send`
 - ❌ **禁止用 `sessions_yield` 调用 subagent**（会返回 `{"status": "yielded"}`，子部门不会执行）
 
-### sessions_spawn 标准格式（会话模式）
+### sessions_spawn 标准格式（静默模式）
 ```json
 {
   "agentId": "目标部门ID",
   "task": "处理任务 JJC-xxx：核心需求一句话概括",
-  "mode": "session",
-  "thread": true,
-  "label": "JJC-xxx 部门名"
+  "mode": "run",
+  "thread": false
 }
 ```
 
@@ -218,9 +218,8 @@ sessions_send --to [上级部门] "✅ 完成 JJC-xxx：[产出摘要]"
 |------|-----|------|
 | `agentId` | 目标部门ID | 如 `zhongshu`、`shangshu`、`gongbu` 等 |
 | `task` | 纯文本字符串 | **不要包含换行符 `\n`**，只写核心摘要 |
-| `mode` | `"session"` | 持久会话，子Agent会持续存在 |
-| `thread` | `true` | 绑定飞书线程，可以在聊天中直接对话 |
-| `label` | 任务标识 | 便于识别和管理，如 `"JJC-20260407-001 中书省"` |
+| `mode` | `"run"` | 一次性任务，执行完自动销毁 |
+| `thread` | `false` | 不绑定飞书线程，子Agent在后台静默执行 |
 
 ### 调用流程（两步走）
 
@@ -229,9 +228,8 @@ sessions_send --to [上级部门] "✅ 完成 JJC-xxx：[产出摘要]"
 {
   "agentId": "zhongshu",
   "task": "处理任务 JJC-20260407-001：审查项目健康度",
-  "mode": "session",
-  "thread": true,
-  "label": "JJC-20260407-001 中书省"
+  "mode": "run",
+  "thread": false
 }
 ```
 
@@ -243,19 +241,11 @@ sessions_send --to [上级部门] "✅ 完成 JJC-xxx：[产出摘要]"
 }
 ```
 
-### 会话模式的特点
-- ✅ 子Agent会创建独立的飞书线程
-- ✅ 可以在线程中直接和子Agent对话、追问、补充信息
-- ✅ 适合需要多轮交互的复杂任务
-- ✅ 任务完成后，子Agent会自动归档
-- ⚠️ 用户会看到子Agent的会话（可见但不打扰主聊天）
-
 ### 重要提醒
 - `task` 字段**绝对不要包含换行符 `\n`**
 - 详细内容通过 `sessions_send` 单独发送
-- `mode: "session"` + `thread: true` = 子Agent在飞书创建独立线程，便于交互
+- `mode: "run"` + `thread: false` = 子Agent后台静默执行，不会出现在飞书聊天中
 - 子Agent执行完成后，结果会自动沿调用链反向回传
-- 如需子Agent静默执行不打扰用户，请使用 `mode: "run"` + `thread: false`
 
 ---
 
@@ -263,6 +253,8 @@ sessions_send --to [上级部门] "✅ 完成 JJC-xxx：[产出摘要]"
 - 任务执行完成后，**禁止直接输出结果**
 - 禁止擅自向皇上汇报，只有太子能向皇上汇报最终结果
 - 所有结果必须沿调用链反向回传：六部 → 尚书省 → 中书省 → 太子 → 皇上
+
+
 
 
 AGENTS_EOF
