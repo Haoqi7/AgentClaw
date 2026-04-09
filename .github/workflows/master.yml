@@ -1,3 +1,4 @@
+
 name: Build and Release Docker Image (Manual)
 
 on:
@@ -10,7 +11,7 @@ on:
       image_name:
         description: "Image name (without owner)."
         required: false
-        default: "agentclaw"
+        default: "openclaw"
 
 permissions:
   contents: write
@@ -19,8 +20,8 @@ jobs:
   build-and-release:
     runs-on: ubuntu-22.04
     env:
-      DEFAULT_IMAGE_NAME: agentclaw-all-in-one
-      MAX_ASSET_SIZE: 2147483648 # 2GB hard limit on GitHub Release asset
+      DEFAULT_IMAGE_NAME: openclaw
+      MAX_ASSET_SIZE: 2147483648
 
     steps:
       - name: Checkout
@@ -52,12 +53,19 @@ jobs:
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
+      # Login to Docker Hub
+      - name: Login to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKER_USERNAME }}
+          password: ${{ secrets.DOCKER_TOKEN }}
 
-      # Single-arch docker archives
+      # Build single-arch docker archive for GitHub Release
       - name: Build amd64 docker archive
         shell: bash
         run: |
           set -euo pipefail
+          mkdir -p out
           docker buildx build \
             --platform linux/amd64 \
             -f docker/Dockerfile \
@@ -65,6 +73,17 @@ jobs:
             --output type=docker,dest=out/${{ steps.meta.outputs.image_name }}-${{ steps.meta.outputs.tag }}-amd64.docker.tar \
             .
 
+      # Build and push multi-arch image to Docker Hub
+      - name: Build and push to Docker Hub
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: docker/Dockerfile
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: |
+            haoqi7/${{ steps.meta.outputs.image_name }}:${{ steps.meta.outputs.tag }}
+            haoqi7/${{ steps.meta.outputs.image_name }}:latest
 
       - name: Install zstd
         shell: bash
@@ -73,8 +92,6 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y zstd
 
-      # If file >= 2GB, compress with zstd.
-      # If still >= 2GB, split into 1900MB parts.
       - name: Normalize artifacts for GitHub Release size limit
         id: normalize
         shell: bash
@@ -123,7 +140,6 @@ jobs:
             process_file "$f"
           done
 
-          # Generate restore instructions
           cat > RESTORE.md <<'EOF'
           # Restore Docker Images
 
@@ -147,12 +163,9 @@ jobs:
           EOF
 
           RELEASE_FILES+=("RESTORE.md")
-
-          # checksums for all publish files
           sha256sum "${RELEASE_FILES[@]}" > SHA256SUMS.txt
           RELEASE_FILES+=("SHA256SUMS.txt")
 
-          # output multiline list for upload step
           {
             echo "files<<EOF"
             for f in "${RELEASE_FILES[@]}"; do
