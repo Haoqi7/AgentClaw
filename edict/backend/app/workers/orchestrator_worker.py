@@ -175,13 +175,43 @@ class OrchestratorWorker:
                 },
             )
 
-    async def _on_task_completed(self, payload: dict, trace_id: str):
-        """任务完成 → 通知尚书省汇总或推进到下一个阶段。"""
-        task_id = payload.get("task_id")
-        agent = payload.get("agent", "")
-        log.info(f"🎉 Task {task_id} completed by agent '{agent}'. trace={trace_id}")
+async def _on_task_completed(self, payload: dict, trace_id: str):
+    """任务完成 → 根据完成者身份决定下一步流转。"""
+    task_id = payload.get("task_id")
+    agent = payload.get("agent", "")
+    log.info(f"🎉 Task {task_id} completed by agent '{agent}'. trace={trace_id}")
 
-        # 发布完成事件，让 task_service 推进状态
+    # ── 关键修改：根据 Agent 层级决定返回路径 ──
+    SIX_MINISTRIES = {"hubu", "libu", "bingbu", "xingbu", "gongbu", "libu_hr"}
+
+    if agent in SIX_MINISTRIES:
+        # 六部完成 → 回到尚书省汇总（状态: Review）
+        next_state = "Review"
+        next_agent = "shangshu"
+        reason = f"{agent} 执行完毕，等待尚书省汇总"
+    elif agent == "shangshu":
+        # 尚书省汇总完成 → 回到中书省报告（状态: Zhongshu）
+        next_state = "Zhongshu"
+        next_agent = "zhongshu"
+        reason = "尚书省汇总完毕，提交中书省"
+    elif agent == "zhongshu":
+        # 中书省报告完成 → 回到太子简报（状态: Taizi）
+        next_state = "Taizi"
+        next_agent = "taizi"
+        reason = "中书省报告完毕，提交太子简报"
+    elif agent == "taizi":
+        # 太子简报完成 → 任务完结（状态: Done）
+        next_state = "Done"
+        next_agent = None
+        reason = "太子已向皇上汇报完毕"
+    else:
+        # 其他情况（如门下省）默认走 review
+        next_state = "Review"
+        next_agent = "shangshu"
+        reason = f"Agent '{agent}' 已完成执行"
+
+    # 如果任务直接终结，发布完成事件
+    if next_state == "Done":
         await self.bus.publish(
             topic=TOPIC_TASK_STATUS,
             trace_id=trace_id,
@@ -190,8 +220,22 @@ class OrchestratorWorker:
             payload={
                 "task_id": task_id,
                 "from": agent,
-                "to": "review",  # 建议进入审核状态
-                "reason": f"Agent '{agent}' 已完成执行",
+                "to": "Done",
+                "reason": reason,
+            },
+        )
+    elif next_agent:
+        # 否则，派发给链路上的下一个 Agent
+        await self.bus.publish(
+            topic=TOPIC_TASK_DISPATCH,
+            trace_id=trace_id,
+            event_type="task.dispatch.request",
+            producer="orchestrator",
+            payload={
+                "task_id": task_id,
+                "agent": next_agent,
+                "state": next_state,
+                "message": reason,
             },
         )
 
