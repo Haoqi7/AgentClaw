@@ -34,7 +34,7 @@
   # python3 kanban_update.py session-keys list   JJC-xxx
 """
 import datetime
-import json, pathlib, sys, subprocess, logging, os, re, uuid
+import json, pathlib, sys, subprocess, logging, os, re, uuid, threading, threading
 
 _BASE = pathlib.Path(os.environ['EDICT_HOME']) if 'EDICT_HOME' in os.environ else pathlib.Path(__file__).resolve().parent.parent
 TASKS_FILE = _BASE / 'data' / 'tasks_source.json'
@@ -473,10 +473,13 @@ def _resolve_agent_id(target):
 
 
 def _notify_agent(agent_id, task_id, from_org, to_org, title='', remark='', _retry=0):
-    """异步通知目标 Agent 有新任务/流转（针对性增强版：部门差异化通知+唤醒重试+确认回执）。
+    """通知目标 Agent 有新任务/流转（含 Session Key 复用机制 — 程序层核心保障）。
 
-    - 使用 openclaw sessions spawn 触发目标 Agent 会话。
-    - 非阻塞：通过 Popen 异步执行，不延迟主流程。
+    - 🔑 Session Key 机制（核心保障）：优先复用已有会话（sessions_send），避免会话膨胀。
+      首次通知时使用 --json 获取 sessionKey 并自动保存到任务的 session_keys 注册表。
+      后续同一 from→to 对的通知将自动复用已保存的 sessionKey。
+    - 非阻塞：有 sessionKey 时通过 Popen 异步执行（sessions_send），不延迟主流程。
+    - 无 sessionKey 时通过 subprocess.run 同步获取（--json 模式），确保能提取 sessionKey。
     - 容错：通知失败仅记录日志，不影响看板写入结果。
     - 🎯 针对性通知：根据 _AGENT_NOTIFY_PROFILES 为每个部门生成专属通知内容，
       包含该部门的核心职责提醒和具体执行步骤指导。
@@ -551,13 +554,46 @@ def _notify_agent(agent_id, task_id, from_org, to_org, title='', remark='', _ret
 
     message = '\n'.join(parts)
 
+    # ── 🔑 Session Key 复用机制：优先 send，首次 spawn ──
+    # 解析发送方 agent_id（用于 session_keys pair 查找）
+    from_id = _resolve_agent_id(from_org) or (from_org.strip().lower() if from_org else '')
+
+    # 查找已有 sessionKey
+    existing_key = None
     try:
-        proc = subprocess.Popen(
-            ['openclaw', 'agent', '--agent', agent_id, '-m', message, '--timeout', '120'],
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-        )
-        log.info(f'📨 已发送【针对性】通知给 {to_label} ({agent_id}) | 任务 {task_id}')
+        tasks = load()
+        t = find_task(tasks, task_id)
+        if t:
+            pair = _normalize_pair(from_id, agent_id) if from_id else None
+            if pair:
+                entry = t.get('session_keys', {}).get(pair)
+                if entry and entry.get('sessionKey'):
+                    existing_key = entry['sessionKey']
+    except Exception:
+        pass
+
+    try:
+        if existing_key:
+            # 有 key → sessions_send 复用会话
+            proc = subprocess.Popen(
+                ['openclaw', 'sessions', 'send', '--session-key', existing_key, '-m', message],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+            log.info(f'🔑 已发送【复用会话】通知给 {to_label} ({agent_id}) | 任务 {task_id} | key={existing_key[:30]}...')
+        else:
+            # 无 key → openclaw agent --json → 提取 sessionKey → 自动保存
+            result = subprocess.run(
+                ['openclaw', 'agent', '--agent', agent_id, '-m', message, '--json', '--timeout', '120'],
+                capture_output=True, text=True, timeout=150,
+            )
+            output = (result.stdout or '') + (result.stderr or '')
+            key = _extract_session_key_from_json(output)
+            if key and from_id:
+                log.info(f'🔑 首次通知: 自动保存 sessionKey | {task_id} | {from_id}:{agent_id}')
+                cmd_session_keys_save(task_id, from_id, agent_id, key)
+            else:
+                log.info(f'📨 已发送【针对性】通知给 {to_label} ({agent_id}) | 任务 {task_id}（未获取 sessionKey）')
     except Exception as e:
         log.warning(f'⚠️ 通知 {to_label} ({agent_id}) 失败 (第{_retry+1}次): {e}')
         if _retry < 1:
@@ -579,6 +615,105 @@ def _notify_agent(agent_id, task_id, from_org, to_org, title='', remark='', _ret
         atomic_json_update(TASKS_FILE, _record_notify, [])
     except Exception:
         pass  # 去重记录写入失败不影响主流程
+
+
+def _extract_session_key_from_json(json_str):
+    """从 openclaw --json 输出中提取 sessionKey。"""
+    if not json_str:
+        return None
+    try:
+        # openclaw --json 输出可能是纯 JSON 也可能包含前缀噪声
+        # 尝试找到第一个 { 到最后一个 } 之间的 JSON
+        start = json_str.find('{')
+        end = json_str.rfind('}')
+        if start >= 0 and end > start:
+            candidate = json_str[start:end+1]
+            data = json.loads(candidate)
+            key = data.get('sessionKey')
+            if key and key != 'null':
+                return str(key)
+    except (json.JSONDecodeError, ValueError):
+        pass
+    return None
+
+
+def agent_communicate(task_id, from_agent, to_agent, message, timeout=120, _async=False):
+    """统一通信入口：自动判断 spawn/send，强制复用 session（程序层核心保障）。
+
+    调用方只需提供 task_id + from/to + message，无需关心底层 spawn/send。
+    - 有 sessionKey → sessions_send 复用会话（防止会话膨胀）
+    - 无 sessionKey → openclaw agent --json → 提取 sessionKey → 自动保存
+
+    Args:
+        task_id: 任务 ID（如 JJC-20260223-012）
+        from_agent: 发送方 agent_id 或部门名（如 'zhongshu' 或 '中书省'）
+        to_agent: 接收方 agent_id 或部门名（如 'menxia' 或 '门下省'）
+        message: 消息内容
+        timeout: 命令超时秒数
+        _async: 是否异步执行（不等待结果），默认 False
+
+    Returns:
+        sessionKey str 或 None
+    """
+    # 解析 agent_id
+    from_id = _resolve_agent_id(from_agent) or (from_agent.strip().lower() if from_agent else '')
+    to_id = _resolve_agent_id(to_agent) or (to_agent.strip().lower() if to_agent else '')
+
+    if not from_id or not to_id:
+        log.warning(f'agent_communicate: 无法解析 agent_id (from={from_agent}, to={to_agent})')
+        return None
+
+    pair = _normalize_pair(from_id, to_id)
+    to_label = _AGENT_LABELS.get(to_id, to_id)
+
+    # ── 1. 查找已有 sessionKey ──
+    existing_key = None
+    try:
+        tasks = load()
+        t = find_task(tasks, task_id)
+        if t:
+            entry = t.get('session_keys', {}).get(pair)
+            if entry and entry.get('sessionKey'):
+                existing_key = entry['sessionKey']
+    except Exception as e:
+        log.warning(f'agent_communicate: 查找 session_key 失败: {e}')
+
+    # ── 2a. 有 key → sessions_send（复用会话）──
+    if existing_key:
+        try:
+            proc = subprocess.Popen(
+                ['openclaw', 'sessions', 'send', '--session-key', existing_key, '-m', message],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+            log.info(f'🔑 复用会话: {task_id} | {pair} → sessions_send')
+            return existing_key
+        except Exception as e:
+            log.warning(f'🔑 sessions_send 失败: {pair}, 降级为 openclaw agent: {e}')
+            # 降级：如果 send 失败，走 spawn 路径
+
+    # ── 2b. 无 key → openclaw agent --json → 提取 key → 自动保存 ──
+    try:
+        result = subprocess.run(
+            ['openclaw', 'agent', '--agent', to_id, '-m', message, '--json', '--timeout', str(timeout)],
+            capture_output=True, text=True, timeout=timeout + 30,
+        )
+        output = (result.stdout or '') + (result.stderr or '')
+        key = _extract_session_key_from_json(output)
+
+        if key:
+            log.info(f'🔑 首次通信: {task_id} | {pair} → 获取 sessionKey, 自动保存')
+            cmd_session_keys_save(task_id, from_id, to_id, key)
+            return key
+        else:
+            log.info(f'📨 通信完成（未获取到 sessionKey）: {task_id} | {pair} → {to_label}')
+            return None
+    except subprocess.TimeoutExpired:
+        log.warning(f'agent_communicate 超时: {task_id} | {pair} → {to_label} ({timeout}s)')
+        return None
+    except Exception as e:
+        log.error(f'agent_communicate 异常: {task_id} | {pair} → {e}')
+        return None
 
 
 def find_task(tasks, task_id):
@@ -618,6 +753,75 @@ def _resolve_agent_id_for_pair(name):
         return name
     # 通过部门名反查
     return _ORG_AGENT_MAP.get(name, '') or _STATE_AGENT_MAP.get(name, '')
+
+
+def _extract_session_key_from_json(output_text):
+    """从 openclaw CLI 的 --json 输出中提取 sessionKey。
+    
+    OpenClaw CLI 在 --json 模式下返回的 JSON 结构包含 sessionKey 和 sessionId 字段。
+    若未指定 --json、输出为空、非 JSON 或 sessionKey 为 null，返回 None。
+    """
+    if not output_text:
+        return None
+    # 尝试直接解析完整 JSON
+    try:
+        data = json.loads(output_text.strip())
+        key = data.get('sessionKey') or data.get('session_key')
+        if key and str(key).strip().lower() not in ('null', 'none', ''):
+            return str(key).strip()
+    except (json.JSONDecodeError, TypeError, ValueError, AttributeError):
+        pass
+    # 正则兜底：从混合输出中提取 JSON 块（CLI 可能输出进度信息+JSON）
+    try:
+        json_match = re.search(r'\{[^{}]*"sessionKey"\s*:\s*"([^"]+)"[^{}]*\}', output_text)
+        if json_match:
+            key = json_match.group(1)
+            if key.strip().lower() not in ('null', 'none', ''):
+                return key.strip()
+    except Exception:
+        pass
+    return None
+
+
+def _lookup_session_key(task_id, agent_a, agent_b):
+    """快速查找任务中两个 agent 之间已保存的 sessionKey（不写日志，供内部调用）。
+    
+    返回 sessionKey 字符串或 None。
+    """
+    try:
+        tasks = load()
+        t = find_task(tasks, task_id)
+        if not t:
+            return None
+        pair = _normalize_pair(agent_a, agent_b)
+        entry = t.get('session_keys', {}).get(pair)
+        return entry.get('sessionKey') if entry else None
+    except Exception:
+        return None
+
+
+def _extract_session_key(output):
+    """从 openclaw CLI 的 --json 输出中提取 sessionKey。
+    
+    当 CLI 使用 --json 参数时，返回值格式为:
+    {"sessionKey": "agent:xxx:subagent:uuid", "sessionId": "...", "reply": "..."}
+    
+    若解析失败或 sessionKey 为 null，返回 None。
+    """
+    if not output:
+        return None
+    try:
+        data = json.loads(output.strip())
+        key = data.get('sessionKey')
+        if key and str(key).strip() not in ('null', 'None', ''):
+            return str(key).strip()
+    except (json.JSONDecodeError, TypeError, ValueError, AttributeError):
+        pass
+    # 正则兜底：从非纯 JSON 输出中提取
+    m = re.search(r'"sessionKey"\s*:\s*"([^"]+)"', output)
+    if m and m.group(1).strip() not in ('null', 'None', ''):
+        return m.group(1).strip()
+    return None
 
 
 def cmd_session_keys_save(task_id, agent_a, agent_b, session_key):

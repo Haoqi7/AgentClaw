@@ -11,6 +11,10 @@ const TYPE_META: Record<string, { icon: string; color: string; bg: string }> = {
   '直接执行越权': { icon: '⛔', color: '#ff2d55', bg: '#ff2d5518' },
   '极端停滞': { icon: '⏰', color: '#ff0040', bg: '#ff004018' },
   '未完成回奏': { icon: '🛑', color: '#ff6b35', bg: '#ff6b3518' },
+  '会话未注册': { icon: '🔑', color: '#a07aff', bg: '#a07aff18' },
+  '会话通信过多': { icon: '🔄', color: '#e8a040', bg: '#e8a04018' },
+  '会话可疑': { icon: '⚠️', color: '#e8a040', bg: '#e8a04018' },
+  '会话违规': { icon: '🚨', color: '#ff5270', bg: '#ff527018' },
 };
 
 /** 通知类型对应的样式 */
@@ -19,6 +23,7 @@ const NOTIFY_TYPE_META: Record<string, { icon: string; color: string }> = {
   '跳步通报': { icon: '⚡', color: '#e8a040' },
   '断链唤醒': { icon: '🔔', color: '#e8a040' },
   '断链通知': { icon: '📡', color: '#6a9eff' },
+  '会话警告': { icon: '🔑', color: '#a07aff' },
 };
 
 /** 任务状态对应标签 */
@@ -311,6 +316,8 @@ export default function AuditPanel() {
         <div><b>流程跳步：</b>缺少必要环节（如跳过门下省审议、缺少太子→皇上回奏），仅记录不通知</div>
         <div><b>未完成回奏：</b>旨意任务必须经过太子汇报皇上才能标记完成，未完成回奏的 Done 操作会被拒绝</div>
         <div><b>断链超时：</b>某部门 1 分钟内未回应，监察自动唤醒 + 通知上级</div>
+        <div><b>会话未注册：</b>任务有跨部门通信但无 session_key 记录，说明 Agent 未使用 session-keys save，存在会话膨胀风险</div>
+        <div><b>会话通信过多：</b>同一部门对通信次数超过正常阈值，说明可能未复用 session，反复 spawn 新会话</div>
         <div><b>自动归档：</b>任务完成超过 5 分钟自动归档</div>
         <div><b>运行方式：</b>pipeline_watchdog.py 每 60 秒由 run_loop.sh 调用一次</div>
       </div>
@@ -350,7 +357,10 @@ function Section({ title, children }: { title: string; children: React.ReactNode
 function WatchedTaskCard({ task, onUpdate }: { task: WatchedTask; onUpdate: () => void }) {
   const [excluding, setExcluding] = useState(false);
   const [excludeMsg, setExcludeMsg] = useState('');
+  const [showKeys, setShowKeys] = useState(false);
   const stateLabel = STATE_LABEL[task.state] || task.state;
+  const sessionKeyCount = task.session_key_count ?? (task.session_keys ? Object.keys(task.session_keys).length : 0);
+  const hasSessionKeys = sessionKeyCount > 0;
 
   const handleExclude = async () => {
     if (!confirm(`确认停止监察任务 ${task.task_id}？\n${task.title}`)) return;
@@ -370,50 +380,105 @@ function WatchedTaskCard({ task, onUpdate }: { task: WatchedTask; onUpdate: () =
 
   return (
     <div style={{
-      display: 'flex', alignItems: 'center', gap: 12, padding: '10px 14px',
-      borderRadius: 8, background: 'var(--panel2)', border: '1px solid var(--line)',
+      padding: '10px 14px',
+      borderRadius: 8,
+      background: 'var(--panel2)',
+      border: '1px solid var(--line)',
     }}>
-      <div style={{
-        fontSize: 11, padding: '2px 8px', borderRadius: 4, fontWeight: 600,
-        background: '#6a9eff22', color: '#6a9eff', whiteSpace: 'nowrap',
-      }}>
-        {task.task_id}
-      </div>
-      <div style={{ flex: 1, minWidth: 0 }}>
-        <div style={{ fontSize: 13, fontWeight: 600, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-          {task.title}
+      {/* 主信息行 */}
+      <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+        <div style={{
+          fontSize: 11, padding: '2px 8px', borderRadius: 4, fontWeight: 600,
+          background: '#6a9eff22', color: '#6a9eff', whiteSpace: 'nowrap',
+        }}>
+          {task.task_id}
+        </div>
+        <div style={{ flex: 1, minWidth: 0 }}>
+          <div style={{ fontSize: 13, fontWeight: 600, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+            {task.title}
+          </div>
+        </div>
+        <div style={{
+          fontSize: 11, padding: '2px 8px', borderRadius: 4,
+          background: '#2ecc8a18', color: '#2ecc8a', whiteSpace: 'nowrap',
+        }}>
+          {task.org || stateLabel}
+        </div>
+        <div style={{
+          fontSize: 11, padding: '2px 8px', borderRadius: 4,
+          background: '#a07aff18', color: '#a07aff', whiteSpace: 'nowrap',
+        }}>
+          {stateLabel}
+        </div>
+        <div style={{ fontSize: 11, color: 'var(--muted)', whiteSpace: 'nowrap' }}>
+          流转 {task.flow_count} 步
         </div>
       </div>
-      <div style={{
-        fontSize: 11, padding: '2px 8px', borderRadius: 4,
-        background: '#2ecc8a18', color: '#2ecc8a', whiteSpace: 'nowrap',
-      }}>
-        {task.org || stateLabel}
-      </div>
-      <div style={{
-        fontSize: 11, padding: '2px 8px', borderRadius: 4,
-        background: '#a07aff18', color: '#a07aff', whiteSpace: 'nowrap',
-      }}>
-        {stateLabel}
-      </div>
-      <div style={{ fontSize: 11, color: 'var(--muted)', whiteSpace: 'nowrap' }}>
-        流转 {task.flow_count} 步
-      </div>
-      <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: 2 }}>
+
+      {/* Session Keys 行 */}
+      <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 8 }}>
         <button
-          onClick={handleExclude}
-          disabled={excluding}
+          onClick={() => setShowKeys(!showKeys)}
           style={{
-            fontSize: 11, padding: '3px 10px', borderRadius: 4,
-            background: '#ff527018', color: '#ff5270', border: '1px solid #ff527033',
-            cursor: excluding ? 'wait' : 'pointer', whiteSpace: 'nowrap',
-            opacity: excluding ? 0.5 : 1,
+            fontSize: 11, padding: '3px 10px', borderRadius: 4, cursor: 'pointer',
+            background: hasSessionKeys ? '#a07aff15' : '#ff527015',
+            color: hasSessionKeys ? '#a07aff' : '#ff5270',
+            border: `1px solid ${hasSessionKeys ? '#a07aff33' : '#ff527033'}`,
           }}
         >
-          {excluding ? '...' : '✕ 停止监察'}
+          🔑 会话 {hasSessionKeys ? `${sessionKeyCount} 个` : '未注册'}
         </button>
-        {excludeMsg && <span style={{ fontSize: 10, color: excludeMsg.startsWith('✅') ? '#2ecc8a' : '#ff5270' }}>{excludeMsg}</span>}
+        <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: 2, marginLeft: 'auto' }}>
+          <button
+            onClick={handleExclude}
+            disabled={excluding}
+            style={{
+              fontSize: 11, padding: '3px 10px', borderRadius: 4,
+              background: '#ff527018', color: '#ff5270', border: '1px solid #ff527033',
+              cursor: excluding ? 'wait' : 'pointer', whiteSpace: 'nowrap',
+              opacity: excluding ? 0.5 : 1,
+            }}
+          >
+            {excluding ? '...' : '✕ 停止监察'}
+          </button>
+          {excludeMsg && <span style={{ fontSize: 10, color: excludeMsg.startsWith('✅') ? '#2ecc8a' : '#ff5270' }}>{excludeMsg}</span>}
+        </div>
       </div>
+
+      {/* Session Keys 详情（展开时显示） */}
+      {showKeys && (
+        <div style={{
+          marginTop: 8, padding: '8px 10px', borderRadius: 6,
+          background: 'var(--panel1)', border: '1px solid var(--line)',
+          fontSize: 11, lineHeight: 1.8,
+        }}>
+          {hasSessionKeys ? (
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+              {task.session_keys && Object.entries(task.session_keys).map(([pair, info]) => (
+                <div key={pair} style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                  <span style={{
+                    padding: '1px 6px', borderRadius: 3,
+                    background: '#2ecc8a15', color: '#2ecc8a', fontWeight: 600,
+                  }}>
+                    {pair}
+                  </span>
+                  <span style={{ color: 'var(--muted)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', maxWidth: 300 }}>
+                    {info.sessionKey}
+                  </span>
+                  <span style={{ color: 'var(--muted)', fontSize: 10, marginLeft: 'auto' }}>
+                    {info.savedAt ? new Date(info.savedAt.includes('T') ? info.savedAt : info.savedAt.replace(' ', 'T')).toLocaleString('zh-CN', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' }) : ''}
+                  </span>
+                </div>
+              ))}
+            </div>
+          ) : (
+            <div style={{ color: '#ff5270' }}>
+              ⚠️ 该任务尚无已注册的 session key，Agent 间的跨部门通信可能每次都创建新会话。
+              建议检查 Agent 是否遵守 session-keys save/send 协议。
+            </div>
+          )}
+        </div>
+      )}
     </div>
   );
 }

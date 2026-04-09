@@ -501,7 +501,7 @@ export interface CourtSessionSummary {
 export interface AuditViolation {
   task_id: string;
   title: string;
-  type: '越权调用' | '流程跳步' | '断链超时' | '直接执行越权';
+  type: '越权调用' | '流程跳步' | '断链超时' | '直接执行越权' | '极端停滞' | '未完成回奏' | '会话未注册' | '会话通信过多' | '会话可疑' | '会话违规';
   detail: string;
   flow_index?: number;
   detected_at: string;
@@ -513,10 +513,16 @@ export interface WatchedTask {
   state: string;
   org: string;
   flow_count: number;
+  session_keys?: Record<string, {
+    sessionKey: string;
+    savedAt: string;
+    agents: string[];
+  }>;
+  session_key_count?: number;
 }
 
 export interface AuditNotification {
-  type: '越权通报' | '断链唤醒' | '断链通知';
+  type: '越权通报' | '跳步通报' | '断链唤醒' | '断链通知' | '会话警告';
   to: string;
   task_id?: string;
   task_ids?: string[];

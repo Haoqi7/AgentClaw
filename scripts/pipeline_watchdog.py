@@ -601,24 +601,26 @@ def check_broken_chain(task_id, flow_log):
     }
 
 
-def check_session_violation(task_id, flow_log, session_keys):
-    """检查任务是否存在会话违规（重复 spawn、该用 send 却 spawn）。
-    
-    检测逻辑：
-    1. session_keys 已有 key 的 pair，如果同一 from→to 出现了超过 1 次 spawn 记录
-      → 说明 Agent 可能没有遵守 send 规范，记为警告
-    2. 同一 from→to 对（排除中书↔门下的合法多轮）出现超过 3 次无 key 通信
-      → 可能的会话爆炸，记为违规
-    
+def check_session_violation(task_id, flow_log, session_keys, task_state=""):
+    """检查任务是否存在会话违规（重复 spawn、该用 send 却 spawn、未注册 session key）。
+
+    检测逻辑（三层检测）：
+    1. 会话未注册：flow_log 有跨部门通信记录，但 session_keys 为空
+       → 说明 Agent 从未使用 session-keys save，所有通信都是裸 spawn
+    2. 重复通信：同一 from→to 对出现超过阈值次数
+       - 中书↔门下：超过 7 次（3轮审议正常范围）
+       - 其他 pair：超过 3 次
+       → 说明 Agent 可能没有复用 session，反复 spawn 新会话
+    3. 有 key 但通信仍过多（加强版）：有 sessionKey 的 pair 通信超过 2 次
+       → 即使有 key 也可能没遵守 send 规范
+
     返回违规列表。
     """
-    if not session_keys:
-        return []
-    
     violations = []
-    
-    # 统计每个 from→to 对的出现次数（排除自身消息和自己发给自己的）
+
+    # 统计每个 from→to 对的出现次数（排除自身消息）
     pair_counts = {}
+    has_cross_dept_comm = False
     for entry in flow_log:
         f = normalize_name(entry.get("from", ""))
         t = normalize_name(entry.get("to", ""))
@@ -626,38 +628,55 @@ def check_session_violation(task_id, flow_log, session_keys):
             continue
         pair = (f, t)
         pair_counts[pair] = pair_counts.get(pair, 0) + 1
-    
-    # 检查每个已注册的 session_key pair
+        has_cross_dept_comm = True
+
+    # ── 检测 1：会话未注册 ──
+    if has_cross_dept_comm and not session_keys:
+        # 跳过终态任务（已完成/已取消的不需要再检测）
+        if task_state not in ("Done", "Cancelled"):
+            total_comm = sum(pair_counts.values())
+            violations.append(
+                f"会话未注册：任务有 {total_comm} 次跨部门通信记录，"
+                f"但 session_keys 为空。Agent 未使用 session-keys save 保存会话密钥，"
+                f"所有通信可能都是裸 spawn（每次创建新会话），导致会话膨胀。"
+                f"应使用 kanban_update.py session-keys save 保存首次通信的 sessionKey。"
+            )
+        # 有了"会话未注册"警告后，不需要继续其他检测（没有 keys 可比较）
+        return violations
+
+    if not session_keys:
+        return violations
+
+    # ── 检测 2 + 3：通信频率检测 ──
     for pair_key, key_entry in session_keys.items():
         agents = key_entry.get("agents", [])
         if len(agents) < 2:
             continue
         a, b = agents[0].lower(), agents[1].lower()
-        
+
         # 双向检查
         for (src, dst) in [(a, b), (b, a)]:
             count = pair_counts.get((src, dst), 0)
-            # 中书↔门下合法多轮（最多 3 轮 = 最多 6 次双向通信）
+            dept_from = ID_TO_DEPT.get(src, src)
+            dept_to = ID_TO_DEPT.get(dst, dst)
+
+            # 中书↔门下合法多轮（最多 3 轮 = 最多 6 次双向通信 + 1 次初始）
             if {a, b} == {"zhongshu", "menxia"}:
-                if count > 7:  # 3轮往返 = 6次 + 1次初始提交 = 7
-                    dept_from = ID_TO_DEPT.get(src, src)
-                    dept_to = ID_TO_DEPT.get(dst, dst)
+                if count > 7:
                     violations.append(
-                        f"会话可疑：{dept_from} → {dept_to} 通信 {count} 次"
-                        f"（已超过中书↔门下 3 轮审议的正常范围 {7} 次，"
-                        f"可能存在会话爆炸风险）"
+                        f"会话通信过多：{dept_from} → {dept_to} 通信 {count} 次"
+                        f"（已超过中书↔门下 3 轮审议的正常范围 7 次，"
+                        f"可能存在会话爆炸风险。已有 sessionKey 应使用 sessions_send 复用会话）"
                     )
             else:
-                # 其他 pair：有 key 的情况下超过 2 次就可疑
-                if count > 2:
-                    dept_from = ID_TO_DEPT.get(src, src)
-                    dept_to = ID_TO_DEPT.get(dst, dst)
+                # 其他 pair：有 key 但超过 3 次 → 可能未复用
+                if count > 3:
                     violations.append(
-                        f"会话违规：{dept_from} → {dept_to} 通信 {count} 次"
-                        f"（已有 sessionKey 应复用会话，但检测到多次 spawn，"
-                        f"请使用 sessions_send 复用会话而非 sessions_spawn）"
+                        f"会话通信过多：{dept_from} → {dept_to} 通信 {count} 次"
+                        f"（该 pair 已注册 sessionKey，超过 3 次通信说明可能未使用 sessions_send 复用会话，"
+                        f"请确保后续通信使用 sessions_send 而非 sessions_spawn）"
                     )
-    
+
     return violations
 
 
@@ -695,6 +714,53 @@ def check_extreme_stall(task_id, flow_log, task_state, updated_at_str):
     return None
 
 
+# ═══════════════════════════════════════════════════════════════════
+#  Gateway URL 解析（兼容 Docker bridge 端口映射）
+# ═══════════════════════════════════════════════════════════════════
+
+def _resolve_gateway_url():
+    """解析 Gateway API 基础 URL，兼容 Docker bridge 端口映射场景。
+    
+    优先级：
+    1. 环境变量 EDICT_GATEWAY_URL（最可靠，部署时显式配置）
+    2. openclaw.json 中的 gateway.url 或 gateway.host+port
+    3. 兜底 http://127.0.0.1:18789
+    
+    Docker bridge 注意事项：
+    - openclaw.json 中 host 为 0.0.0.0 时，对内访问应替换为 127.0.0.1
+    - 端口映射（如 -p 18900:18789）不影响容器内访问，内部端口 18789 仍有效
+    - 跨容器通信需使用 Docker 网络别名或 host.docker.internal（非单容器场景）
+    """
+    # 1. 环境变量优先（部署时可显式配置）
+    env_url = os.environ.get('EDICT_GATEWAY_URL', '').strip()
+    if env_url:
+        return env_url.rstrip('/')
+    
+    # 2. 从 openclaw.json 读取
+    try:
+        cfg = json.loads(OCLAW_HOME.joinpath('openclaw.json').read_text())
+        gw = cfg.get('gateway', {})
+        url = gw.get('url', '').strip()
+        if url:
+            return url.rstrip('/')
+        host = gw.get('host', '127.0.0.1').strip()
+        port = gw.get('port', 18789)
+        # Docker bridge 下 0.0.0.0 不可作为目标地址，替换为 127.0.0.1
+        if host in ('0.0.0.0', '0.0.0.0:', ''):
+            host = '127.0.0.1'
+        # 确保端口是整数（防止配置错误）
+        try:
+            port = int(port)
+        except (TypeError, ValueError):
+            port = 18789
+        return f'http://{host}:{port}'
+    except Exception:
+        pass
+    
+    # 3. 最后兜底
+    return 'http://127.0.0.1:18789'
+
+
 def clear_agent_sessions(task):
     """通过 Gateway API 清理任务相关 Agent 的会话（仅清理非 main 会话，保留主会话上下文）。
     
@@ -725,7 +791,11 @@ def clear_agent_sessions(task):
     for agent_id in agents_to_clear:
         label = ID_TO_LABEL.get(agent_id, agent_id)
         try:
-            # 优先从环境变量/配置文件读取 Gateway URL，兼容 Docker 端口映射
+            headers = {}
+            if token:
+                headers["Authorization"] = f"Bearer {token}"
+
+            # ── Gateway URL 解析（兼容 Docker bridge 端口映射）──
             _gw_base = os.environ.get('EDICT_GATEWAY_URL', '').strip()
             if not _gw_base:
                 try:
@@ -737,13 +807,49 @@ def clear_agent_sessions(task):
                     else:
                         _gw_host = _gw_gw.get('host', '127.0.0.1')
                         _gw_port = _gw_gw.get('port', 18789)
+                        # Docker bridge 兼容：如果 host 配置为 0.0.0.0（Docker 默认），
+                        # 在容器内应使用 127.0.0.1 访问自身映射的端口
+                        if _gw_host in ('0.0.0.0', ''):
+                            _gw_host = '127.0.0.1'
                         _gw_base = f'http://{_gw_host}:{_gw_port}'
                 except Exception:
                     _gw_base = 'http://127.0.0.1:18789'
+
+            # Docker bridge 二次兜底：如果配置的 URL 不可达，
+            # 尝试 host.docker.internal（Docker Desktop）和 127.0.0.1（Linux Docker）
+            _gw_reachable = False
+            try:
+                import urllib.request as _urllib_req
+                _test_req = _urllib_req.Request(f"{_gw_base}/api/v1/conversations", headers=headers)
+                _test_resp = _urllib_req.urlopen(_test_req, timeout=5)
+                _gw_reachable = True
+            except Exception:
+                pass
+
+            if not _gw_reachable:
+                for _fallback_host in ['host.docker.internal', '127.0.0.1', 'localhost']:
+                    if _fallback_host in _gw_base:
+                        continue  # 已经试过了
+                    # 从当前 base 提取端口
+                    try:
+                        from urllib.parse import urlparse as _urlparse
+                        _parsed = _urlparse(_gw_base)
+                        _port = _parsed.port or 18789
+                        _fallback_url = f'http://{_fallback_host}:{_port}'
+                        try:
+                            import urllib.request as _urllib_req2
+                            _fb_req = _urllib_req2.Request(f"{_fallback_url}/api/v1/conversations", headers=headers)
+                            _urllib_req2.urlopen(_fb_req, timeout=5)
+                            _gw_base = _fallback_url
+                            _gw_reachable = True
+                            log(f"Gateway 不可达，已切换到 Docker 兼容地址: {_fallback_url}")
+                            break
+                        except Exception:
+                            continue
+                    except Exception:
+                        continue
+
             url = f"{_gw_base}/api/v1/conversations"
-            headers = {}
-            if token:
-                headers["Authorization"] = f"Bearer {token}"
             req = urllib.request.Request(url, headers=headers)
             resp = urllib.request.urlopen(req, timeout=10)
             data = json.loads(resp.read().decode())
@@ -935,12 +1041,23 @@ def _main_inner():
     ]
     watched_tasks = []
     for t in truly_active:
+        # 构造 session_keys 摘要（供前端展示）
+        session_keys_raw = t.get('session_keys', {})
+        session_keys_summary = {}
+        for pair_key, key_entry in session_keys_raw.items():
+            session_keys_summary[pair_key] = {
+                "sessionKey": key_entry.get("sessionKey", ""),
+                "savedAt": key_entry.get("savedAt", ""),
+                "agents": key_entry.get("agents", []),
+            }
         watched_tasks.append({
             "task_id": t.get("id", ""),
             "title": t.get("title", ""),
             "state": t.get("state", ""),
             "org": t.get("org", ""),
             "flow_count": len(t.get("flow_log", [])),
+            "session_keys": session_keys_summary,
+            "session_key_count": len(session_keys_summary),
         })
 
     if not active:
@@ -1133,20 +1250,27 @@ def _main_inner():
 
         # ── 检查 2.8：会话违规检测（session-keys 合规性）──
         session_keys = task.get('session_keys', {})
-        if session_keys:
-            session_violations = check_session_violation(task_id, flow_log, session_keys)
-            for sv_detail in session_violations:
-                sv_type = "会话可疑" if "可疑" in sv_detail else "会话违规"
-                v_key = (task_id, sv_type, -1, sv_detail)
-                if v_key not in existing_violation_keys:
-                    violation = {
-                        "task_id": task_id,
-                        "title": title,
-                        "type": sv_type,
-                        "detail": sv_detail,
-                        "detected_at": now_iso,
-                    }
-                    new_violations.append(violation)
+        session_violations = check_session_violation(task_id, flow_log, session_keys, task_state)
+        for sv_detail in session_violations:
+            # 根据违规描述确定类型
+            if "未注册" in sv_detail:
+                sv_type = "会话未注册"
+            elif "过多" in sv_detail:
+                sv_type = "会话通信过多"
+            elif "可疑" in sv_detail:
+                sv_type = "会话可疑"
+            else:
+                sv_type = "会话违规"
+            v_key = (task_id, sv_type, -1, sv_detail)
+            if v_key not in existing_violation_keys:
+                violation = {
+                    "task_id": task_id,
+                    "title": title,
+                    "type": sv_type,
+                    "detail": sv_detail,
+                    "detected_at": now_iso,
+                }
+                new_violations.append(violation)
 
         # ── 检查 3：断链超时 ──
         broken = check_broken_chain(task_id, flow_log)
