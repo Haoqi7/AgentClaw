@@ -126,14 +126,6 @@ const OVERVIEW_CSS = `
 .ov-section-title { font-size: 11px; font-weight: 700; color: var(--muted); margin-bottom: 8px;
   text-transform: uppercase; letter-spacing: 0.5px; display: flex; align-items: center; gap: 6; }
 
-/* 任务阶段分布条 */
-.ov-stage-bar { display: flex; height: 6px; border-radius: 3px; overflow: hidden; background: var(--line); }
-.ov-stage-seg { height: 100%; transition: width .3s ease; min-width: 0; }
-.ov-stage-legend { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 8px; }
-.ov-stage-item { display: flex; align-items: center; gap: 4px; font-size: 10px; color: var(--muted); }
-.ov-stage-dot { width: 6px; height: 6px; border-radius: 50%; flex-shrink: 0; }
-.ov-stage-count { font-weight: 600; color: var(--text); }
-
 /* 违规类型分布 */
 .ov-viol-dist { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
 .ov-viol-chip { display: flex; align-items: center; gap: 4px; font-size: 10px; padding: 2px 8px;
@@ -282,12 +274,6 @@ export default function AuditPanelEnhanced() {
   const activeViolsCount = violations.filter(v => watchedTasks.some(w => w.task_id === v.task_id)).length;
 
   // ── 总览增强数据 ──
-  // 任务阶段分布
-  const stateDist = useMemo(() => {
-    const m: Record<string, number> = {};
-    for (const w of watchedTasks) { m[w.state] = (m[w.state] || 0) + 1; }
-    return Object.entries(m).sort((a, b) => b[1] - a[1]);
-  }, [watchedTasks]);
 
   // 违规类型分布（仅活跃任务）
   const violTypeDist = useMemo(() => {
@@ -305,7 +291,7 @@ export default function AuditPanelEnhanced() {
     return Object.entries(m).sort((a, b) => b[1] - a[1]);
   }, [watchedTasks]);
 
-  // 全局最新动态（违规+通报合并按时间排序，取最近10条）
+  // 全局最新动态（违规+通报合并按时间排序，取最近6条）
   const globalFeed = useMemo(() => {
     const items: { kind: 'viol' | 'notif'; icon: string; type: string; color: string; summary: string; time: string; taskId: string }[] = [];
     const wIds = new Set(watchedTasks.map(w => w.task_id));
@@ -331,7 +317,7 @@ export default function AuditPanelEnhanced() {
         return db - da;
       } catch { return 0; }
     });
-    return items.slice(0, 10);
+    return items.slice(0, 6);
   }, [violations, notifications, watchedTasks]);
 
   // ── KPI 数据（移除了"通报记录"KPI，改为"活跃违规"） ──
@@ -416,32 +402,8 @@ export default function AuditPanelEnhanced() {
           {watchedCount > 0 && (
             <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(320px, 1fr))', gap: 12, marginBottom: 14 }}>
 
-              {/* ── 左列：任务阶段分布 + 部门分布 ── */}
+              {/* ── 左列：部门分布 + 违规类型分布 ── */}
               <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
-                {/* 任务阶段分布 */}
-                <div className="ov-section">
-                  <div className="ov-section-title">📊 任务阶段分布</div>
-                  <div className="ov-stage-bar">
-                    {stateDist.map(([state, count]) => {
-                      const s = STATE_S[state];
-                      const pct = (count / watchedCount) * 100;
-                      return s ? <div key={state} className="ov-stage-seg" style={{ width: `${pct}%`, background: s.color }} title={`${s.label}: ${count}`} /> : null;
-                    })}
-                  </div>
-                  <div className="ov-stage-legend">
-                    {stateDist.map(([state, count]) => {
-                      const s = STATE_S[state];
-                      return s ? (
-                        <div key={state} className="ov-stage-item">
-                          <span className="ov-stage-dot" style={{ background: s.color }} />
-                          <span>{s.label}</span>
-                          <span className="ov-stage-count">{count}</span>
-                        </div>
-                      ) : null;
-                    })}
-                  </div>
-                </div>
-
                 {/* 部门分布 */}
                 {deptDist.length > 0 && (
                   <div className="ov-section">
