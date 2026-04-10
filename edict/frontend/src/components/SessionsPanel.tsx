@@ -1,7 +1,7 @@
 import { useStore, isEdict, STATE_LABEL, timeAgo } from '../store';
-import type { Task, GatewayConversation } from '../api';
+import type { Task } from '../api';
 import { api } from '../api';
-import { useState, useEffect, useCallback } from 'react';
+import { useState } from 'react';
 
 // Agent maps built from agentConfig
 function useAgentMaps() {
@@ -69,50 +69,7 @@ export default function SessionsPanel() {
   const [detailTask, setDetailTask] = useState<Task | null>(null);
   const [clearingAgent, setClearingAgent] = useState<string | null>(null);
   const [showAgentMenu, setShowAgentMenu] = useState(false);
-  const [showGwSessions, setShowGwSessions] = useState(false);
-  const [gwConvs, setGwConvs] = useState<GatewayConversation[]>([]);
-  const [gwLoading, setGwLoading] = useState(false);
-  const [deletingConv, setDeletingConv] = useState<string | null>(null);
   const toast = useStore((s) => s.toast);
-
-  // 加载 Gateway 会话列表（通过 Dashboard 代理 API）
-  const loadGwConversations = useCallback(async () => {
-    setGwLoading(true);
-    try {
-      const r = await api.gatewayConversations();
-      if (r.ok && r.conversations) {
-        setGwConvs(r.conversations);
-      } else {
-        toast(`⚠️ ${r.error || '获取 Gateway 会话失败'}`, 'err');
-      }
-    } catch {
-      toast('⚠️ Gateway 连接失败，请确认 Gateway 已启动', 'err');
-    } finally {
-      setGwLoading(false);
-    }
-  }, [toast]);
-
-  useEffect(() => {
-    if (showGwSessions) loadGwConversations();
-  }, [showGwSessions, loadGwConversations]);
-
-  // 删除指定 Gateway 会话
-  const deleteGwConversation = async (convId: string) => {
-    setDeletingConv(convId);
-    try {
-      const r = await api.gatewayDeleteConversation(convId);
-      if (r.ok) {
-        toast(`✅ 会话 ${convId.substring(0, 16)}… 已删除`);
-        setGwConvs((prev) => prev.filter((c) => c.id !== convId));
-      } else {
-        toast(`❌ ${r.error || '删除失败'}`, 'err');
-      }
-    } catch {
-      toast('❌ Gateway 连接失败', 'err');
-    } finally {
-      setDeletingConv(null);
-    }
-  };
 
   const tasks = liveStatus?.tasks || [];
   const sessions = tasks.filter((t) => !isEdict(t));
@@ -123,11 +80,6 @@ export default function SessionsPanel() {
 
   // Unique agents for filter tabs
   const agentIds = [...new Set(sessions.map(extractAgent))];
-
-  // Gateway 会话管理（内嵌式面板，通过 Dashboard 代理 API 操作，避免外部 URL 不可达）
-  const openGatewaySessions = () => {
-    setShowGwSessions(true);
-  };
 
   // 清空指定 Agent 的非 main 会话
   const clearAgentSessions = async (agentId: string) => {
@@ -151,22 +103,6 @@ export default function SessionsPanel() {
     <div>
       {/* Header Actions */}
       <div style={{ display: 'flex', gap: 8, marginBottom: 12, alignItems: 'center', flexWrap: 'wrap' }}>
-        <button
-          className="btn btn-g"
-          onClick={openGatewaySessions}
-          style={{ fontSize: 12, padding: '5px 14px' }}
-        >
-          🔗 Gateway 会话管理
-        </button>
-        {showGwSessions && (
-          <button
-            className="btn"
-            onClick={() => setShowGwSessions(false)}
-            style={{ fontSize: 12, padding: '5px 14px', color: 'var(--muted)', border: '1px solid var(--line)', borderRadius: 6, cursor: 'pointer' }}
-          >
-            ✕ 关闭面板
-          </button>
-        )}
         <div style={{ position: 'relative' }}>
           <button
             className="btn"
@@ -247,97 +183,6 @@ export default function SessionsPanel() {
           </span>
         ))}
       </div>
-
-      {/* Gateway 会话管理面板（内嵌式） */}
-      {showGwSessions && (
-        <div style={{
-          marginBottom: 16, border: '1px solid var(--line)', borderRadius: 10,
-          background: 'var(--panel2)', overflow: 'hidden',
-        }}>
-          <div style={{
-            display: 'flex', alignItems: 'center', gap: 8,
-            padding: '10px 16px', borderBottom: '1px solid var(--line)',
-            background: 'var(--panel)',
-          }}>
-            <span style={{ fontSize: 13, fontWeight: 700 }}>🔌 Gateway 会话列表</span>
-            <span style={{ fontSize: 11, color: 'var(--muted)' }}>
-              {gwLoading ? '⟳ 加载中…' : `共 ${gwConvs.length} 个会话`}
-            </span>
-            <button
-              onClick={loadGwConversations}
-              disabled={gwLoading}
-              style={{
-                marginLeft: 'auto', fontSize: 11, padding: '3px 10px',
-                background: 'transparent', color: 'var(--acc)', border: '1px solid var(--acc)',
-                borderRadius: 4, cursor: 'pointer',
-              }}
-            >
-              🔄 刷新
-            </button>
-          </div>
-          <div style={{ maxHeight: 420, overflowY: 'auto' }}>
-            {gwLoading ? (
-              <div style={{ padding: 32, textAlign: 'center', color: 'var(--muted)', fontSize: 12 }}>⟳ 正在从 Gateway 获取会话列表…</div>
-            ) : gwConvs.length === 0 ? (
-              <div style={{ padding: 32, textAlign: 'center', color: 'var(--muted)', fontSize: 12 }}>暂无 Gateway 会话</div>
-            ) : (
-              <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>
-                <thead>
-                  <tr style={{ background: 'var(--panel)', color: 'var(--muted)', fontSize: 10 }}>
-                    <th style={{ padding: '8px 12px', textAlign: 'left', fontWeight: 600 }}>Agent / 会话 ID</th>
-                    <th style={{ padding: '8px 12px', textAlign: 'left', fontWeight: 600 }}>标题</th>
-                    <th style={{ padding: '8px 12px', textAlign: 'center', fontWeight: 600 }}>消息数</th>
-                    <th style={{ padding: '8px 12px', textAlign: 'left', fontWeight: 600 }}>更新时间</th>
-                    <th style={{ padding: '8px 12px', textAlign: 'center', fontWeight: 600 }}>操作</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {gwConvs.map((c) => {
-                    const agentId = c.agent_id || c.agentId || '';
-                    const isMain = (c.id || '').toLowerCase().includes(':main') || (c.title || '').toLowerCase().includes('main');
-                    return (
-                      <tr key={c.id} style={{ borderTop: '1px solid var(--line)' }}>
-                        <td style={{ padding: '8px 12px' }}>
-                          <div style={{ fontWeight: 600, fontSize: 11, color: 'var(--acc)' }}>{agentId || '—'}</div>
-                          <div style={{ fontSize: 10, color: 'var(--muted)', fontFamily: 'monospace' }}>{(c.id || '').substring(0, 28)}…</div>
-                        </td>
-                        <td style={{ padding: '8px 12px', maxWidth: 200 }}>
-                          <div style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                            {isMain ? '💫 ' : ''}{c.title || '(无标题)'}
-                          </div>
-                        </td>
-                        <td style={{ padding: '8px 12px', textAlign: 'center' }}>
-                          {c.message_count ?? c.messageCount ?? 0}
-                        </td>
-                        <td style={{ padding: '8px 12px', fontSize: 10, color: 'var(--muted)' }}>
-                          {timeAgo(c.updated_at || c.updatedAt || '') || timeAgo(c.created_at || c.createdAt || '') || '—'}
-                        </td>
-                        <td style={{ padding: '8px 12px', textAlign: 'center' }}>
-                          {isMain ? (
-                            <span style={{ fontSize: 10, color: 'var(--muted)' }}>主会话</span>
-                          ) : (
-                            <button
-                              onClick={() => deleteGwConversation(c.id)}
-                              disabled={deletingConv === c.id}
-                              style={{
-                                fontSize: 11, padding: '3px 8px',
-                                background: 'rgba(255,82,112,0.1)', color: 'var(--danger)',
-                                border: '1px solid rgba(255,82,112,0.25)', borderRadius: 4, cursor: 'pointer',
-                              }}
-                            >
-                              {deletingConv === c.id ? '⏳' : '🗑️'} 删除
-                            </button>
-                          )}
-                        </td>
-                      </tr>
-                    );
-                  })}
-                </tbody>
-              </table>
-            )}
-          </div>
-        </div>
-      )}
 
       {/* Grid */}
       <div className="sess-grid">
