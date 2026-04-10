@@ -24,6 +24,12 @@ const NOTIFY_TYPE_META: Record<string, { icon: string; color: string }> = {
   '断链唤醒': { icon: '🔔', color: '#e8a040' },
   '断链通知': { icon: '📡', color: '#6a9eff' },
   '会话警告': { icon: '🔑', color: '#a07aff' },
+  '归档': { icon: '📦', color: '#888888' },
+  '巡检': { icon: '🔍', color: '#4ecdc4' },
+  // 兼容旧格式后端 type 值
+  '唤醒': { icon: '🔔', color: '#e8a040' },
+  '通知': { icon: '📡', color: '#6a9eff' },
+  '违规': { icon: '🚨', color: '#ff5270' },
 };
 
 /** 任务状态对应标签 */
@@ -486,8 +492,12 @@ function WatchedTaskCard({ task, onUpdate }: { task: WatchedTask; onUpdate: () =
 
 function NotificationCard({ notification }: { notification: AuditNotification }) {
   const meta = NOTIFY_TYPE_META[notification.type] || { icon: '📢', color: '#6a9eff' };
-  const sent = timeAgo(notification.sent_at);
+  // 兼容新旧字段名：sent_at/at, to/target, summary/detail
+  const _sentAt = notification.sent_at || (notification as any).at || '';
+  const sent = timeAgo(_sentAt);
   const isSent = notification.status === 'sent';
+  const _to = notification.to || (notification as any).target || '';
+  const _summary = notification.summary || notification.detail?.substring(0, 80) || '';
   const [expanded, setExpanded] = useState(false);
 
   return (
@@ -508,9 +518,11 @@ function NotificationCard({ notification }: { notification: AuditNotification })
         }}>
           {notification.type}
         </span>
-        <span style={{ fontSize: 12, fontWeight: 600 }}>
-          → {notification.to}
-        </span>
+        {_to && (
+          <span style={{ fontSize: 12, fontWeight: 600 }}>
+            → {_to}
+          </span>
+        )}
         {(notification.task_id || notification.task_ids) && (
           <span style={{
             fontSize: 11, padding: '2px 6px', borderRadius: 4,
@@ -520,7 +532,7 @@ function NotificationCard({ notification }: { notification: AuditNotification })
           </span>
         )}
         <span style={{ fontSize: 11, color: 'var(--muted)', flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-          {notification.summary}
+          {_summary}
         </span>
         <span style={{ fontSize: 11, whiteSpace: 'nowrap' }}>
           {isSent ? '✅' : '❌'}

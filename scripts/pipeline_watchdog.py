@@ -51,6 +51,7 @@ DATA_DIR = REPO_DIR / "data"
 TASKS_FILE = DATA_DIR / "tasks_source.json"
 AUDIT_FILE = DATA_DIR / "pipeline_audit.json"
 EXCLUDE_FILE = DATA_DIR / "audit_exclude.json"
+WATCHDOG_CONFIG_FILE = DATA_DIR / "watchdog_config.json"
 OCLAW_HOME = pathlib.Path.home() / ".openclaw"
 
 # ── 超时阈值（秒）─────────────────────────────────────────────────
@@ -64,10 +65,88 @@ REVIEW_GRACE_PERIODS = {
     "Menxia": 300,   # 门下省审议：5 分钟宽限期（审议本身需要思考时间）
 }
 
+# ── 极端停滞阈值 ─────────────────────────────────────────────────
+EXTREME_STALL_THRESHOLD = 30 * 60  # 30分钟无任何更新视为极端停滞
+
+# ── 自适应配置 ────────────────────────────────────────────────────
+# 运行时可覆盖的配置（由 _load_watchdog_config() 从 watchdog_config.json 加载）
+_cfg = {
+    "break_timeout_sec": BREAK_TIMEOUT_SEC,
+    "auto_archive_minutes": AUTO_ARCHIVE_MINUTES,
+    "recent_done_minutes": RECENT_DONE_MINUTES,
+    "extreme_stall_threshold_sec": EXTREME_STALL_THRESHOLD,
+    "review_grace_periods": dict(REVIEW_GRACE_PERIODS),
+    "enabled_checks": {
+        "illegal_flow": True,
+        "skip_steps": True,
+        "broken_chain": True,
+        "cross_agent": True,
+        "session_violation": True,
+        "direct_execution": True,
+        "extreme_stall": True,
+    },
+    "max_notifications": 200,
+    "max_violations": 200,
+    "max_archived_violations": 500,
+    "max_archived_notifications": 100,
+    "wake_retry_enabled": True,
+    "adaptive_enabled": True,
+    "stability_window": 20,  # 最近 N 轮检查用于计算稳定性
+    "stability_threshold_high": 0.8,  # 高稳定性阈值（>此值减少通知）
+    "adaptive_grace_boost_sec": 60,  # 自适应宽限期增量（秒）
+}
+
+
+def load_watchdog_config():
+    """从 data/watchdog_config.json 加载自适应配置，覆盖默认阈值。
+
+    如果配置文件不存在或格式错误，使用内置默认值（不中断运行）。
+    """
+    global _cfg
+    try:
+        if not WATCHDOG_CONFIG_FILE.exists():
+            return
+        with open(WATCHDOG_CONFIG_FILE, "r", encoding="utf-8") as _f:
+            _user_cfg = json.load(_f)
+        # 仅覆盖已知的 key，忽略未知字段
+        for _key, _val in _user_cfg.items():
+            if _key in _cfg:
+                _cfg[_key] = _val
+        log(f"已加载自适应配置: break_timeout={_cfg['break_timeout_sec']}s, "
+            f"auto_archive={_cfg['auto_archive_minutes']}min, "
+            f"extreme_stall={_cfg['extreme_stall_threshold_sec']}s")
+    except Exception as _e:
+        log(f"加载 watchdog_config.json 失败，使用默认值: {_e}")
+
 # ── 日志工具 ──────────────────────────────────────────────────────
 def log(msg):
     ts = datetime.datetime.now(_BJT).strftime("%H:%M:%S")
     print(f"[{ts}] [监察] {msg}", flush=True)
+
+
+def _make_notif(notif_type, to, detail, task_id="", task_ids=None, status="sent"):
+    """创建标准格式的通知记录（字段与前端 AuditPanel 对齐）。
+    
+    前端 AuditNotification 接口要求:
+      type: 通知类型（与 NOTIFY_TYPE_META 对齐）
+      to: 通知目标部门
+      summary: 简短摘要
+      sent_at: 发送时间
+      detail: 详细描述
+      task_id: 关联任务ID
+      task_ids: 关联任务ID列表
+      status: 发送状态
+    """
+    return {
+        "type": notif_type,
+        "to": to,
+        "summary": detail[:80] if detail else "",
+        "sent_at": datetime.datetime.now(_BJT).isoformat(),
+        "detail": detail,
+        "task_id": task_id,
+        "task_ids": task_ids or [],
+        "status": status,
+    }
 
 
 def _write_heartbeat():
@@ -551,10 +630,13 @@ def check_direct_execution(task_id, flow_log, task_state=""):
     return None
 
 
-def check_broken_chain(task_id, flow_log, task_state=""):
-    """检查最后一条 flow 是否断链（目标部门 1 分钟内无回应）。返回断链信息或 None。"""
+def check_broken_chain(task_id, flow_log, task_state="", break_timeout=None, review_grace=None):
+    """检查最后一条 flow 是否断链（目标部门无回应）。返回断链信息或 None。"""
     if not flow_log:
         return None
+
+    _timeout = break_timeout if break_timeout is not None else BREAK_TIMEOUT_SEC
+    _grace = review_grace if review_grace is not None else REVIEW_GRACE_PERIODS
 
     last = flow_log[-1]
     last_to = normalize_name(last.get("to", ""))
@@ -568,7 +650,7 @@ def check_broken_chain(task_id, flow_log, task_state=""):
 
     # ── 审议宽限期：如果任务处于审议状态，给更长的等待时间 ──
     dept_to = ID_TO_DEPT.get(last_to, last_to)
-    grace_period = REVIEW_GRACE_PERIODS.get(task_state, 0) or REVIEW_GRACE_PERIODS.get(dept_to, 0)
+    grace_period = _grace.get(task_state, 0) or _grace.get(dept_to, 0)
 
     # 解析最后一条 flow 的时间
     try:
@@ -579,7 +661,7 @@ def check_broken_chain(task_id, flow_log, task_state=""):
     now = datetime.datetime.now(_BJT)
     elapsed = (now - last_at).total_seconds()
 
-    if elapsed < BREAK_TIMEOUT_SEC:
+    if elapsed < _timeout:
         return None  # 还没超时
 
     # 审议宽限期内不触发断链
@@ -844,10 +926,9 @@ def check_cross_agent_violation(task_id, flow_log, task_state=""):
 EXTREME_STALL_THRESHOLD = 30 * 60  # 30分钟无任何更新视为极端停滞
 
 
-def check_extreme_stall(task_id, flow_log, task_state, updated_at_str):
-    """检查任务是否极端停滞（30分钟无任何更新）。
-    适用于 Doing/Review/Assigned 等活跃状态。
-    """
+def check_extreme_stall(task_id, flow_log, task_state, updated_at_str, stall_threshold=None):
+    """检查任务是否极端停滞。"""
+    _threshold = stall_threshold if stall_threshold is not None else EXTREME_STALL_THRESHOLD
     if task_state in ("Done", "Cancelled", "Blocked"):
         return None
     if not updated_at_str:
@@ -858,14 +939,14 @@ def check_extreme_stall(task_id, flow_log, task_state, updated_at_str):
             dt = dt.replace(tzinfo=datetime.timezone(datetime.timedelta(hours=8)))
         now = datetime.datetime.now(_BJT)
         elapsed = (now - dt).total_seconds()
-        if elapsed >= EXTREME_STALL_THRESHOLD:
+        if elapsed >= _threshold:
             label = ID_TO_LABEL.get(
                 normalize_name(flow_log[-1].get("to", "")) if flow_log else "",
                 "未知"
             ) if flow_log else "未知"
             return {
                 "type": "极端停滞",
-                "detail": f"任务在 {task_state} 状态已停滞 {int(elapsed // 60)} 分钟无更新（阈值 {EXTREME_STALL_THRESHOLD // 60} 分钟）",
+                "detail": f"任务在 {task_state} 状态已停滞 {int(elapsed // 60)} 分钟无更新（阈值 {_threshold // 60} 分钟）",
                 "elapsed_sec": int(elapsed),
                 "target_label": label,
             }
@@ -1043,8 +1124,13 @@ def clear_agent_sessions(task):
 # ═══════════════════════════════════════════════════════════════════
 
 def auto_archive_done_tasks(tasks, now_iso):
-    """自动归档 Done/Cancelled 超过 AUTO_ARCHIVE_MINUTES 分钟且未归档的任务。"""
+    """自动归档 Done/Cancelled 超过阈值分钟且未归档的任务。
+
+    同时清理归档任务的 _lastNotify 元数据（防止陈旧通知冷却数据残留）。
+    """
+    _archive_min = _cfg.get("auto_archive_minutes", AUTO_ARCHIVE_MINUTES)
     archived_count = 0
+    archived_ids = []
     for t in tasks:
         state = t.get("state", "")
         if state not in ("Done", "Cancelled"):
@@ -1060,15 +1146,18 @@ def auto_archive_done_tasks(tasks, now_iso):
             if dt.tzinfo is None:
                 dt = dt.replace(tzinfo=datetime.timezone(datetime.timedelta(hours=8)))
             now = datetime.datetime.now(_BJT)
-            if (now - dt).total_seconds() >= AUTO_ARCHIVE_MINUTES * 60:
+            if (now - dt).total_seconds() >= _archive_min * 60:
                 t["archived"] = True
                 t["archivedAt"] = now_iso
+                # 清理陈旧通知冷却元数据，防止归档后的通知冷却数据干扰其他任务
+                t.pop("_lastNotify", None)
                 archived_count += 1
+                archived_ids.append(t.get("id", ""))
         except Exception:
             continue
     if archived_count > 0:
         save_tasks(tasks)
-        log(f"自动归档 {archived_count} 个已完成任务")
+        log(f"自动归档 {archived_count} 个已完成任务: {', '.join(archived_ids)}")
     return archived_count
 
 
@@ -1077,14 +1166,15 @@ def auto_archive_done_tasks(tasks, now_iso):
 # ═══════════════════════════════════════════════════════════════════
 
 def _is_recently_done(task):
-    """判断任务是否在最近 RECENT_DONE_MINUTES 分钟内完成（用于速通逃逸检测）"""
+    """判断任务是否在最近 N 分钟内完成（用于速通逃逸检测）"""
     updated_at = task.get("updatedAt", "")
     if not updated_at:
         return False
     try:
         dt = datetime.datetime.fromisoformat(updated_at.replace("Z", "+00:00").replace("+08:00", ""))
         now = datetime.datetime.now(_BJT)
-        return (now - dt).total_seconds() < RECENT_DONE_MINUTES * 60
+        _recent_min = _cfg.get("recent_done_minutes", RECENT_DONE_MINUTES)
+        return (now - dt).total_seconds() < _recent_min * 60
     except Exception:
         return False
 
@@ -1144,6 +1234,19 @@ def main():
 
 def _main_inner():
     """watchdog 主逻辑（在单实例锁保护下运行）。"""
+    # ── 加载自适应配置 ──
+    load_watchdog_config()
+
+    # ── 提取配置到局部变量（避免频繁 dict 查找）──
+    _break_timeout = _cfg.get("break_timeout_sec", BREAK_TIMEOUT_SEC)
+    _review_grace = _cfg.get("review_grace_periods", REVIEW_GRACE_PERIODS)
+    _extreme_stall = _cfg.get("extreme_stall_threshold_sec", EXTREME_STALL_THRESHOLD)
+    _enabled = _cfg.get("enabled_checks", {})
+    _max_notifs = _cfg.get("max_notifications", 200)
+    _max_violations = _cfg.get("max_violations", 200)
+    _max_arch_violations = _cfg.get("max_archived_violations", 500)
+    _max_arch_notifs = _cfg.get("max_archived_notifications", 100)
+
     # ── 第一时间写入心跳，表明监察在运行（即使后续崩溃也能证明）──
     _write_heartbeat()
 
@@ -1166,8 +1269,19 @@ def _main_inner():
     # 加载排除列表
     exclude_list = load_exclude_list()
 
-    # ── 自动归档 Done 超过 5 分钟的任务 ──
-    auto_archive_done_tasks(tasks, now_iso)
+    # ── 自动归档 Done 超过阈值分钟的任务 ──
+    archived_count = auto_archive_done_tasks(tasks, now_iso)
+    if archived_count > 0:
+        # 记录归档动作到通报记录
+        _arch_notif = _make_notif(
+            notif_type="归档", to="系统",
+            detail=f"自动归档 {archived_count} 个已完成任务",
+        )
+        audit = load_audit()
+        audit.setdefault("notifications", [])
+        audit["notifications"].append(_arch_notif)
+        audit["notifications"] = audit["notifications"][-_max_notifs:]
+        save_audit(audit)
 
     # 过滤需要检查的任务：
     #   1. 只监察 JJC- 开头的旨意任务（不监察对话）
@@ -1231,6 +1345,23 @@ def _main_inner():
     new_violations = []
     woken_agents = set()  # 同一轮只唤醒一次
 
+    # ── 自适应行为：根据历史稳定性动态调整检测参数 ──
+    _adaptive_enabled = _cfg.get("adaptive_enabled", True)
+    _stability_score = 1.0  # 默认完全稳定
+    if _adaptive_enabled:
+        _stability_window = _cfg.get("stability_window", 20)
+        _history = audit.get("check_history", [])
+        if len(_history) >= 5:
+            recent = _history[-_stability_window:]
+            clean = sum(1 for h in recent if h.get("violations", 0) == 0)
+            _stability_score = clean / len(recent)
+            log(f"稳定性评分: {_stability_score:.0%}（近 {len(recent)} 轮，{clean} 轮无问题）")
+            # 高稳定性时增加宽限期（减少误报）
+            if _stability_score >= _cfg.get("stability_threshold_high", 0.8):
+                _boost = _cfg.get("adaptive_grace_boost_sec", 60)
+                _break_timeout += _boost
+                log(f"高稳定性模式：断链超时 +{_boost}s → {_break_timeout}s")
+
     # ── 去重：构建已有违规 key 集合，避免每轮重复写入相同违规 ──
     existing_violation_keys = set()
     for v in audit.get("violations", []):
@@ -1254,9 +1385,8 @@ def _main_inner():
         # 将清理的违规归档
         audit.setdefault("archived_violations", [])
         audit["archived_violations"].extend(_stale_violations)
-        # 限制归档大小，只保留最近 500 条
-        if len(audit["archived_violations"]) > 500:
-            audit["archived_violations"] = audit["archived_violations"][-500:]
+        # 限制归档大小
+        audit["archived_violations"] = audit["archived_violations"][-_max_arch_violations:]
         log(f"已清理 {_stale_count} 条已解决任务的陈旧违规")
 
     # ── Fix #2 原因A: 自动修复活跃任务的过时违规 ──
@@ -1305,8 +1435,8 @@ def _main_inner():
             _rv["resolved_at"] = now_iso
             _rv["resolve_reason"] = "流程已补全缺失步骤，违规自动修复"
             audit["resolved_violations"].append(_rv)
-        if len(audit["resolved_violations"]) > 500:
-            audit["resolved_violations"] = audit["resolved_violations"][-500:]
+        if len(audit["resolved_violations"]) > _max_arch_violations:
+            audit["resolved_violations"] = audit["resolved_violations"][-_max_arch_violations:]
         log(f"已自动修复 {_resolved_count} 条过时跳步违规（flow_log 已补全缺失步骤）")
 
     for task in active:
@@ -1339,226 +1469,241 @@ def _main_inner():
                 pass
 
         # ── 检查 1：越权调用（逐条检查）──
-        for i, entry in enumerate(flow_log):
-            f = normalize_name(entry.get("from", ""))
-            t = normalize_name(entry.get("to", ""))
-            if not f or not t:
-                continue
-            # 跳过太子调度系统产生的 flow_log（合法的系统行为）
-            dept_f = ID_TO_DEPT.get(f, f)
-            if dept_f == "太子调度":
-                continue
-            illegal = check_illegal_flow(task_id, f, t, i)
-            if illegal:
-                v_key = (task_id, "越权调用", i, f"{dept_f} → {ID_TO_DEPT.get(t, t)}：{illegal}")
+        if _enabled.get("illegal_flow", True):
+            for i, entry in enumerate(flow_log):
+                f = normalize_name(entry.get("from", ""))
+                t = normalize_name(entry.get("to", ""))
+                if not f or not t:
+                    continue
+                # 跳过太子调度系统产生的 flow_log（合法的系统行为）
+                dept_f = ID_TO_DEPT.get(f, f)
+                if dept_f == "太子调度":
+                    continue
+                illegal = check_illegal_flow(task_id, f, t, i)
+                if illegal:
+                    v_key = (task_id, "越权调用", i, f"{dept_f} → {ID_TO_DEPT.get(t, t)}：{illegal}")
+                    if v_key not in existing_violation_keys:
+                        violation = {
+                            "task_id": task_id,
+                            "title": title,
+                            "type": "越权调用",
+                            "detail": f"{dept_f} → {ID_TO_DEPT.get(t, t)}：{illegal}",
+                            "flow_index": i,
+                            "detected_at": now_iso,
+                        }
+                        new_violations.append(violation)
+
+        # ── 检查 2：流程跳步（改进：含后向检查）──
+        if _enabled.get("skip_steps", True):
+            skips = check_skip_steps(task_id, flow_log)
+            for skip_detail in skips:
+                _skip_hash = hash(skip_detail) & 0xFFFFFFFF
+                v_key = (task_id, "流程跳步", _skip_hash, skip_detail)
                 if v_key not in existing_violation_keys:
                     violation = {
                         "task_id": task_id,
                         "title": title,
-                        "type": "越权调用",
-                        "detail": f"{dept_f} → {ID_TO_DEPT.get(t, t)}：{illegal}",
-                        "flow_index": i,
+                        "type": "流程跳步",
+                        "detail": skip_detail,
                         "detected_at": now_iso,
                     }
                     new_violations.append(violation)
 
-        # ── 检查 2：流程跳步（改进：含后向检查）──
-        # Fix #5: 去重 key 使用 detail 内容哈希而非固定 flow_index=-1，
-        # 使得不同阶段产生的不同缺失步骤可以被分别记录
-        skips = check_skip_steps(task_id, flow_log)
-        for skip_detail in skips:
-            _skip_hash = hash(skip_detail) & 0xFFFFFFFF  # 用 detail 内容的哈希区分不同跳步
-            v_key = (task_id, "流程跳步", _skip_hash, skip_detail)
-            if v_key not in existing_violation_keys:
-                violation = {
-                    "task_id": task_id,
-                    "title": title,
-                    "type": "流程跳步",
-                    "detail": skip_detail,
-                    "detected_at": now_iso,
-                }
-                new_violations.append(violation)
-
         # ── 检查 2.5：直接执行越权（三省代劳六部工作）──
-        direct_exec = check_direct_execution(task_id, flow_log, task_state)
-        if direct_exec:
-            v_key = (task_id, "直接执行越权", -1, direct_exec)
-            if v_key not in existing_violation_keys:
-                violation = {
-                    "task_id": task_id,
-                    "title": title,
-                    "type": "直接执行越权",
-                    "detail": direct_exec,
-                    "detected_at": now_iso,
-                }
-                new_violations.append(violation)
+        if _enabled.get("direct_execution", True):
+            direct_exec = check_direct_execution(task_id, flow_log, task_state)
+            if direct_exec:
+                v_key = (task_id, "直接执行越权", -1, direct_exec)
+                if v_key not in existing_violation_keys:
+                    violation = {
+                        "task_id": task_id,
+                        "title": title,
+                        "type": "直接执行越权",
+                        "detail": direct_exec,
+                        "detected_at": now_iso,
+                    }
+                    new_violations.append(violation)
 
         # ── 检查 2.7：极端停滞检测 ──
-        updated_at_str = task.get("updatedAt", "")
-        stall_info = check_extreme_stall(task_id, flow_log, task_state, updated_at_str)
-        if stall_info:
-            v_key = (task_id, "极端停滞", -1, stall_info["detail"])
-            if v_key not in existing_violation_keys:
-                violation = {
-                    "task_id": task_id,
-                    "title": title,
-                    "type": "极端停滞",
-                    "detail": stall_info["detail"],
-                    "detected_at": now_iso,
-                }
-                new_violations.append(violation)
+        if _enabled.get("extreme_stall", True):
+            updated_at_str = task.get("updatedAt", "")
+            stall_info = check_extreme_stall(task_id, flow_log, task_state, updated_at_str, _extreme_stall)
+            if stall_info:
+                v_key = (task_id, "极端停滞", -1, stall_info["detail"])
+                if v_key not in existing_violation_keys:
+                    violation = {
+                        "task_id": task_id,
+                        "title": title,
+                        "type": "极端停滞",
+                        "detail": stall_info["detail"],
+                        "detected_at": now_iso,
+                    }
+                    new_violations.append(violation)
 
         # ── 检查 2.8：会话违规检测（session-keys 合规性）──
-        session_keys = task.get('session_keys', {})
-        session_violations = check_session_violation(task_id, flow_log, session_keys, task_state)
-        for sv_detail in session_violations:
-            # 根据违规描述确定类型
-            if "未注册" in sv_detail:
-                sv_type = "会话未注册"
-            elif "过多" in sv_detail:
-                sv_type = "会话通信过多"
-            elif "可疑" in sv_detail:
-                sv_type = "会话可疑"
-            else:
-                sv_type = "会话违规"
-            v_key = (task_id, sv_type, -1, sv_detail)
-            if v_key not in existing_violation_keys:
-                violation = {
-                    "task_id": task_id,
-                    "title": title,
-                    "type": sv_type,
-                    "detail": sv_detail,
-                    "detected_at": now_iso,
-                }
-                new_violations.append(violation)
+        if _enabled.get("session_violation", True):
+            session_keys = task.get('session_keys', {})
+            session_violations = check_session_violation(task_id, flow_log, session_keys, task_state)
+            for sv_detail in session_violations:
+                if "未注册" in sv_detail:
+                    sv_type = "会话未注册"
+                elif "过多" in sv_detail:
+                    sv_type = "会话通信过多"
+                elif "可疑" in sv_detail:
+                    sv_type = "会话可疑"
+                else:
+                    sv_type = "会话违规"
+                v_key = (task_id, sv_type, -1, sv_detail)
+                if v_key not in existing_violation_keys:
+                    violation = {
+                        "task_id": task_id,
+                        "title": title,
+                        "type": sv_type,
+                        "detail": sv_detail,
+                        "detected_at": now_iso,
+                    }
+                    new_violations.append(violation)
 
         # ── 检查 2.9：跨 Agent 越权通信检测（方案 B+ 增强）──
-        cross_violations = check_cross_agent_violation(task_id, flow_log, task_state)
-        for cv_detail in cross_violations:
-            if "越权通信" in cv_detail:
-                cv_type = "子代理越权通信"
-            elif "可疑跨部门" in cv_detail:
-                cv_type = "可疑跨部门通信"
-            else:
-                cv_type = "通信违规"
-            v_key = (task_id, cv_type, -1, cv_detail)
-            if v_key not in existing_violation_keys:
+        if _enabled.get("cross_agent", True):
+            cross_violations = check_cross_agent_violation(task_id, flow_log, task_state)
+            for cv_detail in cross_violations:
+                if "越权通信" in cv_detail:
+                    cv_type = "子代理越权通信"
+                elif "可疑跨部门" in cv_detail:
+                    cv_type = "可疑跨部门通信"
+                else:
+                    cv_type = "通信违规"
+                v_key = (task_id, cv_type, -1, cv_detail)
+                if v_key not in existing_violation_keys:
+                    violation = {
+                        "task_id": task_id,
+                        "title": title,
+                        "type": cv_type,
+                        "detail": cv_detail,
+                        "detected_at": now_iso,
+                    }
+                    new_violations.append(violation)
+
+        # ── 检查 3：断链超时 ──
+        if _enabled.get("broken_chain", True):
+            broken = check_broken_chain(task_id, flow_log, task_state, _break_timeout, _review_grace)
+            if broken:
+                target_id = broken["target_agent_id"]
+                target_label = broken["target_label"]
+                from_label = broken["from_label"]
+                target_dept = ID_TO_DEPT.get(target_id, target_id)
+                parent_id = PARENT_MAP.get(target_dept)
+
                 violation = {
                     "task_id": task_id,
                     "title": title,
-                    "type": cv_type,
-                    "detail": cv_detail,
+                    "type": "断链超时",
+                    "detail": broken["detail"],
                     "detected_at": now_iso,
                 }
                 new_violations.append(violation)
 
-        # ── 检查 3：断链超时 ──
-        broken = check_broken_chain(task_id, flow_log, task_state)
-        if broken:
-            target_id = broken["target_agent_id"]
-            target_label = broken["target_label"]
-            from_label = broken["from_label"]
-            # PARENT_MAP 的 key 是部门名称，需用 ID_TO_DEPT 转换
-            target_dept = ID_TO_DEPT.get(target_id, target_id)
-            parent_id = PARENT_MAP.get(target_dept)
+                # ── 介入处理：唤醒目标部门 ──
+                if target_id and target_id not in woken_agents:
+                    wake_ok, wake_detail = wake_agent(target_id, f"任务 {task_id} 流程断链，{from_label}已等你 {broken['elapsed_sec'] // 60} 分钟")
+                    woken_agents.add(target_id)
+                    # 记录唤醒动作
+                    audit["notifications"].append(_make_notif(
+                        notif_type="断链唤醒", to=target_label,
+                        detail=f"{from_label}→{target_label} 断链，已唤醒",
+                        task_id=task_id,
+                        status="sent" if wake_ok else "failed",
+                    ))
 
-            violation = {
-                "task_id": task_id,
-                "title": title,
-                "type": "断链超时",
-                "detail": broken["detail"],
-                "detected_at": now_iso,
-            }
-            new_violations.append(violation)
-
-            # ── 介入处理：唤醒目标部门 ──
-            if target_id and target_id not in woken_agents:
-                wake_ok, wake_detail = wake_agent(target_id, f"任务 {task_id} 流程断链，{from_label}已等你 {broken['elapsed_sec'] // 60} 分钟")
-                woken_agents.add(target_id)
-                # 记录通知
-                audit["notifications"].append({
-                    "type": "断链唤醒",
-                    "to": target_label,
-                    "task_id": task_id,
-                    "summary": f"{from_label}→{target_label} 断链，已唤醒",
-                    "sent_at": now_iso,
-                    "status": "sent" if wake_ok else "failed",
-                    "detail": wake_detail,
-                })
-
-            # ── 介入处理：通知上游重新派发 ──
-            # 修复：无论上级是否"醒着"，都必须通知它重新派发。
-            # 因为上级可能醒着但不知道下游卡住了，需要明确告知。
-            # 只通知直接上级（如尚书省），不升级到太子/中书省。
-            if parent_id and parent_id not in woken_agents:
-                parent_label = ID_TO_LABEL.get(parent_id, parent_id)
-                # 即使上级醒着，也发消息通知它重新派发
-                re_dispatch_msg = (
-                    f"🔔 流程断链通知 - 需要你重新派发\n"
-                    f"任务ID: {task_id}\n"
-                    f"标题: {title}\n"
-                    f"问题: {from_label} → {target_label} 已等待 {broken['elapsed_sec'] // 60} 分钟无回应\n"
-                    f"已唤醒 {target_label}，请重新派发任务给它。\n"
-                    f"使用 sessions_spawn 唤醒 {target_label}（如果之前没有 sessionKey）\n"
-                    f"或使用 sessions_send 继续已有对话（如果有 sessionKey）。\n"
-                    f"⚠️ 禁止使用 sessions_yield，必须使用 sessions_spawn！\n"
-                    f"⚠️ 看板已有此任务，请勿重复创建。"
-                )
-                # 先尝试唤醒上级（如果上级确实睡了）
-                if not is_agent_awake(parent_id):
-                    wake_ok, wake_detail = wake_agent(parent_id, f"任务 {task_id} 断链，需要你重新派发{target_label}")
-                    woken_agents.add(parent_id)
-                else:
-                    wake_ok = True
-                    wake_detail = f"{parent_label} 已在线，直接发送重新派发通知"
-                
-                # 无论上级是否睡着，都发送重新派发指令
-                try:
-                    subprocess.Popen(
-                        ["openclaw", "agent", "--agent", parent_id, "-m", re_dispatch_msg, "--timeout", "120"],
-                        stdout=subprocess.DEVNULL,
-                        stderr=subprocess.DEVNULL,
+                # ── 介入处理：通知上游重新派发 ──
+                if parent_id and parent_id not in woken_agents:
+                    parent_label = ID_TO_LABEL.get(parent_id, parent_id)
+                    if not is_agent_awake(parent_id):
+                        wake_ok, wake_detail = wake_agent(parent_id, f"任务 {task_id} 断链，需要你重新派发{target_label}")
+                        woken_agents.add(parent_id)
+                        # 记录唤醒动作
+                        audit["notifications"].append(_make_notif(
+                            notif_type="断链唤醒", to=parent_label,
+                            detail=f"断链处理：唤醒上级{parent_label}重新派发{target_label}",
+                            task_id=task_id,
+                            status="sent" if wake_ok else "failed",
+                        ))
+                    else:
+                        wake_ok = True
+                        wake_detail = f"{parent_label} 已在线，直接发送重新派发通知"
+                    
+                    re_dispatch_msg = (
+                        f"🔔 流程断链通知 - 需要你重新派发\n"
+                        f"任务ID: {task_id}\n"
+                        f"标题: {title}\n"
+                        f"问题: {from_label} → {target_label} 已等待 {broken['elapsed_sec'] // 60} 分钟无回应\n"
+                        f"已唤醒 {target_label}，请重新派发任务给它。\n"
+                        f"使用 sessions_spawn 唤醒 {target_label}（如果之前没有 sessionKey）\n"
+                        f"或使用 sessions_send 继续已有对话（如果有 sessionKey）。\n"
+                        f"⚠️ 禁止使用 sessions_yield，必须使用 sessions_spawn！\n"
+                        f"⚠️ 看板已有此任务，请勿重复创建。"
                     )
-                    log(f"已通知 {parent_label} 重新派发 {target_label} | {task_id}")
-                except Exception as e:
-                    log(f"通知 {parent_label} 重新派发失败: {e}")
-                    wake_ok = False
-                    wake_detail = str(e)
-                
-                audit["notifications"].append({
-                    "type": "断链重派发",
-                    "to": parent_label,
-                    "task_id": task_id,
-                    "summary": f"{from_label}→{target_label} 断链，已通知{parent_label}重新派发",
-                    "sent_at": now_iso,
-                    "status": "sent" if wake_ok else "failed",
-                    "detail": wake_detail,
-                })
-            elif parent_id and parent_id in woken_agents:
-                # 上级已在本轮被唤醒过（可能是其他任务触发的），仍然发送重新派发通知
-                parent_label = ID_TO_LABEL.get(parent_id, parent_id)
-                re_dispatch_msg = (
-                    f"🔔 流程断链通知 - 需要你重新派发\n"
-                    f"任务ID: {task_id}\n"
-                    f"标题: {title}\n"
-                    f"问题: {from_label} → {target_label} 已等待 {broken['elapsed_sec'] // 60} 分钟无回应\n"
-                    f"请重新派发任务给 {target_label}。\n"
-                    f"⚠️ 禁止使用 sessions_yield，必须使用 sessions_spawn！\n"
-                    f"⚠️ 看板已有此任务，请勿重复创建。"
-                )
-                try:
-                    subprocess.Popen(
-                        ["openclaw", "agent", "--agent", parent_id, "-m", re_dispatch_msg, "--timeout", "120"],
-                        stdout=subprocess.DEVNULL,
-                        stderr=subprocess.DEVNULL,
+                    try:
+                        subprocess.Popen(
+                            ["openclaw", "agent", "--agent", parent_id, "-m", re_dispatch_msg, "--timeout", "120"],
+                            stdout=subprocess.DEVNULL,
+                            stderr=subprocess.DEVNULL,
+                        )
+                        log(f"已通知 {parent_label} 重新派发 {target_label} | {task_id}")
+                    except Exception as e:
+                        log(f"通知 {parent_label} 重新派发失败: {e}")
+                        wake_ok = False
+                        wake_detail = str(e)
+                    
+                    # 记录通知动作
+                    audit["notifications"].append(_make_notif(
+                        notif_type="断链通知", to=parent_label,
+                        detail=f"{from_label}→{target_label} 断链，已通知{parent_label}重新派发",
+                        task_id=task_id,
+                        status="sent" if wake_ok else "failed",
+                    ))
+                elif parent_id and parent_id in woken_agents:
+                    parent_label = ID_TO_LABEL.get(parent_id, parent_id)
+                    re_dispatch_msg = (
+                        f"🔔 流程断链通知 - 需要你重新派发\n"
+                        f"任务ID: {task_id}\n"
+                        f"标题: {title}\n"
+                        f"问题: {from_label} → {target_label} 已等待 {broken['elapsed_sec'] // 60} 分钟无回应\n"
+                        f"请重新派发任务给 {target_label}。\n"
+                        f"⚠️ 禁止使用 sessions_yield，必须使用 sessions_spawn！\n"
+                        f"⚠️ 看板已有此任务，请勿重复创建。"
                     )
-                    log(f"已补充通知 {parent_label} 重新派发 {target_label} | {task_id}")
-                except Exception as e:
-                    log(f"补充通知 {parent_label} 失败: {e}")
+                    try:
+                        subprocess.Popen(
+                            ["openclaw", "agent", "--agent", parent_id, "-m", re_dispatch_msg, "--timeout", "120"],
+                            stdout=subprocess.DEVNULL,
+                            stderr=subprocess.DEVNULL,
+                        )
+                        log(f"已补充通知 {parent_label} 重新派发 {target_label} | {task_id}")
+                    except Exception as e:
+                        log(f"补充通知 {parent_label} 失败: {e}")
+                    # 记录补充通知动作
+                    audit["notifications"].append(_make_notif(
+                        notif_type="断链通知", to=parent_label,
+                        detail=f"补充通知{parent_label}重新派发{target_label}（已唤醒过）",
+                        task_id=task_id,
+                    ))
 
     # ── 严重违规通知太子（越权 + 直接执行越权 + 流程跳步）──
     serious = [v for v in new_violations if v["type"] in ("越权调用", "直接执行越权")]
     skip_violations = [v for v in new_violations if v["type"] == "流程跳步"]
+
+    # ── 自适应降噪：高稳定性时跳过轻微违规的通知 ──
+    _minor_types = ("会话未注册", "会话通信过多", "可疑跨部门通信", "子代理越权通信")
+    if _adaptive_enabled and _stability_score >= _cfg.get("stability_threshold_high", 0.8):
+        _minor_skip = [v for v in new_violations if v["type"] in _minor_types]
+        if _minor_skip:
+            # 轻微违规仍然记录到 violations，但不通知太子
+            audit["notifications"].append(_make_notif(
+                notif_type="巡检", to="系统",
+                detail=f"高稳定性模式：跳过 {len(_minor_skip)} 项轻微违规通知（{', '.join(set(v['type'] for v in _minor_skip))}）",
+            ))
     
     # ── Fix #2 原因B: 跳步通报冷却机制 ──
     # 防止中书↔门下多轮审议期间，每次流转都触发通知太子。
@@ -1602,22 +1747,36 @@ def _main_inner():
             f"请太子核实并纠正。"
         )
         notify_ok, notify_detail = notify_agent("taizi", notify_msg)
-        audit["notifications"].append({
-            "type": "越权通报" if serious else "跳步通报",
-            "to": "太子",
-            "task_ids": list(set(v["task_id"] for v in (serious + skip_violations))),
-            "summary": f"发现{type_summary}",
-            "sent_at": now_iso,
-            "status": "sent" if notify_ok else "failed",
-            "detail": notify_detail,
-        })
+        # 记录违规通报动作到通知
+        audit["notifications"].append(_make_notif(
+            notif_type="越权通报" if serious else "跳步通报", to="太子",
+            detail=f"发现{type_summary}",
+            task_ids=list(set(v["task_id"] for v in (serious + skip_violations))),
+            status="sent" if notify_ok else "failed",
+        ))
         # 记录跳步通报时间（用于冷却去重）
         if skip_violations and not serious:
             audit["last_skip_notify_at"] = now_iso
             audit["last_skip_notify_task"] = skip_violations[0]["task_id"]
 
-    # ── 写入审计日志（重新读取最新数据防止覆盖并发写入）──
+    # ── 写入审计日志（保留本轮通知，合并到最新数据）──
+    # 保存本轮累积的通知（防止重读丢失）
+    _loop_notifications = list(audit.get("notifications", []))
+
     audit = load_audit()  # 重新读取，获取可能被其他进程更新的数据
+
+    # 合并本轮通知（去重，防止并发重复写入）
+    _existing_notif_keys = set()
+    for _n in audit.get("notifications", []):
+        _n_key = (_n.get("sent_at", "") or _n.get("at", ""), _n.get("type", ""), _n.get("detail", ""))
+        _existing_notif_keys.add(_n_key)
+
+    for _n in _loop_notifications:
+        _n_key = (_n.get("sent_at", "") or _n.get("at", ""), _n.get("type", ""), _n.get("detail", ""))
+        if _n_key not in _existing_notif_keys:
+            audit.setdefault("notifications", []).append(_n)
+            _existing_notif_keys.add(_n_key)
+
     if new_violations:
         # 再次去重，防止并发时重复写入
         current_keys = set()
@@ -1647,7 +1806,7 @@ def _main_inner():
             if archived_new:
                 audit["violations"] = active_violations
                 audit.setdefault("archived_violations", []).extend(archived_new)
-                audit["archived_violations"] = audit["archived_violations"][-200:]  # 归档违规也限制 200 条
+                audit["archived_violations"] = audit["archived_violations"][-_max_arch_violations:]
                 log(f"归档 {len(archived_new)} 条已归档任务的违规记录（保留在 archived_violations）")
         # 同时归档已归档任务的通知记录
         old_notifications = audit.get("notifications", [])
@@ -1664,18 +1823,33 @@ def _main_inner():
             ]
             if archived_notifs:
                 audit.setdefault("archived_notifications", []).extend(archived_notifs)
-                audit["archived_notifications"] = audit["archived_notifications"][-100:]
+                audit["archived_notifications"] = audit["archived_notifications"][-_max_arch_notifs:]
             audit["notifications"] = active_notifs
 
-    # 只保留最近 200 条记录
-    audit["violations"] = audit["violations"][-200:]
+    # 只保留最近 N 条记录（使用配置值）
+    audit["violations"] = audit["violations"][-_max_violations:]
     audit["last_check"] = now_iso
     audit["watched_tasks"] = watched_tasks
     audit["watched_count"] = len(watched_tasks)
     audit["check_count"] = audit.get("check_count", 0) + 1
     audit["total_violations"] = audit.get("total_violations", 0) + len(new_violations)
-    # 只保留最近 100 条通知记录
-    audit["notifications"] = audit["notifications"][-100:]
+
+    # 记录本轮检查历史（用于自适应行为）
+    audit.setdefault("check_history", []).append({
+        "at": now_iso,
+        "violations": len(new_violations),
+        "active_tasks": len(active),
+        "stability": round(_stability_score, 2),
+    })
+    audit["check_history"] = audit["check_history"][-100:]  # 保留最近100轮
+    audit["notifications"] = audit["notifications"][-_max_notifs:]
+
+    # 记录本轮巡检摘要
+    audit["notifications"].append(_make_notif(
+        notif_type="巡检", to="系统",
+        detail=f"检查完成，{len(active)} 个检查任务，{len(watched_tasks)} 个活跃，发现 {len(new_violations)} 项问题",
+    ))
+    audit["notifications"] = audit["notifications"][-_max_notifs:]
 
     save_audit(audit)
 

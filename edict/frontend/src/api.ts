@@ -522,7 +522,8 @@ export interface WatchedTask {
 }
 
 export interface AuditNotification {
-  type: '越权通报' | '跳步通报' | '断链唤醒' | '断链通知' | '会话警告';
+  type: '越权通报' | '跳步通报' | '断链唤醒' | '断链通知' | '会话警告' | '归档' | '巡检'
+    | '唤醒' | '通知' | '违规';  // 兼容旧格式
   to: string;
   task_id?: string;
   task_ids?: string[];
