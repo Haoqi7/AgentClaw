@@ -62,7 +62,7 @@ AUTO_ARCHIVE_MINUTES = 5  # Done 超过 N 分钟自动归档
 # ── 审议宽限期（秒）─────────────────────────────────────────────
 # 门下省审议需要较长时间，在此期间不触发断链检测
 REVIEW_GRACE_PERIODS = {
-    "Menxia": 300,   # 门下省审议：5 分钟宽限期（审议本身需要思考时间）
+    "Menxia": 360,   # 门下省审议：6 分钟宽限期（审议本身需要充分思考时间）
 }
 
 # ── 极端停滞阈值 ─────────────────────────────────────────────────
@@ -630,8 +630,21 @@ def check_direct_execution(task_id, flow_log, task_state=""):
     return None
 
 
-def check_broken_chain(task_id, flow_log, task_state="", break_timeout=None, review_grace=None):
-    """检查最后一条 flow 是否断链（目标部门无回应）。返回断链信息或 None。"""
+def check_broken_chain(task_id, flow_log, task_state="",
+                        progress_log=None, task_updated_at="",
+                        break_timeout=None, review_grace=None):
+    """检查最后一条 flow 是否断链（目标部门无回应）。返回断链信息或 None。
+
+    判断"回应"的依据（按优先级递进）：
+    1. flow_log 中目标部门作为 from 出现（已流转到下一步 → 正常回应）
+    2. progress_log 中目标部门有进展记录（正在工作 → 不算断链）
+    3. task.updatedAt 在最后 flow 之后被刷新（看板有活动 → 6 分钟内不断链）
+    以上均不满足且超过阈值 → 判定为断链，触发提醒。
+
+    Args:
+        progress_log: 任务的 progress_log 列表（看板进展记录）
+        task_updated_at: 任务的 updatedAt 时间戳（看板最后刷新时间）
+    """
     if not flow_log:
         return None
 
@@ -644,8 +657,6 @@ def check_broken_chain(task_id, flow_log, task_state="", break_timeout=None, rev
 
     # 不检查终点为皇上或太子的（太子以上的不由监察处理）
     if not last_to or last_to in ("huangshang", "皇上", "taizi"):
-        # 如果最后流向太子或皇上，说明任务已回到上层，不断链
-        # 但如果流向太子且太子还没回复皇上，也不算断链（太子不归监察管）
         return None
 
     # ── 审议宽限期：如果任务处于审议状态，给更长的等待时间 ──
@@ -666,9 +677,9 @@ def check_broken_chain(task_id, flow_log, task_state="", break_timeout=None, rev
 
     # 审议宽限期内不触发断链
     if grace_period and elapsed < grace_period:
-        return None  # 审议中，给更多时间
+        return None
 
-    # 检查目标部门是否有后续 flow 记录（作为 from 出现）
+    # ── 第 1 层：检查目标部门是否有后续 flow 记录（作为 from 出现）──
     target_has_response = False
     for entry in flow_log:
         entry_from = normalize_name(entry.get("from", ""))
@@ -683,8 +694,46 @@ def check_broken_chain(task_id, flow_log, task_state="", break_timeout=None, rev
                 continue
 
     if target_has_response:
-        return None  # 已经回应了
+        return None  # 已经流转到下一步，正常回应
 
+    # ── 第 2 层：检查 progress_log 判断目标部门是否正在工作 ──
+    # Agent 在处理任务时会通过 progress 命令更新进展，这会写入 progress_log。
+    # 如果目标部门有在最后 flow 之后的进展记录，说明该部门正在工作，不算断链。
+    if progress_log:
+        for p_entry in progress_log:
+            p_at_str = p_entry.get("at", "")
+            p_agent = normalize_name(str(p_entry.get("agent", "")).lower())
+            p_org = normalize_name(str(p_entry.get("org", "")).lower())
+            if not p_at_str:
+                continue
+            # progress 记录的 agent 或 org 匹配目标部门
+            if p_agent == last_to or p_org == last_to or p_org == dept_to:
+                try:
+                    p_at = datetime.datetime.fromisoformat(p_at_str.replace("Z", "+00:00"))
+                    if p_at > last_at:
+                        return None  # 目标部门有进展记录，正在工作中
+                except Exception:
+                    continue
+
+    # ── 第 3 层：检查 task.updatedAt 是否在最后 flow 之后被刷新 ──
+    # 任何对看板的写操作（progress/flow/state）都会刷新 updatedAt。
+    # 如果 updatedAt 被刷新了但 6 分钟内没有新的 flow，仍视为活跃（不断链）。
+    # 超过 6 分钟则说明虽有看板活动但流程未推进，此时才视为断链。
+    _ACTIVITY_GRACE_SEC = 360  # 看板活动宽限期：6 分钟内不断链
+    if task_updated_at:
+        try:
+            upd_str = task_updated_at.replace("Z", "+00:00").replace("+08:00", "")
+            upd_at = datetime.datetime.fromisoformat(upd_str)
+            if upd_at.tzinfo is None:
+                upd_at = upd_at.replace(tzinfo=datetime.timezone(datetime.timedelta(hours=8)))
+            if upd_at > last_at:
+                upd_elapsed = (now - upd_at).total_seconds()
+                if upd_elapsed < _ACTIVITY_GRACE_SEC:
+                    return None  # 看板 6 分钟内有活动，不判定断链
+        except Exception:
+            pass
+
+    # ── 三层检查均未通过，判定为断链 ──
     label_to = ID_TO_LABEL.get(last_to, last_to)
     label_from = ID_TO_LABEL.get(
         normalize_name(last.get("from", "")),
@@ -1587,7 +1636,15 @@ def _main_inner():
 
         # ── 检查 3：断链超时 ──
         if _enabled.get("broken_chain", True):
-            broken = check_broken_chain(task_id, flow_log, task_state, _break_timeout, _review_grace)
+            _progress_log = task.get("progress_log", [])
+            _task_updated_at = task.get("updatedAt", "")
+            broken = check_broken_chain(
+                task_id, flow_log, task_state,
+                progress_log=_progress_log,
+                task_updated_at=_task_updated_at,
+                break_timeout=_break_timeout,
+                review_grace=_review_grace,
+            )
             if broken:
                 target_id = broken["target_agent_id"]
                 target_label = broken["target_label"]
