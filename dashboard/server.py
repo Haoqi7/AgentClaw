@@ -1700,6 +1700,52 @@ def handle_scheduler_scan(threshold_sec=600):
             snapshot = sched.get('snapshot') or {}
             snap_state = snapshot.get('state')
             if snap_state and snap_state != state:
+                # ── BUG FIX #4: 回滚前检查六部是否已在执行 ──
+                # 原代码直接回滚 Doing→Zhongshu 并重新派发，导致六部收到重复派发。
+                # 修复：检查 flow_log 中是否有尚书省→六部的派发记录，
+                # 且该记录之后没有六部→尚书省的完成记录，说明六部正在执行中。
+                _LIU_BU_AGENT_SET = {'gongbu', 'bingbu', 'hubu', 'libu', 'xingbu', 'libu_hr'}
+                flow_log_entries = task.get('flow_log', [])
+
+                # 遍历 flow_log 统计六部派发和完成
+                _dispatched_to_liubu = False
+                _liubu_reported_back = False
+                _last_dispatch_dept = ''
+                for _fl_entry in flow_log_entries:
+                    _fl_from_raw = (_fl_entry.get('from', '') or '').strip()
+                    _fl_to_raw = (_fl_entry.get('to', '') or '').strip()
+                    _fl_from_id = _ORG_AGENT_MAP.get(_fl_from_raw, _fl_from_raw.lower())
+                    _fl_to_id = _ORG_AGENT_MAP.get(_fl_to_raw, _fl_to_raw.lower())
+                    if _fl_from_id and _fl_from_id == 'shangshu' and _fl_to_id in _LIU_BU_AGENT_SET:
+                        _dispatched_to_liubu = True
+                        _last_dispatch_dept = _fl_to_id
+                    if _fl_to_id and _fl_to_id == 'shangshu' and _fl_from_id in _LIU_BU_AGENT_SET:
+                        _liubu_reported_back = True
+
+                if _dispatched_to_liubu and not _liubu_reported_back:
+                    # 六部已被派发但尚未回报，不应回滚，改为催办六部
+                    log(f'⚠️ {task_id} 回滚跳过：{_last_dispatch_dept}已在执行中，改为催办')
+                    _scheduler_add_flow(task, f'回滚跳过：{_last_dispatch_dept}已在执行，改为催办')
+                    # 重置停滞计数器，避免重复触发
+                    sched['retryCount'] = 0
+                    sched['escalationLevel'] = 0
+                    sched['stallSince'] = None
+                    sched['lastProgressAt'] = now_iso()
+                    # 催办正在执行的六部
+                    if _last_dispatch_dept:
+                        msg = (
+                            f'⏰ 太子调度催办通知\n'
+                            f'任务ID: {task_id}\n'
+                            f'任务标题: {task.get("title", "")}\n'
+                            f'已停滞: {stalled_sec} 秒\n'
+                            f'系统检测到你已收到尚书省的派发并正在执行。\n'
+                            f'请尽快完成并上报尚书省。\n'
+                            f'⚠️ 看板已有此任务，请勿重复创建。'
+                        )
+                        wake_agent(_last_dispatch_dept, msg)
+                    changed = True
+                    continue
+
                 old_state = state
                 task['state'] = snap_state
                 task['org'] = snapshot.get('org', task.get('org', ''))
