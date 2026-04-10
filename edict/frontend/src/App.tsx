@@ -9,7 +9,7 @@ import SessionsPanel from './components/SessionsPanel';
 import MemorialPanel from './components/MemorialPanel';
 import TemplatePanel from './components/TemplatePanel';
 import MorningPanel from './components/MorningPanel';
-import AuditPanel from './components/AuditPanel';
+import AuditPanel from './components/AuditPanelEnhanced';
 import TaskModal from './components/TaskModal';
 // ConfirmDialog is used inside TaskModal as needed
 import Toaster from './components/Toaster';
