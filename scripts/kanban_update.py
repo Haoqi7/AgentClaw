@@ -986,7 +986,7 @@ def _is_valid_task_title(title):
     return True, ''
 
 
-def cmd_create(task_id, title, state, org, official, remark=None, current_session_key=None):
+def cmd_create(task_id, title, state, org, official, remark=None, current_session_key=None, huangshang_chat_id=None):
     """新建任务（收旨时立即调用）
     
     Args:
@@ -997,6 +997,7 @@ def cmd_create(task_id, title, state, org, official, remark=None, current_sessio
         official: 负责人
         remark: 备注
         current_session_key: 当前会话的sessionKey，如果有则使用该会话发送通知
+        huangshang_chat_id: 皇上的chat_id（如 "user:ou_xxx"），用于太子回奏时发送消息
     """
     # 清洗标题（剥离元数据）
     title = _sanitize_title(title)
@@ -1026,14 +1027,19 @@ def cmd_create(task_id, title, state, org, official, remark=None, current_sessio
                 "at": now_iso(), "from": "太子", "to": actual_org,
                 "remark": f"太子转交旨意至{actual_org}",
             })
-        tasks.insert(0, {
+        # 构建任务对象
+        task_obj = {
             "id": task_id, "title": title, "official": official,
             "org": actual_org, "state": state,
             "now": clean_remark[:60] if remark else f"已下旨，等待{actual_org}接旨",
             "eta": "-", "block": "无", "output": "", "ac": "",
             "flow_log": init_flow,
             "updatedAt": now_iso()
-        })
+        }
+        # 🔑 保存皇上的 chat_id（用于太子回奏）
+        if huangshang_chat_id:
+            task_obj['huangshang_chat_id'] = huangshang_chat_id
+        tasks.insert(0, task_obj)
         return tasks
     
     atomic_json_update(TASKS_FILE, modifier, [])
@@ -1537,8 +1543,93 @@ def cmd_todo(task_id, todo_id, title, status='not-started', detail=''):
     log.info(f'✅ {task_id} todo [{result_info[0]}/{result_info[1]}]: {todo_id} → {status}')
 
 
+# ═══════════════════════════════════════════════════════════════════════
+# 📨 皇上通信命令（太子回奏专用）
+#
+# 用法:
+#   # 获取皇上的 chat_id
+#   python3 kanban_update.py huangshang-chat-id JJC-xxx
+#
+#   # 向皇上发送消息
+#   python3 kanban_update.py huangshang-send JJC-xxx "消息内容"
+# ═══════════════════════════════════════════════════════════════════════
+
+def cmd_huangshang_chat_id(task_id):
+    """获取任务的皇上 chat_id。
+    
+    返回格式（JSON）:
+      - 找到: {"ok": true, "chat_id": "user:ou_xxx"}
+      - 未找到: {"ok": false, "chat_id": null, "error": "..."}
+    """
+    try:
+        tasks = load()
+        t = find_task(tasks, task_id)
+        if not t:
+            result = {'ok': False, 'chat_id': None, 'error': f'任务 {task_id} 不存在'}
+            print(json.dumps(result, ensure_ascii=False), flush=True)
+            return
+        
+        chat_id = t.get('huangshang_chat_id')
+        if chat_id:
+            result = {'ok': True, 'chat_id': chat_id}
+            log.info(f'📨 获取皇上chat_id: {task_id} → {chat_id}')
+        else:
+            result = {'ok': False, 'chat_id': None, 'error': '任务未保存皇上的 chat_id'}
+            log.warning(f'📨 获取皇上chat_id: {task_id} → 未保存')
+        print(json.dumps(result, ensure_ascii=False), flush=True)
+    except Exception as e:
+        log.error(f'huangshang-chat-id 失败: {e}')
+        print(json.dumps({'ok': False, 'chat_id': None, 'error': str(e)}, ensure_ascii=False), flush=True)
+
+
+def cmd_huangshang_send(task_id, message):
+    """向皇上发送消息（太子回奏专用）。
+    
+    从任务数据中读取 huangshang_chat_id，然后使用 openclaw message 工具发送消息。
+    
+    返回格式（JSON）:
+      - 成功: {"ok": true, "chat_id": "user:ou_xxx"}
+      - 失败: {"ok": false, "error": "..."}
+    """
+    try:
+        tasks = load()
+        t = find_task(tasks, task_id)
+        if not t:
+            result = {'ok': False, 'error': f'任务 {task_id} 不存在'}
+            print(json.dumps(result, ensure_ascii=False), flush=True)
+            return
+        
+        chat_id = t.get('huangshang_chat_id')
+        if not chat_id:
+            result = {'ok': False, 'error': '任务未保存皇上的 chat_id，无法发送消息'}
+            print(json.dumps(result, ensure_ascii=False), flush=True)
+            return
+        
+        # 使用 openclaw message 工具发送消息
+        # 格式: openclaw message send --target "user:ou_xxx" -m "消息内容"
+        result = subprocess.run(
+            ['openclaw', 'message', 'send', '--target', chat_id, '-m', message],
+            capture_output=True, text=True, timeout=60,
+        )
+        
+        if result.returncode == 0:
+            log.info(f'📨 已向皇上发送消息: {task_id} → {chat_id}')
+            print(json.dumps({'ok': True, 'chat_id': chat_id}, ensure_ascii=False), flush=True)
+        else:
+            error_msg = result.stderr or result.stdout or '未知错误'
+            log.warning(f'📨 向皇上发送消息失败: {error_msg}')
+            print(json.dumps({'ok': False, 'error': error_msg}, ensure_ascii=False), flush=True)
+    except subprocess.TimeoutExpired:
+        log.error(f'huangshang-send 超时: {task_id}')
+        print(json.dumps({'ok': False, 'error': '发送超时'}, ensure_ascii=False), flush=True)
+    except Exception as e:
+        log.error(f'huangshang-send 失败: {e}')
+        print(json.dumps({'ok': False, 'error': str(e)}, ensure_ascii=False), flush=True)
+
+
 _CMD_MIN_ARGS = {
     'create': 6, 'state': 3, 'flow': 5, 'done': 2, 'block': 3, 'todo': 4, 'progress': 3,
+    'huangshang-send': 3, 'huangshang-chat-id': 2,
 }
 
 if __name__ == '__main__':
@@ -1552,13 +1643,17 @@ if __name__ == '__main__':
         print(__doc__)
         sys.exit(1)
     if cmd == 'create':
-        # 解析可选 --current-session-key 参数
+        # 解析可选 --current-session-key 和 --huangshang-chat-id 参数
         create_pos = []
         current_session_key = None
+        huangshang_chat_id = None
         i = 1
         while i < len(args):
             if args[i] == '--current-session-key' and i + 1 < len(args):
                 current_session_key = args[i + 1]
+                i += 2
+            elif args[i] == '--huangshang-chat-id' and i + 1 < len(args):
+                huangshang_chat_id = args[i + 1]
                 i += 2
             else:
                 create_pos.append(args[i])
@@ -1570,7 +1665,8 @@ if __name__ == '__main__':
             create_pos[3] if len(create_pos) > 3 else '',
             create_pos[4] if len(create_pos) > 4 else '',
             create_pos[5] if len(create_pos) > 5 else None,
-            current_session_key=current_session_key
+            current_session_key=current_session_key,
+            huangshang_chat_id=huangshang_chat_id
         )
     elif cmd == 'state':
         cmd_state(args[1], args[2], args[3] if len(args)>3 else None)
@@ -1642,6 +1738,10 @@ if __name__ == '__main__':
         else:
             print(f'[session-keys] 未知子命令: {sub_cmd}（可用: save, lookup, list）', flush=True)
             sys.exit(1)
+    elif cmd == 'huangshang-chat-id':
+        cmd_huangshang_chat_id(args[1])
+    elif cmd == 'huangshang-send':
+        cmd_huangshang_send(args[1], args[2])
     else:
         print(__doc__)
         sys.exit(1)
