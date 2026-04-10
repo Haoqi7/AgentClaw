@@ -1,11 +1,13 @@
 /**
- * AuditPanelEnhanced.tsx — 流程监察面板（重构版）
+ * AuditPanelEnhanced.tsx — 流程监察面板（V2 重构版）
  *
  * 重构要点：
- * 1. 采用主 Tab 布局，将原来 6 个纵向板块精简为 3 个核心视图 + 1 个折叠说明
- * 2. "违规 & 通报" 合并为一个 Tab 内的子Tab切换，消除信息重叠
- * 3. 全面使用系统自带的 CSS class（.tab/.kpi/.chip/.btn 等），不再依赖 inline style
- * 4. 所有功能保持不变：任务卡片墙、违规记录、通报记录、归档回溯、详情滑出面板
+ * 1. 主界面精简：KPI + 任务卡片墙（每卡片内嵌最新3通报+3违规）+ 归档回溯 + 监察说明
+ * 2. 移除独立的「违规 & 通报」Tab，违规/通报信息直接嵌入任务卡片底部
+ * 3. 任务详情改为居中弹窗（非侧边栏滑出），点击遮罩或×号关闭
+ * 4. 弹窗内含子Tab：流转记录 / 违规记录 / 通报记录（含头部筛选） / 进展日志
+ * 5. 任务完成后自动归档到「归档任务回溯」
+ * 6. 保持原有代码风格与设计系统（CSS class + CSS variables）
  *
  * 接入方式不变：
  *   import AuditPanel from './components/AuditPanelEnhanced';
@@ -15,7 +17,7 @@ import { useStore, timeAgo } from '../store';
 import { api, type Task, type AuditViolation, type AuditNotification, type WatchedTask, type TaskActivityData } from '../api';
 
 /* ═══════════════════════════════════════════════════════════════════════
-   常量 & 样式（保持原有映射不变）
+   常量 & 样式
    ═══════════════════════════════════════════════════════════════════════ */
 
 const DEPT_COLOR: Record<string, string> = {
@@ -76,7 +78,7 @@ const NOTIF_CATS = [
 ] as const;
 
 /* ── 滚动条样式注入 ── */
-const SCROLLBAR_CSS = `.ag-scroll::-webkit-scrollbar{height:5px}.ag-scroll::-webkit-scrollbar-track{background:transparent}.ag-scroll::-webkit-scrollbar-thumb{background:var(--line);border-radius:3px}.ag-scroll{scrollbar-width:thin;scrollbar-color:var(--line) transparent}`;
+const SCROLLBAR_CSS = `.ag-scroll::-webkit-scrollbar{height:5px;width:5px}.ag-scroll::-webkit-scrollbar-track{background:transparent}.ag-scroll::-webkit-scrollbar-thumb{background:var(--line);border-radius:3px}.ag-scroll{scrollbar-width:thin;scrollbar-color:var(--line) transparent}`;
 
 /* ── 面板内子 Tab 样式 ── */
 const INNER_TAB_CSS = `
@@ -90,12 +92,9 @@ const INNER_TAB_CSS = `
 
 /* ── 卡片悬浮动画 ── */
 const CARD_CSS = `
-.audit-task-card { transition: border-color .15s, transform .1s, box-shadow .15s; }
+.audit-task-card { transition: border-color .15s, transform .1s, box-shadow .15s; cursor: pointer; }
 .audit-task-card:hover { border-color: var(--acc); transform: translateY(-2px); box-shadow: 0 4px 20px rgba(106,158,255,.1); }
-.audit-task-card.archived-card { transition: border-color .15s, transform .1s, box-shadow .15s; }
-.audit-task-card.archived-card:hover { border-color: #2e3d6a; transform: translateY(-2px); box-shadow: 0 4px 20px rgba(0,0,0,.15); }
-.audit-viol-card { transition: border-color .15s, box-shadow .15s; cursor: pointer; }
-.audit-viol-card:hover { border-color: #2e3d6a; box-shadow: 0 2px 12px rgba(0,0,0,.1); }
+.audit-task-card.archived-card:hover { border-color: #2e3d6a; box-shadow: 0 4px 20px rgba(0,0,0,.15); }
 `;
 
 /* ── 筛选 Pill 样式 ── */
@@ -106,11 +105,36 @@ const PILL_CSS = `
 .audit-pill.active { border-color: var(--acc); color: var(--acc); background: #0a1228; }
 `;
 
+/* ── 弹窗动画样式 ── */
+const MODAL_CSS = `
+@keyframes auditModalIn {
+  from { opacity: 0; transform: scale(0.92) translateY(20px); }
+  to { opacity: 1; transform: scale(1) translateY(0); }
+}
+@keyframes auditModalBgIn {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+.audit-modal-bg { animation: auditModalBgIn 0.2s ease-out; }
+.audit-modal-panel { animation: auditModalIn 0.25s ease-out; }
+`;
+
+/* ── 卡片内嵌记录行样式 ── */
+const INLINE_ROW_CSS = `
+.audit-inline-row { display: flex; align-items: center; gap: 6px; font-size: 11px; padding: 3px 0;
+  border-bottom: 1px solid var(--line); line-height: 1.4; }
+.audit-inline-row:last-child { border-bottom: none; }
+.audit-inline-row .ir-icon { flex-shrink: 0; font-size: 11px; }
+.audit-inline-row .ir-type { font-weight: 600; white-space: nowrap; }
+.audit-inline-row .ir-summary { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--muted); }
+.audit-inline-row .ir-time { color: var(--muted); white-space: nowrap; font-size: 10px; }
+`;
+
 /* ═══════════════════════════════════════════════════════════════════════
    主组件
    ═══════════════════════════════════════════════════════════════════════ */
 
-type MainTab = 'overview' | 'violNotif' | 'archive' | 'about';
+type MainTab = 'overview' | 'archive' | 'about';
 
 export default function AuditPanelEnhanced() {
   const auditData = useStore((s) => s.auditData);
@@ -158,7 +182,7 @@ export default function AuditPanelEnhanced() {
     } catch { return true; }
   })();
 
-  // ── 选中任务（详情面板） ──
+  // ── 选中任务（弹窗详情） ──
   const [selected, setSelected] = useState<{ id: string; archived: boolean } | null>(null);
   const [activityData, setActivityData] = useState<TaskActivityData | null>(null);
   const [activityLoading, setActivityLoading] = useState(false);
@@ -185,6 +209,19 @@ export default function AuditPanelEnhanced() {
     return src.filter(n => n.task_id === selected.id || (n.task_ids || []).includes(selected.id));
   }, [selected, notifications, archivedNotifs]);
 
+  // ── 弹窗内通报记录的分类筛选 ──
+  const [modalNotifCat, setModalNotifCat] = useState('all');
+  const selFilteredNotifs = useMemo(() => {
+    if (!selected) return [];
+    if (modalNotifCat === 'all') return selNotifs;
+    return selNotifs.filter(n => n.type === modalNotifCat);
+  }, [selected, selNotifs, modalNotifCat]);
+  const selNotifCounts = useMemo(() => {
+    const c: Record<string, number> = { all: selNotifs.length };
+    for (const n of selNotifs) c[n.type] = (c[n.type] || 0) + 1;
+    return c;
+  }, [selNotifs]);
+
   // ── 概览 Tab：卡片筛选 ──
   const [cardFilter, setCardFilter] = useState<'all' | 'violated' | 'clean'>('all');
   const filteredWatched = useMemo(() => {
@@ -193,42 +230,16 @@ export default function AuditPanelEnhanced() {
     return watchedTasks.filter(w => cardFilter === 'violated' ? vIds.has(w.task_id) : !vIds.has(w.task_id));
   }, [watchedTasks, violations, cardFilter]);
 
-  // ── 违规&通报 Tab ──
-  const [violNotifTab, setViolNotifTab] = useState<'violation' | 'notif'>('violation');
-
-  // 通知分类
-  const [notifCat, setNotifCat] = useState('all');
-  const recentNotifs = useMemo(() => {
-    const base = notifications.slice(-60).reverse();
-    return notifCat === 'all' ? base : base.filter(n => n.type === notifCat);
-  }, [notifications, notifCat]);
-  const notifCounts = useMemo(() => {
-    const c: Record<string, number> = { all: notifications.length };
-    for (const n of notifications) c[n.type] = (c[n.type] || 0) + 1;
-    return c;
-  }, [notifications]);
-
-  // 违规分组
-  const [showResolved, setShowResolved] = useState(false);
-  const activeViols = violations.filter(v => watchedTasks.some(w => w.task_id === v.task_id));
-  const resolvedViols = violations.filter(v => !watchedTasks.some(w => w.task_id === v.task_id));
-  const displayViols = showResolved ? violations : activeViols;
-  const violsByTask = useMemo(() => {
-    const m = new Map<string, AuditViolation[]>();
-    for (const v of displayViols.slice(-200).reverse()) {
-      if (!m.has(v.task_id)) m.set(v.task_id, []);
-      m.get(v.task_id)!.push(v);
-    }
-    return m;
-  }, [displayViols]);
-
   // ── 归档 Tab ──
   const [archiveCollapsed, setArchiveCollapsed] = useState(false);
 
   // ── 说明 Tab ──
   const [aboutCollapsed, setAboutCollapsed] = useState(true);
 
-  // ── KPI 数据 ──
+  // ── 预计算：全局最新违规/通报（用于 KPI 统计） ──
+  const activeViolsCount = violations.filter(v => watchedTasks.some(w => w.task_id === v.task_id)).length;
+
+  // ── KPI 数据（移除了"通报记录"KPI，改为"活跃违规"） ──
   const kpis = [
     { icon: isRunning && !isStale ? '🟢' : isRunning && isStale ? '🟡' : '🔴',
       label: '监察状态', value: isRunning && !isStale ? '运行中' : isRunning && isStale ? '可能停止' : '未启动',
@@ -236,25 +247,37 @@ export default function AuditPanelEnhanced() {
       badge: isRunning && !isStale ? 'ok' : isRunning && isStale ? 'warn' : 'err' },
     { icon: '📊', label: '累计检查', value: `${checkCount} 次`, sub: `发现 ${totalViolations} 项违规`, badge: '' },
     { icon: '👁️', label: '正在监察', value: `${watchedCount} 个任务`, sub: watchedCount > 0 ? '实时监控旨意任务' : '当前无活跃旨意', badge: '' },
-    { icon: '📢', label: '通报记录', value: `${notifications.length} 条`, sub: notifications.length > 0 ? '含越权通报+断链唤醒' : '暂无通报', badge: '' },
+    { icon: '🚨', label: '活跃违规', value: `${activeViolsCount} 项`, sub: notifications.length > 0 ? `通报 ${notifications.length} 条` : '暂无违规', badge: '' },
   ];
 
-  // ── 主 Tab 定义 ──
+  // ── 主 Tab 定义（移除"违规 & 通报"Tab） ──
   const mainTabs: { key: MainTab; label: string; icon: string; badge?: number }[] = [
     { key: 'overview', label: '监察总览', icon: '👁️' },
-    { key: 'violNotif', label: '违规 & 通报', icon: '🚨', badge: violations.length || undefined },
-    { key: 'archive', label: '归档回溯', icon: '📦', badge: archivedTasks.length || undefined },
+    { key: 'archive', label: '归档任务回溯', icon: '📦', badge: archivedTasks.length || undefined },
     { key: 'about', label: '监察说明', icon: '📋' },
   ];
 
+  // ── 辅助函数：获取某任务最新的3条违规 ──
+  const getTaskRecentViols = useCallback((taskId: string) => {
+    return violations.filter(v => v.task_id === taskId).slice(-3).reverse();
+  }, [violations]);
+
+  // ── 辅助函数：获取某任务最新的3条通报 ──
+  const getTaskRecentNotifs = useCallback((taskId: string) => {
+    return notifications.filter(n => n.task_id === taskId || (n.task_ids || []).includes(taskId)).slice(-3).reverse();
+  }, [notifications]);
+
   return (
     <div>
-      <style>{SCROLLBAR_CSS}{INNER_TAB_CSS}{CARD_CSS}{PILL_CSS}</style>
+      <style>{SCROLLBAR_CSS}{INNER_TAB_CSS}{CARD_CSS}{PILL_CSS}{MODAL_CSS}{INLINE_ROW_CSS}</style>
 
       {/* ═══ Header ═══ */}
       <div className="hdr" style={{ marginBottom: 14 }}>
         <div>
-          <div style={{ fontSize: 20, fontWeight: 800 }}>🛡️ 流程监察</div>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+            <span style={{ fontSize: 20, fontWeight: 800 }}>🛡️ 流程监察</span>
+            <span className="chip" style={{ fontSize: 10, opacity: 0.8, borderColor: 'var(--acc)', color: 'var(--acc)', background: 'var(--acc)' + '18' }}>v1</span>
+          </div>
           <div className="sub-text">监督三省六部任务流转完整性，检测越权、跳步、断链</div>
         </div>
         <div className="hdr-r">
@@ -294,7 +317,7 @@ export default function AuditPanelEnhanced() {
       {/* ═══ Tab: 监察总览 ═══ */}
       {mainTab === 'overview' && (
         <div>
-          {/* 任务卡片墙 */}
+          {/* 任务卡片区域标题 + 筛选 */}
           <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 12 }}>
             <div style={{ fontSize: 13, fontWeight: 700 }}>正在监察的任务 ({watchedCount})</div>
             <div style={{ display: 'flex', gap: 6 }}>
@@ -308,29 +331,22 @@ export default function AuditPanelEnhanced() {
           {filteredWatched.length === 0 ? (
             <div className="mb-empty">当前没有活跃旨意任务，监察处于待命状态</div>
           ) : (
-            <div className="ag-scroll" style={{ display: 'flex', gap: 12, overflowX: 'auto', paddingBottom: 6 }}>
+            /* ── 任务卡片网格（一行展示三个任务） ── */
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(360px, 1fr))', gap: 14, paddingBottom: 8 }}>
               {filteredWatched.map(w => {
                 const vCount = violations.filter(v => v.task_id === w.task_id).length;
                 const task = taskMap.get(w.task_id);
+                const recentViols = getTaskRecentViols(w.task_id);
+                const recentNotifs = getTaskRecentNotifs(w.task_id);
                 return (
                   <div key={w.task_id} onClick={() => openDetail(w.task_id)}
-                    className={`edict-card audit-task-card ${vCount > 0 ? '' : ''}`}
+                    className={`edict-card audit-task-card`}
                     style={{
-                      minWidth: 300, maxWidth: 300, flexShrink: 0,
                       borderLeft: `4px solid ${vCount > 0 ? 'var(--danger)' : 'var(--ok)'}`,
                     }}>
-                    {/* 任务 ID + 违规徽标 */}
+                    {/* 任务 ID + 状态 */}
                     <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 6 }}>
                       <span className="ec-id">{w.task_id}</span>
-                      {vCount > 0 && <span className="chip err">⚠ {vCount} 违规</span>}
-                      {vCount === 0 && <span className="chip ok">正常</span>}
-                    </div>
-
-                    {/* 标题 */}
-                    <div className="ec-title" style={{ fontSize: 14, marginBottom: 8 }}>{w.title}</div>
-
-                    {/* 状态 + 部门 */}
-                    <div className="ec-meta">
                       {(() => { const s = STATE_S[w.state]; return s ? (
                         <span className={`tag st-${w.state}`}>{s.label}</span>
                       ) : null; })()}
@@ -341,6 +357,9 @@ export default function AuditPanelEnhanced() {
                       }}>{w.org || '—'}</span>
                     </div>
 
+                    {/* 标题 */}
+                    <div className="ec-title" style={{ fontSize: 14, marginBottom: 8 }}>{w.title}</div>
+
                     {/* 进展摘要 */}
                     {(task?.now && task.now !== '-') && (
                       <div style={{ fontSize: 11, color: 'var(--muted)', marginBottom: 8, lineHeight: 1.5,
@@ -350,189 +369,78 @@ export default function AuditPanelEnhanced() {
                       </div>
                     )}
 
-                    {/* 底部信息 */}
-                    <div className="ec-footer">
+                    {/* 底部元信息 */}
+                    <div className="ec-footer" style={{ marginBottom: 8, paddingBottom: 0, borderBottom: 'none' }}>
                       <span className="hb">流转 {w.flow_count} 步</span>
                       <span className="hb">🔑 {w.session_key_count ?? (w.session_keys ? Object.keys(w.session_keys).length : 0)} 会话</span>
+                      {vCount > 0 && <span className="hb" style={{ color: 'var(--danger)' }}>⚠ {vCount} 违规</span>}
                       <span className="hb" style={{ marginLeft: 'auto' }}>
                         {task?.updatedAt ? timeAgo(task.updatedAt) : '—'}
                       </span>
                     </div>
+
+                    {/* ── 卡片内嵌：最新3条通报 + 3条违规（共6行） ── */}
+                    {(recentNotifs.length > 0 || recentViols.length > 0) && (
+                      <div style={{ borderTop: '1px solid var(--line)', marginTop: 0, paddingTop: 6 }}>
+                        {/* 最新通报记录行 */}
+                        {recentNotifs.slice(0, 3).map((n, i) => {
+                          const meta = NOTIF_META[n.type] || { icon: '📢', color: '#6a9eff' };
+                          return (
+                            <div key={`notif-${i}`} className="audit-inline-row">
+                              <span className="ir-icon">{meta.icon}</span>
+                              <span className="ir-type" style={{ color: meta.color }}>{n.type}</span>
+                              <span className="ir-summary">{n.summary || n.detail?.substring(0, 40) || ''}</span>
+                              <span className="ir-time">{timeAgo(n.sent_at)}</span>
+                            </div>
+                          );
+                        })}
+                        {/* 最新违规记录行 */}
+                        {recentViols.slice(0, 3).map((v, i) => {
+                          const meta = VIOL_META[v.type] || { icon: '⚠️', color: '#e8a040', bg: '#e8a04018' };
+                          return (
+                            <div key={`viol-${i}`} className="audit-inline-row">
+                              <span className="ir-icon">{meta.icon}</span>
+                              <span className="ir-type" style={{ color: meta.color }}>{v.type}</span>
+                              <span className="ir-summary">{v.detail?.substring(0, 40) || v.title}</span>
+                              <span className="ir-time">{timeAgo(v.detected_at)}</span>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    )}
                   </div>
                 );
               })}
             </div>
           )}
-
-          {/* 违规/通报快速摘要（点击跳转到违规通报Tab） */}
-          {(activeViols.length > 0 || notifications.length > 0) && (
-            <div style={{ marginTop: 20, display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
-              {/* 违规快速预览 */}
-              <div style={{ padding: 14, borderRadius: 12, background: 'var(--panel)', border: '1px solid var(--line)',
-                cursor: 'pointer' }} onClick={() => { setMainTab('violNotif'); setViolNotifTab('violation'); }}>
-                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 8 }}>
-                  <span style={{ fontSize: 12, fontWeight: 700, color: 'var(--danger)' }}>🚨 活跃违规 ({activeViols.length})</span>
-                  <span style={{ fontSize: 11, color: 'var(--muted)' }}>查看详情 →</span>
-                </div>
-                <div style={{ display: 'flex', flexDirection: 'column', gap: 4, maxHeight: 120, overflowY: 'auto' }}>
-                  {violsByTask.size === 0 ? (
-                    <div style={{ fontSize: 11, color: 'var(--muted)' }}>暂无活跃违规</div>
-                  ) : (
-                    Array.from(violsByTask.entries()).slice(0, 3).map(([tid, vs]) => {
-                      const task = taskMap.get(tid);
-                      return (
-                        <div key={tid} style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 11, padding: '4px 0' }}>
-                          <span style={{ color: 'var(--acc)', fontWeight: 600, whiteSpace: 'nowrap' }}>{tid}</span>
-                          <span style={{ flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                            {task?.title || vs[0]?.title || tid}
-                          </span>
-                          <span className="chip err" style={{ flexShrink: 0 }}>{vs.length}条</span>
-                        </div>
-                      );
-                    })
-                  )}
-                </div>
-              </div>
-
-              {/* 通报快速预览 */}
-              <div style={{ padding: 14, borderRadius: 12, background: 'var(--panel)', border: '1px solid var(--line)',
-                cursor: 'pointer' }} onClick={() => { setMainTab('violNotif'); setViolNotifTab('notif'); }}>
-                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 8 }}>
-                  <span style={{ fontSize: 12, fontWeight: 700, color: 'var(--warn)' }}>📢 最近通报 ({notifications.length})</span>
-                  <span style={{ fontSize: 11, color: 'var(--muted)' }}>查看详情 →</span>
-                </div>
-                <div style={{ display: 'flex', flexDirection: 'column', gap: 4, maxHeight: 120, overflowY: 'auto' }}>
-                  {notifications.length === 0 ? (
-                    <div style={{ fontSize: 11, color: 'var(--muted)' }}>暂无通报记录</div>
-                  ) : (
-                    notifications.slice(-3).reverse().map((n, i) => {
-                      const meta = NOTIF_META[n.type] || { icon: '📢', color: '#6a9eff' };
-                      return (
-                        <div key={`${n.sent_at}-${i}`} style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 11, padding: '4px 0' }}>
-                          <span>{meta.icon}</span>
-                          <span style={{ fontWeight: 600, color: meta.color }}>{n.type}</span>
-                          {n.to && <span style={{ color: 'var(--text)' }}>→ {n.to}</span>}
-                          <span style={{ flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', color: 'var(--muted)' }}>
-                            {n.summary || n.detail?.substring(0, 50) || ''}
-                          </span>
-                          <span style={{ color: 'var(--muted)', whiteSpace: 'nowrap' }}>{timeAgo(n.sent_at)}</span>
-                        </div>
-                      );
-                    })
-                  )}
-                </div>
-              </div>
-            </div>
-          )}
         </div>
       )}
 
-      {/* ═══ Tab: 违规 & 通报 ═══ */}
-      {mainTab === 'violNotif' && (
-        <div>
-          {/* 子 Tab */}
-          <div className="audit-inner-tabs">
-            <button className={`audit-inner-tab ${violNotifTab === 'violation' ? 'active' : ''}`}
-              onClick={() => setViolNotifTab('violation')}>
-              🚨 违规记录 ({activeViols.length}条活跃{resolvedViols.length > 0 ? `，${resolvedViols.length}条已解决` : ''})
-            </button>
-            <button className={`audit-inner-tab ${violNotifTab === 'notif' ? 'active' : ''}`}
-              onClick={() => setViolNotifTab('notif')}>
-              📢 通报记录 ({notifications.length})
-            </button>
-            <div style={{ marginLeft: 'auto', display: 'flex', alignItems: 'center', gap: 8 }}>
-              {violNotifTab === 'violation' && (
-                <span className={`audit-pill ${showResolved ? 'active' : ''}`}
-                  onClick={() => setShowResolved(!showResolved)}>
-                  {showResolved ? '✅ 含已解决' : '🔍 仅活跃'}
-                </span>
-              )}
-            </div>
-          </div>
-
-          {/* 违规列表 */}
-          {violNotifTab === 'violation' && (
-            displayViols.length === 0 ? (
-              <div className="mb-empty">{isRunning ? '✅ 所有任务流程正常，暂无违规' : '暂无监察数据'}</div>
-            ) : (
-              <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
-                {Array.from(violsByTask.entries()).map(([tid, vs]) => {
-                  const isResolved = !watchedTasks.some(w => w.task_id === tid);
-                  const task = taskMap.get(tid);
-                  return (
-                    <div key={tid} onClick={() => openDetail(tid)}
-                      className={`edict-card audit-viol-card ${isResolved ? 'archived' : ''}`}>
-                      <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-                        <span className="ec-id">{tid}</span>
-                        <span className="ec-title" style={{ flex: 1, fontSize: 13, marginBottom: 0 }}>
-                          {task?.title || vs[0]?.title || tid}
-                        </span>
-                        {isResolved && <span className="chip ok">✓ 已解决</span>}
-                        <span className="chip err">{vs.length} 条违规</span>
-                      </div>
-                    </div>
-                  );
-                })}
-              </div>
-            )
-          )}
-
-          {/* 通报列表 */}
-          {violNotifTab === 'notif' && (
-            <>
-              {/* 分类筛选 */}
-              <div style={{ display: 'flex', gap: 6, marginBottom: 12, flexWrap: 'wrap' }}>
-                {NOTIF_CATS.map(c => {
-                  const cnt = notifCounts[c.key] || 0;
-                  if (c.key !== 'all' && cnt === 0) return null;
-                  const meta = NOTIF_META[c.key as string];
-                  return (
-                    <span key={c.key}
-                      className={`audit-pill ${notifCat === c.key ? 'active' : ''}`}
-                      onClick={() => setNotifCat(c.key)}>
-                      {meta?.icon || '📋'} {c.key === 'all' ? '全部' : c.key} {cnt > 0 ? `(${cnt})` : ''}
-                    </span>
-                  );
-                })}
-              </div>
-              {recentNotifs.length === 0 ? (
-                <div className="mb-empty">{isRunning ? '✅ 暂无通报，所有流程正常' : '暂无监察数据'}</div>
-              ) : (
-                <div className="ag-scroll" style={{ maxHeight: 520, overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: 6, paddingRight: 4 }}>
-                  {recentNotifs.map((n, i) => <NotifCard key={`${n.sent_at}-${i}`} n={n} onClick={() => {
-                    const tid = n.task_id || (n.task_ids || [])[0];
-                    if (tid) openDetail(tid);
-                  }} />)}
-                </div>
-              )}
-            </>
-          )}
-        </div>
-      )}
-
-      {/* ═══ Tab: 归档回溯 ═══ */}
+      {/* ═══ Tab: 归档任务回溯 ═══ */}
       {mainTab === 'archive' && (
         <div>
           <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 12 }}>
-            <div style={{ fontSize: 13, fontWeight: 700 }}>归档任务 ({archivedTasks.length})</div>
+            <div style={{ fontSize: 13, fontWeight: 700 }}>归档任务回溯 ({archivedTasks.length})</div>
             <span className="audit-pill" onClick={() => setArchiveCollapsed(!archiveCollapsed)}>
               {archiveCollapsed ? '▸ 展开' : '▾ 折叠'}
             </span>
           </div>
           {!archiveCollapsed && (archivedTasks.length === 0 ? (
-            <div className="mb-empty">暂无归档任务</div>
+            <div className="mb-empty">暂无归档任务，任务完成后将自动归档于此</div>
           ) : (
-            <div className="ag-scroll" style={{ display: 'flex', gap: 12, overflowX: 'auto', paddingBottom: 6 }}>
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(360px, 1fr))', gap: 14, paddingBottom: 8 }}>
               {archivedTasks.map(t => {
                 const st = STATE_S[t.state] || STATE_S.Done;
                 const avCount = archivedViolations.filter(v => v.task_id === t.id).length;
                 const flowLog = t.flow_log || [];
                 const lastFlow = flowLog[flowLog.length - 1];
+                // 归档任务的最新违规/通报
+                const archViols = archivedViolations.filter(v => v.task_id === t.id).slice(-3).reverse();
+                const archNotifs = archivedNotifs.filter(n => n.task_id === t.id || (n.task_ids || []).includes(t.id)).slice(-3).reverse();
                 return (
                   <div key={t.id} onClick={() => openDetail(t.id, true)}
                     className="edict-card archived audit-task-card archived-card"
                     style={{
-                      minWidth: 300, maxWidth: 300, flexShrink: 0,
                       borderLeft: `4px solid ${t.state === 'Cancelled' ? '#888' : 'var(--ok)'}`,
                     }}>
                     <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 6 }}>
@@ -559,6 +467,34 @@ export default function AuditPanelEnhanced() {
                         <span>{timeAgo(lastFlow.at)}</span>
                       </div>
                     )}
+
+                    {/* ── 归档卡片内嵌：最新3条通报 + 3条违规 ── */}
+                    {(archNotifs.length > 0 || archViols.length > 0) && (
+                      <div style={{ borderTop: '1px solid var(--line)', marginTop: 0, paddingTop: 6 }}>
+                        {archNotifs.slice(0, 3).map((n, i) => {
+                          const meta = NOTIF_META[n.type] || { icon: '📢', color: '#6a9eff' };
+                          return (
+                            <div key={`notif-${i}`} className="audit-inline-row">
+                              <span className="ir-icon">{meta.icon}</span>
+                              <span className="ir-type" style={{ color: meta.color }}>{n.type}</span>
+                              <span className="ir-summary">{n.summary || n.detail?.substring(0, 40) || ''}</span>
+                              <span className="ir-time">{timeAgo(n.sent_at)}</span>
+                            </div>
+                          );
+                        })}
+                        {archViols.slice(0, 3).map((v, i) => {
+                          const meta = VIOL_META[v.type] || { icon: '⚠️', color: '#e8a040', bg: '#e8a04018' };
+                          return (
+                            <div key={`viol-${i}`} className="audit-inline-row">
+                              <span className="ir-icon">{meta.icon}</span>
+                              <span className="ir-type" style={{ color: meta.color }}>{v.type}</span>
+                              <span className="ir-summary">{v.detail?.substring(0, 40) || v.title}</span>
+                              <span className="ir-time">{timeAgo(v.detected_at)}</span>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    )}
                   </div>
                 );
               })}
@@ -583,28 +519,31 @@ export default function AuditPanelEnhanced() {
               <div><b>越权调用：</b>from→to 不在合法流转对表内，监察会通过会话通知太子</div>
               <div><b>流程跳步：</b>缺少必要环节，仅记录不通知</div>
               <div><b>断链超时：</b>某部门超时未回应，监察自动唤醒 + 通知上级</div>
-              <div><b>自动归档：</b>任务完成超过 5 分钟自动归档，可在「归档回溯」Tab 中查看日志</div>
+              <div><b>自动归档：</b>任务完成超过 5 分钟自动归档，可在「归档任务回溯」Tab 中查看日志</div>
               <div><b>运行方式：</b>pipeline_watchdog.py 每 60 秒由 run_loop.sh 调用一次</div>
             </div>
           )}
         </div>
       )}
 
-      {/* ═══ 详情面板（滑出覆盖层）═══ */}
+      {/* ═══ 任务详情弹窗（居中弹出，非侧边栏）═══ */}
       {selected && selTask && (
-        <div onClick={closeDetail} className="modal-bg" style={{ padding: 0, alignItems: 'stretch', justifyContent: 'flex-end' }}>
-          <style>{`@keyframes slideIn{from{transform:translateX(100%)}to{transform:translateX(0)}}`}</style>
-          <div onClick={e => e.stopPropagation()} style={{
-            width: 560, maxWidth: '90vw', background: 'var(--panel)', borderLeft: '1px solid var(--line)',
-            overflowY: 'auto', animation: 'slideIn 0.25s ease-out', display: 'flex', flexDirection: 'column',
-            boxShadow: '-4px 0 24px rgba(0,0,0,0.3)',
-          }}>
-            {/* 面板头部 */}
+        <div onClick={closeDetail} className="modal-bg audit-modal-bg"
+          style={{ alignItems: 'center', justifyContent: 'center', padding: 20 }}>
+          <div onClick={e => e.stopPropagation()} className="audit-modal-panel"
+            style={{
+              width: 720, maxWidth: '95vw', maxHeight: '85vh',
+              background: 'var(--panel)', borderRadius: 16,
+              border: '1px solid var(--line)',
+              overflow: 'hidden', display: 'flex', flexDirection: 'column',
+              boxShadow: '0 8px 48px rgba(0,0,0,0.4)',
+            }}>
+            {/* ── 弹窗头部 ── */}
             <div style={{ position: 'sticky', top: 0, zIndex: 10, background: 'var(--panel)',
               borderBottom: '1px solid var(--line)', padding: '16px 20px' }}>
               <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-                <div>
-                  <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 4 }}>
+                <div style={{ minWidth: 0, flex: 1 }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 4, flexWrap: 'wrap' }}>
                     <span className="modal-id">{selected.id}</span>
                     {(() => { const s = STATE_S[selTask.state]; return s ? (
                       <span className={`tag st-${selTask.state}`}>{s.label}</span>
@@ -619,7 +558,7 @@ export default function AuditPanelEnhanced() {
                   </div>
                   <div className="modal-title" style={{ fontSize: 18, marginBottom: 0 }}>{selTask.title}</div>
                 </div>
-                <div style={{ display: 'flex', gap: 8 }}>
+                <div style={{ display: 'flex', gap: 8, flexShrink: 0 }}>
                   <button onClick={() => { closeDetail(); setModalTaskId(selected.id); }} className="btn btn-g">
                     📋 看板
                   </button>
@@ -627,7 +566,7 @@ export default function AuditPanelEnhanced() {
                 </div>
               </div>
 
-              {/* 标签切换 */}
+              {/* 子 Tab 切换 */}
               <div className="audit-inner-tabs" style={{ marginTop: 12, marginBottom: 0 }}>
                 {([
                   ['flow', '📜 流转记录', selTask.flow_log?.length || 0],
@@ -636,18 +575,37 @@ export default function AuditPanelEnhanced() {
                   ['progress', '📊 进展日志', activityData?.activity?.length || 0],
                 ] as const).map(([k, label, cnt]) => (
                   <button key={k} className={`audit-inner-tab ${detailTab === k ? 'active' : ''}`}
-                    onClick={() => setDetailTab(k)}>
+                    onClick={() => { setDetailTab(k); setModalNotifCat('all'); }}>
                     {label}{cnt > 0 && <span className="tbadge">{cnt}</span>}
                   </button>
                 ))}
               </div>
             </div>
 
-            {/* 标签内容 */}
-            <div className="modal-body" style={{ padding: '16px 20px' }}>
+            {/* ── 弹窗内容区 ── */}
+            <div className="modal-body ag-scroll" style={{ padding: '16px 20px', overflowY: 'auto', flex: 1 }}>
               {detailTab === 'flow' && <FlowTimelinePanel task={selTask} />}
               {detailTab === 'violation' && <ViolationPanel violations={selViolations} />}
-              {detailTab === 'notif' && <NotifPanel notifs={selNotifs} />}
+              {detailTab === 'notif' && (
+                <div>
+                  {/* 通报记录头部筛选（与主界面风格一致） */}
+                  <div style={{ display: 'flex', gap: 6, marginBottom: 12, flexWrap: 'wrap' }}>
+                    {NOTIF_CATS.map(c => {
+                      const cnt = selNotifCounts[c.key] || 0;
+                      if (c.key !== 'all' && cnt === 0) return null;
+                      const meta = NOTIF_META[c.key as string];
+                      return (
+                        <span key={c.key}
+                          className={`audit-pill ${modalNotifCat === c.key ? 'active' : ''}`}
+                          onClick={() => setModalNotifCat(c.key)}>
+                          {meta?.icon || '📋'} {c.key === 'all' ? '全部' : c.key} {cnt > 0 ? `(${cnt})` : ''}
+                        </span>
+                      );
+                    })}
+                  </div>
+                  <NotifPanel notifs={selFilteredNotifs} />
+                </div>
+              )}
               {detailTab === 'progress' && <ProgressPanel activity={activityData} loading={activityLoading}
                 progressLog={selTask.activity || []} taskNow={selTask.now} taskTodos={selTask.todos} />}
             </div>
@@ -655,13 +613,19 @@ export default function AuditPanelEnhanced() {
         </div>
       )}
 
-      {/* 详情面板 — 无任务数据时的兜底 */}
+      {/* ═══ 弹窗 — 无任务数据时的兜底（归档任务）═══ */}
       {selected && !selTask && (
-        <div onClick={closeDetail} className="modal-bg" style={{ padding: 0, alignItems: 'stretch', justifyContent: 'flex-end' }}>
-          <div onClick={e => e.stopPropagation()} style={{
-            width: 560, maxWidth: '90vw', background: 'var(--panel)', borderLeft: '1px solid var(--line)',
-            overflowY: 'auto', padding: 20, animation: 'slideIn 0.25s ease-out',
-          }}>
+        <div onClick={closeDetail} className="modal-bg audit-modal-bg"
+          style={{ alignItems: 'center', justifyContent: 'center', padding: 20 }}>
+          <div onClick={e => e.stopPropagation()} className="audit-modal-panel"
+            style={{
+              width: 720, maxWidth: '95vw', maxHeight: '85vh',
+              background: 'var(--panel)', borderRadius: 16,
+              border: '1px solid var(--line)',
+              overflow: 'hidden', display: 'flex', flexDirection: 'column',
+              boxShadow: '0 8px 48px rgba(0,0,0,0.4)',
+              padding: 20,
+            }}>
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 }}>
               <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
                 <span className="modal-id">{selected.id}</span>
@@ -671,7 +635,7 @@ export default function AuditPanelEnhanced() {
             </div>
             {selected.archived ? (
               <ArchiveDetailFallback taskId={selected.id} archivedViols={archivedViolations}
-                archivedNotifs={archivedNotifs} openDetail={openDetail} closeDetail={closeDetail} />
+                archivedNotifs={archivedNotifs} />
             ) : (
               <div className="mb-empty">任务数据未找到，请刷新后重试</div>
             )}
@@ -683,7 +647,7 @@ export default function AuditPanelEnhanced() {
 }
 
 /* ═══════════════════════════════════════════════════════════════════════
-   子组件（保持原有功能不变）
+   子组件
    ═══════════════════════════════════════════════════════════════════════ */
 
 /* ── 通知卡片 ── */
@@ -897,9 +861,8 @@ function ProgressPanel({ activity, loading, progressLog, taskNow, taskTodos }: {
 }
 
 /* ── 归档详情面板（任务数据不在 liveStatus 中时的兜底）── */
-function ArchiveDetailFallback({ taskId, archivedViols, archivedNotifs, openDetail, closeDetail }: {
+function ArchiveDetailFallback({ taskId, archivedViols, archivedNotifs }: {
   taskId: string; archivedViols: AuditViolation[]; archivedNotifs: AuditNotification[];
-  openDetail: (id: string, archived?: boolean) => void; closeDetail: () => void;
 }) {
   const [tab, setTab] = useState<'violation' | 'notif'>('violation');
   const viols = archivedViols.filter(v => v.task_id === taskId);
