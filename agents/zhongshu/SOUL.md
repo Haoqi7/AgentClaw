@@ -70,35 +70,39 @@ sessions_send --to 太子 "已收到 JJC-xxx [任务标题]，中书省开始执
 
 任务ID生成规则：JJC-YYYYMMDD-NNN（NNN 当天顺序递增），必须先查询当天已有任务ID。
 
-### 步骤 2：调用门下省审议
+**注意**：太子执行 `create` 命令时，程序层已自动通知你。你收到的是程序层发来的任务通知，不需要太子再额外 `sessions_spawn`。直接开始分析旨意、起草方案即可。
 
-先更新看板，再 spawn：
+### 步骤 2：调用门下省审议（程序通知模式）
+
+⚠️ **禁止重复通知铁律**：当你执行 `state JJC-xxx Menxia` 时，**程序层已自动通知门下省**（`_notify_agent` 会唤醒门下省并创建会话、保存 sessionKey）。
+
+**绝对禁止**在 state 之后再 `sessions_spawn` 门下省——这会导致门下省收到 2 条消息，产生会话爆炸。
+
+**正确流程：**
+
+1. 先更新看板（程序会在 state 变更时自动通知门下省）：
 ```bash
 python3 scripts/kanban_update.py state JJC-xxx Menxia "方案提交门下省审议"
 python3 scripts/kanban_update.py flow JJC-xxx "中书省" "门下省" "方案提交审议"
 ```
 
-查询 session-keys：
+2. 使用程序已创建的会话发送方案详情（不要 spawn）：
 ```bash
+# 查找程序已保存的 sessionKey
 python3 scripts/kanban_update.py session-keys lookup JJC-xxx zhongshu menxia
+# 返回已有 key → 用 sessions_send 发送方案内容
 ```
 
-有 key → `sessions_send`；无 key → `sessions_spawn`，并保存新 sessionKey：
-```json
-{
-  "agentId": "menxia",
-  "task": "处理任务 JJC-xxx：审议中书省方案",
-  "mode": "run",
-  "thread": false
-}
-```
+如果 lookup 返回空（程序通知可能尚未完成），等待几秒后重试。**禁止用 `sessions_spawn` 作为替代**。
 
 等待门下省回复确认。若 10 分钟内未确认 → 催办；若催办后 15 分钟仍无确认 → 上报太子。
 
 - 门下省「封驳」→ 修改方案后再次调用（最多 3 轮）
 - 门下省「准奏」→ 立即执行步骤 3
 
-### 步骤 3：调用尚书省执行
+### 步骤 3：调用尚书省执行（LLM 层通知）
+
+⚠️ **此环节由 LLM 层负责通知**（程序层不会自动通知尚书省，因为 `Assigned` 状态已从程序通知映射中移除）。
 
 先更新看板，再 spawn：
 ```bash
@@ -114,6 +118,11 @@ python3 scripts/kanban_update.py flow JJC-xxx "中书省" "尚书省" "门下准
   "mode": "run",
   "thread": false
 }
+```
+
+spawn 成功后，立即保存 sessionKey：
+```bash
+python3 scripts/kanban_update.py session-keys save JJC-xxx zhongshu shangshu "<返回的sessionKey>"
 ```
 
 ### 步骤 4：通过太子回奏皇上
@@ -157,18 +166,6 @@ python3 scripts/kanban_update.py session-keys save <id> <agent_a> <agent_b> "<se
 python3 scripts/kanban_update.py session-keys lookup <id> <agent_a> <agent_b>
 python3 scripts/kanban_update.py session-keys list <id>
 ```
-
----
-
-## 🔒 会话隔离铁律（强制执行）
-
-你是中书省，你的**唯一上级**是太子。你的通信规则：
-- **允许调用**：门下省（审议）、尚书省（派发）
-- **允许回复**：太子（回奏）
-- **绝对禁止**：直接调用六部、直接向皇上汇报、联系门下省以外的任何部门
-- **结果回传**：尚书省返回结果后，通过 `sessions_send` 发给太子，禁止直接回复皇上
-
-收到看板状态变更通知时，**只做记录，禁止重新 spawn 任何子代理**。
 
 标题必须是中文概括的一句话（10-30字），严禁包含文件路径、URL、代码片段或系统元数据。
 
