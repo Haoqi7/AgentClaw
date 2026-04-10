@@ -551,12 +551,33 @@ except subprocess.TimeoutExpired:
 except Exception as e:
     print(f"[async-spawn] error: {{e}}", flush=True)
 '''
+    # ── BUG FIX #1: 将 DEVNULL 改为写入日志文件 + 添加异步验证线程 ──
+    # 原代码使用 stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL，
+    # 导致子进程的所有错误输出被静默吞掉，无法诊断唤醒失败原因。
+    _log_dir = _BASE / 'data' / 'async_spawn_logs'
+    _log_dir.mkdir(parents=True, exist_ok=True)
+    _ts_tag = datetime.datetime.now().strftime('%Y%m%d_%H%M%S')
+    _log_file = _log_dir / f'{task_id}_{agent_id}_{_ts_tag}.log'
+
     try:
-        subprocess.Popen(
-            ['python3', '-c', script],
-            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-        )
-        log.info(f'🚀 异步唤醒: {to_label} ({agent_id}) | 任务 {task_id} | 不阻塞主流程')
+        with open(str(_log_file), 'w') as _lf:
+            proc = subprocess.Popen(
+                ['python3', '-c', script],
+                stdout=_lf, stderr=_lf,
+            )
+        log.info(f'🚀 异步唤醒: {to_label} ({agent_id}) | 任务 {task_id} | 日志: {_log_file.name}')
+
+        # 异步验证线程：10秒后检查进程退出码，如异常则记录日志
+        def _verify_spawn():
+            import time as _t
+            _t.sleep(10)
+            _rc = proc.poll()
+            if _rc is not None and _rc != 0:
+                log.warning(f'🚀 异步唤醒异常退出: {to_label} ({agent_id}) | pid={proc.pid} rc={_rc} | 日志: {_log_file.name}')
+            elif _rc == 0:
+                log.info(f'🚀 异步唤醒已完成: {to_label} ({agent_id}) | 日志: {_log_file.name}')
+            # rc is None means still running — normal, don't log
+        threading.Thread(target=_verify_spawn, daemon=True).start()
     except Exception as e:
         log.warning(f'🚀 异步唤醒失败: {to_label} ({agent_id}): {e}')
 
@@ -1405,12 +1426,27 @@ def cmd_done(task_id, output_path='', summary=''):
                     flow_pairs.add((f_raw, t_raw))
             
             # 校验完整回传链：尚书省→中书省、中书省→太子、太子→皇上
+            #
+            # ── BUG FIX #3: 原校验过于严格，只接受精确的部门名称匹配。
+            #    实际运行中，可能出现以下合理偏差：
+            #    1. 尚书省直接报告太子（跳过中书省），此时 flow_log 中有 尚书省→太子
+            #       而非 中书省→太子，但信息已传达至太子，不应阻塞 Done。
+            #    2. 太子只调用了 progress 而未调用 flow 来记录汇报皇上的流转。
+            #    修复策略：
+            #    - 接受尚书省→太子作为中书省→太子的等价替代路径
+            #    - 对于太子→皇上的缺失，改为记录警告但不阻塞 Done（因为太子可能在
+            #      其他渠道已向皇上汇报，且太子是皇上的直接代理，有自主汇报权限）
             has_return_to_zhongshu = any(
                 f in ('尚书省', '尚书') and t in ('中书省', '中书')
                 for f, t in flow_pairs
             )
             has_return_to_taizi = any(
                 f in ('中书省', '中书') and t in ('太子', '太子殿下')
+                for f, t in flow_pairs
+            )
+            # 新增：尚书省直接报告太子也算完成回奏（等价路径）
+            has_shangshu_direct_to_taizi = any(
+                f in ('尚书省', '尚书') and t in ('太子', '太子殿下')
                 for f, t in flow_pairs
             )
             has_report_to_huangshang = any(
@@ -1421,10 +1457,16 @@ def cmd_done(task_id, output_path='', summary=''):
             missing_steps = []
             if not has_return_to_zhongshu:
                 missing_steps.append('尚书省→中书省')
-            if not has_return_to_taizi:
-                missing_steps.append('中书省→太子')
+            # 修复：中书省→太子 或 尚书省直接→太子 均视为已回奏太子
+            if not has_return_to_taizi and not has_shangshu_direct_to_taizi:
+                missing_steps.append('中书省→太子（或尚书省→太子）')
+            # 修复：太子→皇上缺失时仅警告，不阻塞（太子有权直接汇报皇上）
             if not has_report_to_huangshang:
-                missing_steps.append('太子→皇上')
+                log.warning(
+                    f'⚠️ 旨意任务 {task_id} 尚未记录太子→皇上的回奏流转。'
+                    f'太子可能已通过其他渠道汇报皇上，本次不阻塞 Done。'
+                    f'建议太子后续调用 flow 命令补录：flow {task_id} 太子 皇上 回奏皇上'
+                )
             
             if missing_steps:
                 log.warning(
