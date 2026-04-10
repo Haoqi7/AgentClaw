@@ -1,12 +1,13 @@
 /**
- * AuditPanelEnhanced.tsx — 流程监察面板（增强版）
+ * AuditPanelEnhanced.tsx — 流程监察面板（重构版）
  *
- * 相比原版 AuditPanel.tsx 的改进：
- * 1. 任务卡片墙：横向滚动固定大小卡片，展示任务名称、流转步数、违规标记
- * 2. 详情滑出面板：点击卡片展开流转时间线、违规记录、通报记录、进展日志
- * 3. 归档任务回溯：归档任务可查看完整流转日志和违规/通报历史
+ * 重构要点：
+ * 1. 采用主 Tab 布局，将原来 6 个纵向板块精简为 3 个核心视图 + 1 个折叠说明
+ * 2. "违规 & 通报" 合并为一个 Tab 内的子Tab切换，消除信息重叠
+ * 3. 全面使用系统自带的 CSS class（.tab/.kpi/.chip/.btn 等），不再依赖 inline style
+ * 4. 所有功能保持不变：任务卡片墙、违规记录、通报记录、归档回溯、详情滑出面板
  *
- * 接入方式（仅修改 App.tsx 一行导入即可替换原面板）：
+ * 接入方式不变：
  *   import AuditPanel from './components/AuditPanelEnhanced';
  */
 import { useEffect, useRef, useState, useMemo, useCallback } from 'react';
@@ -14,7 +15,7 @@ import { useStore, timeAgo } from '../store';
 import { api, type Task, type AuditViolation, type AuditNotification, type WatchedTask, type TaskActivityData } from '../api';
 
 /* ═══════════════════════════════════════════════════════════════════════
-   常量 & 样式
+   常量 & 样式（保持原有映射不变）
    ═══════════════════════════════════════════════════════════════════════ */
 
 const DEPT_COLOR: Record<string, string> = {
@@ -77,15 +78,48 @@ const NOTIF_CATS = [
 /* ── 滚动条样式注入 ── */
 const SCROLLBAR_CSS = `.ag-scroll::-webkit-scrollbar{height:5px}.ag-scroll::-webkit-scrollbar-track{background:transparent}.ag-scroll::-webkit-scrollbar-thumb{background:var(--line);border-radius:3px}.ag-scroll{scrollbar-width:thin;scrollbar-color:var(--line) transparent}`;
 
+/* ── 面板内子 Tab 样式 ── */
+const INNER_TAB_CSS = `
+.audit-inner-tabs { display: flex; gap: 0; border-bottom: 1px solid var(--line); margin-bottom: 14px; }
+.audit-inner-tab { font-size: 12px; padding: 8px 16px; border-radius: 8px 8px 0 0; cursor: pointer; color: var(--muted);
+  border: 1px solid transparent; border-bottom: none; white-space: nowrap; position: relative; bottom: -1px;
+  transition: all .15s; user-select: none; background: none; }
+.audit-inner-tab:hover { color: var(--text); background: var(--panel); }
+.audit-inner-tab.active { color: var(--text); background: var(--panel); border-color: var(--line); font-weight: 600; }
+`;
+
+/* ── 卡片悬浮动画 ── */
+const CARD_CSS = `
+.audit-task-card { transition: border-color .15s, transform .1s, box-shadow .15s; }
+.audit-task-card:hover { border-color: var(--acc); transform: translateY(-2px); box-shadow: 0 4px 20px rgba(106,158,255,.1); }
+.audit-task-card.archived-card { transition: border-color .15s, transform .1s, box-shadow .15s; }
+.audit-task-card.archived-card:hover { border-color: #2e3d6a; transform: translateY(-2px); box-shadow: 0 4px 20px rgba(0,0,0,.15); }
+.audit-viol-card { transition: border-color .15s, box-shadow .15s; cursor: pointer; }
+.audit-viol-card:hover { border-color: #2e3d6a; box-shadow: 0 2px 12px rgba(0,0,0,.1); }
+`;
+
+/* ── 筛选 Pill 样式 ── */
+const PILL_CSS = `
+.audit-pill { font-size: 11px; padding: 3px 10px; border-radius: 999px; cursor: pointer; border: 1px solid var(--line);
+  background: var(--panel); color: var(--muted); transition: all .12s; white-space: nowrap; }
+.audit-pill:hover { border-color: var(--acc); color: var(--text); }
+.audit-pill.active { border-color: var(--acc); color: var(--acc); background: #0a1228; }
+`;
+
 /* ═══════════════════════════════════════════════════════════════════════
    主组件
    ═══════════════════════════════════════════════════════════════════════ */
+
+type MainTab = 'overview' | 'violNotif' | 'archive' | 'about';
 
 export default function AuditPanelEnhanced() {
   const auditData = useStore((s) => s.auditData);
   const liveStatus = useStore((s) => s.liveStatus);
   const loadAudit = useStore((s) => s.loadAudit);
   const setModalTaskId = useStore((s) => s.setModalTaskId);
+
+  // 主 Tab 状态
+  const [mainTab, setMainTab] = useState<MainTab>('overview');
 
   useEffect(() => { loadAudit(); }, [loadAudit]);
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
@@ -151,7 +185,7 @@ export default function AuditPanelEnhanced() {
     return src.filter(n => n.task_id === selected.id || (n.task_ids || []).includes(selected.id));
   }, [selected, notifications, archivedNotifs]);
 
-  // ── 卡片筛选 ──
+  // ── 概览 Tab：卡片筛选 ──
   const [cardFilter, setCardFilter] = useState<'all' | 'violated' | 'clean'>('all');
   const filteredWatched = useMemo(() => {
     if (cardFilter === 'all') return watchedTasks;
@@ -159,9 +193,11 @@ export default function AuditPanelEnhanced() {
     return watchedTasks.filter(w => cardFilter === 'violated' ? vIds.has(w.task_id) : !vIds.has(w.task_id));
   }, [watchedTasks, violations, cardFilter]);
 
-  // ── 通知分类 ──
+  // ── 违规&通报 Tab ──
+  const [violNotifTab, setViolNotifTab] = useState<'violation' | 'notif'>('violation');
+
+  // 通知分类
   const [notifCat, setNotifCat] = useState('all');
-  const [notifCollapsed, setNotifCollapsed] = useState(false);
   const recentNotifs = useMemo(() => {
     const base = notifications.slice(-60).reverse();
     return notifCat === 'all' ? base : base.filter(n => n.type === notifCat);
@@ -172,7 +208,7 @@ export default function AuditPanelEnhanced() {
     return c;
   }, [notifications]);
 
-  // ── 违规分组 ──
+  // 违规分组
   const [showResolved, setShowResolved] = useState(false);
   const activeViols = violations.filter(v => watchedTasks.some(w => w.task_id === v.task_id));
   const resolvedViols = violations.filter(v => !watchedTasks.some(w => w.task_id === v.task_id));
@@ -186,346 +222,429 @@ export default function AuditPanelEnhanced() {
     return m;
   }, [displayViols]);
 
-  // ── 归档区域折叠 ──
+  // ── 归档 Tab ──
   const [archiveCollapsed, setArchiveCollapsed] = useState(false);
+
+  // ── 说明 Tab ──
+  const [aboutCollapsed, setAboutCollapsed] = useState(true);
+
+  // ── KPI 数据 ──
+  const kpis = [
+    { icon: isRunning && !isStale ? '🟢' : isRunning && isStale ? '🟡' : '🔴',
+      label: '监察状态', value: isRunning && !isStale ? '运行中' : isRunning && isStale ? '可能停止' : '未启动',
+      sub: lastCheckAgo ? `最后检查: ${lastCheckAgo}` : '暂无数据',
+      badge: isRunning && !isStale ? 'ok' : isRunning && isStale ? 'warn' : 'err' },
+    { icon: '📊', label: '累计检查', value: `${checkCount} 次`, sub: `发现 ${totalViolations} 项违规`, badge: '' },
+    { icon: '👁️', label: '正在监察', value: `${watchedCount} 个任务`, sub: watchedCount > 0 ? '实时监控旨意任务' : '当前无活跃旨意', badge: '' },
+    { icon: '📢', label: '通报记录', value: `${notifications.length} 条`, sub: notifications.length > 0 ? '含越权通报+断链唤醒' : '暂无通报', badge: '' },
+  ];
+
+  // ── 主 Tab 定义 ──
+  const mainTabs: { key: MainTab; label: string; icon: string; badge?: number }[] = [
+    { key: 'overview', label: '监察总览', icon: '👁️' },
+    { key: 'violNotif', label: '违规 & 通报', icon: '🚨', badge: violations.length || undefined },
+    { key: 'archive', label: '归档回溯', icon: '📦', badge: archivedTasks.length || undefined },
+    { key: 'about', label: '监察说明', icon: '📋' },
+  ];
 
   return (
     <div>
-      <style>{SCROLLBAR_CSS}</style>
+      <style>{SCROLLBAR_CSS}{INNER_TAB_CSS}{CARD_CSS}{PILL_CSS}</style>
 
       {/* ═══ Header ═══ */}
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 }}>
+      <div className="hdr" style={{ marginBottom: 14 }}>
         <div>
-          <div style={{ fontSize: 20, fontWeight: 800, marginBottom: 4 }}>🛡️ 流程监察</div>
-          <div style={{ fontSize: 12, color: 'var(--muted)' }}>监督三省六部任务流转完整性，检测越权、跳步、断链</div>
+          <div style={{ fontSize: 20, fontWeight: 800 }}>🛡️ 流程监察</div>
+          <div className="sub-text">监督三省六部任务流转完整性，检测越权、跳步、断链</div>
         </div>
-        <button className="btn btn-g" onClick={loadAudit} style={{ fontSize: 12, padding: '6px 14px' }}>⟳ 刷新</button>
+        <div className="hdr-r">
+          <button className="btn btn-g" onClick={loadAudit}>⟳ 刷新</button>
+        </div>
       </div>
 
-      {/* ═══ 状态卡片 ═══ */}
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 12, marginBottom: 20 }}>
-        {[
-          { icon: isRunning && !isStale ? '🟢' : isRunning && isStale ? '🟡' : '🔴',
-            label: '监察状态', value: isRunning && !isStale ? '运行中' : isRunning && isStale ? '可能停止' : '未启动',
-            sub: lastCheckAgo ? `最后检查: ${lastCheckAgo}` : '暂无数据' },
-          { icon: '📊', label: '累计检查', value: `${checkCount} 次`, sub: `发现 ${totalViolations} 项违规` },
-          { icon: '👁️', label: '正在监察', value: `${watchedCount} 个任务`, sub: watchedCount > 0 ? '实时监控旨意任务' : '当前无活跃旨意' },
-          { icon: '📢', label: '通报记录', value: `${notifications.length} 条`, sub: notifications.length > 0 ? '含越权通报+断链唤醒' : '暂无通报' },
-        ].map((s, i) => (
-          <div key={i} style={{ padding: 14, borderRadius: 10, background: 'var(--panel2)', border: '1px solid var(--line)' }}>
-            <div style={{ fontSize: 11, color: 'var(--muted)', marginBottom: 6 }}>{s.icon} {s.label}</div>
-            <div style={{ fontSize: 18, fontWeight: 800 }}>{s.value}</div>
-            <div style={{ fontSize: 11, color: 'var(--muted)', marginTop: 4 }}>{s.sub}</div>
+      {/* ═══ KPI 指标行 ═══ */}
+      <div className="off-kpi" style={{ marginBottom: 16 }}>
+        {kpis.map((k, i) => (
+          <div key={i} className="kpi">
+            <div className="kpi-v" style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+              <span>{k.icon}</span>
+              <span style={{ fontSize: 16 }}>{k.value}</span>
+            </div>
+            <div className="kpi-l" style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+              <span>{k.label}</span>
+              {k.badge && <span className={`chip ${k.badge}`}>{k.sub}</span>}
+              {!k.badge && <span style={{ fontSize: 10, color: 'var(--muted)', opacity: 0.7 }}>{k.sub}</span>}
+            </div>
           </div>
         ))}
       </div>
 
-      {/* ═══ 任务卡片墙（横向滚动）═══ */}
-      <Section title={`👁️ 正在监察的任务 (${watchedCount})`}
-        extra={
-          <div style={{ display: 'flex', gap: 6 }}>
-            {([['all', '全部'], ['violated', '有违规'], ['clean', '正常']] as const).map(([k, l]) => (
-              <button key={k} onClick={() => setCardFilter(k)} style={{
-                fontSize: 11, padding: '3px 10px', borderRadius: 4, cursor: 'pointer',
-                background: cardFilter === k ? '#6a9eff22' : 'var(--panel2)',
-                color: cardFilter === k ? '#6a9eff' : 'var(--muted)',
-                border: `1px solid ${cardFilter === k ? '#6a9eff44' : 'var(--line)'}`,
-                fontWeight: cardFilter === k ? 600 : 400,
-              }}>{l}</button>
-            ))}
+      {/* ═══ 主 Tab 导航 ═══ */}
+      <div className="tabs">
+        {mainTabs.map(t => (
+          <div key={t.key}
+            className={`tab ${mainTab === t.key ? 'active' : ''}`}
+            onClick={() => setMainTab(t.key)}>
+            {t.icon} {t.label}
+            {t.badge !== undefined && t.badge > 0 && <span className="tbadge">{t.badge}</span>}
           </div>
-        }
-      >
-        {filteredWatched.length === 0 ? (
-          <div className="mb-empty" style={{ padding: 20 }}>当前没有活跃旨意任务，监察处于待命状态</div>
-        ) : (
-          <div className="ag-scroll" style={{ display: 'flex', gap: 12, overflowX: 'auto', paddingBottom: 6 }}>
-            {filteredWatched.map(w => {
-              const vCount = violations.filter(v => v.task_id === w.task_id).length;
-              const task = taskMap.get(w.task_id);
-              return (
-                <div key={w.task_id} onClick={() => openDetail(w.task_id)}
-                  style={{
-                    minWidth: 300, maxWidth: 300, flexShrink: 0,
-                    padding: 14, borderRadius: 10, cursor: 'pointer',
-                    background: 'var(--panel2)', border: `1px solid ${vCount > 0 ? '#ff527044' : 'var(--line)'}`,
-                    borderLeft: `4px solid ${vCount > 0 ? '#ff5270' : '#2ecc8a'}`,
-                    transition: 'box-shadow 0.2s',
-                  }}
-                  onMouseEnter={e => { (e.currentTarget as HTMLDivElement).style.boxShadow = '0 4px 20px rgba(0,0,0,0.15)'; }}
-                  onMouseLeave={e => { (e.currentTarget as HTMLDivElement).style.boxShadow = 'none'; }}
-                >
-                  {/* 任务 ID + 标题 */}
-                  <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8 }}>
-                    <span style={{ fontSize: 11, padding: '2px 8px', borderRadius: 4, fontWeight: 600,
-                      background: '#6a9eff22', color: '#6a9eff', whiteSpace: 'nowrap' }}>{w.task_id}</span>
-                    {vCount > 0 && (
-                      <span style={{ fontSize: 10, padding: '1px 6px', borderRadius: 3,
-                        background: '#ff527022', color: '#ff5270', fontWeight: 600 }}>⚠ {vCount}违规</span>
-                    )}
-                  </div>
-                  <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 10, lineHeight: 1.4,
-                    overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{w.title}</div>
+        ))}
+      </div>
 
-                  {/* 状态 + 部门 */}
-                  <div style={{ display: 'flex', gap: 6, marginBottom: 10 }}>
-                    {(() => { const s = STATE_S[w.state]; return s ? (
-                      <span style={{ fontSize: 11, padding: '2px 8px', borderRadius: 4, fontWeight: 600,
-                        background: s.bg, color: s.color }}>{s.label}</span>
-                    ) : null; })()}
-                    <span style={{ fontSize: 11, padding: '2px 8px', borderRadius: 4,
-                      background: (DEPT_COLOR[w.org] || '#888') + '18',
-                      color: DEPT_COLOR[w.org] || '#888' }}>{w.org || '—'}</span>
-                  </div>
-
-                  {/* 进展摘要 */}
-                  {(task?.now && task.now !== '-') && (
-                    <div style={{ fontSize: 11, color: 'var(--muted)', marginBottom: 10, lineHeight: 1.5,
-                      overflow: 'hidden', textOverflow: 'ellipsis', display: '-webkit-box', WebkitLineClamp: 2, WebkitBoxOrient: 'vertical' }}>
-                      {task.now}
-                    </div>
-                  )}
-
-                  {/* 底部信息 */}
-                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center',
-                    fontSize: 11, color: 'var(--muted)', borderTop: '1px solid var(--line)', paddingTop: 8, marginTop: 'auto' }}>
-                    <span>流转 {w.flow_count} 步</span>
-                    <span>🔑 {w.session_key_count ?? (w.session_keys ? Object.keys(w.session_keys).length : 0)} 会话</span>
-                    <span>{task?.updatedAt ? timeAgo(task.updatedAt) : '—'}</span>
-                  </div>
-                </div>
-              );
-            })}
+      {/* ═══ Tab: 监察总览 ═══ */}
+      {mainTab === 'overview' && (
+        <div>
+          {/* 任务卡片墙 */}
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 12 }}>
+            <div style={{ fontSize: 13, fontWeight: 700 }}>正在监察的任务 ({watchedCount})</div>
+            <div style={{ display: 'flex', gap: 6 }}>
+              {([['all', '全部'], ['violated', '有违规'], ['clean', '正常']] as const).map(([k, l]) => (
+                <span key={k} className={`audit-pill ${cardFilter === k ? 'active' : ''}`}
+                  onClick={() => setCardFilter(k)}>{l}</span>
+              ))}
+            </div>
           </div>
-        )}
-      </Section>
 
-      {/* ═══ 通报记录 ═══ */}
-      <div style={{ marginBottom: 20 }}>
-        <div style={{ fontSize: 14, fontWeight: 700, marginBottom: 10, borderBottom: '1px solid var(--line)', paddingBottom: 6,
-          display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-          <span>📢 通报记录 ({recentNotifs.length})</span>
-          <button onClick={() => setNotifCollapsed(!notifCollapsed)} style={{
-            fontSize: 11, padding: '3px 10px', borderRadius: 4, cursor: 'pointer',
-            background: 'var(--panel2)', color: 'var(--text)', border: '1px solid var(--line)',
-          }}>{notifCollapsed ? '▸ 展开' : '▾ 折叠'}</button>
-        </div>
-        {!notifCollapsed && (<>
-          <div style={{ display: 'flex', gap: 6, marginBottom: 10, flexWrap: 'wrap' }}>
-            {NOTIF_CATS.map(c => {
-              const cnt = notifCounts[c.key] || 0;
-              if (c.key !== 'all' && cnt === 0) return null;
-              const meta = NOTIF_META[c.key as string];
-              return (
-                <button key={c.key} onClick={() => setNotifCat(c.key)} style={{
-                  fontSize: 11, padding: '4px 10px', borderRadius: 4, cursor: 'pointer', whiteSpace: 'nowrap',
-                  background: notifCat === c.key ? (meta?.color || '#6a9eff') + '22' : 'var(--panel2)',
-                  color: notifCat === c.key ? (meta?.color || '#6a9eff') : 'var(--muted)',
-                  border: `1px solid ${notifCat === c.key ? (meta?.color || '#6a9eff') + '44' : 'var(--line)'}`,
-                  fontWeight: notifCat === c.key ? 600 : 400,
-                }}>{meta?.icon || '📋'} {c.key === 'all' ? '全部' : c.key} {cnt > 0 ? `(${cnt})` : ''}</button>
-              );
-            })}
-          </div>
-          {recentNotifs.length === 0 ? (
-            <div className="mb-empty" style={{ padding: 20 }}>{isRunning ? '✅ 暂无通报，所有流程正常' : '暂无监察数据'}</div>
+          {filteredWatched.length === 0 ? (
+            <div className="mb-empty">当前没有活跃旨意任务，监察处于待命状态</div>
           ) : (
-            <div className="ag-scroll" style={{ maxHeight: 440, overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: 6, paddingRight: 4 }}>
-              {recentNotifs.map((n, i) => <NotifCard key={`${n.sent_at}-${i}`} n={n} onClick={() => {
-                const tid = n.task_id || (n.task_ids || [])[0];
-                if (tid) openDetail(tid);
-              }} />)}
+            <div className="ag-scroll" style={{ display: 'flex', gap: 12, overflowX: 'auto', paddingBottom: 6 }}>
+              {filteredWatched.map(w => {
+                const vCount = violations.filter(v => v.task_id === w.task_id).length;
+                const task = taskMap.get(w.task_id);
+                return (
+                  <div key={w.task_id} onClick={() => openDetail(w.task_id)}
+                    className={`edict-card audit-task-card ${vCount > 0 ? '' : ''}`}
+                    style={{
+                      minWidth: 300, maxWidth: 300, flexShrink: 0,
+                      borderLeft: `4px solid ${vCount > 0 ? 'var(--danger)' : 'var(--ok)'}`,
+                    }}>
+                    {/* 任务 ID + 违规徽标 */}
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 6 }}>
+                      <span className="ec-id">{w.task_id}</span>
+                      {vCount > 0 && <span className="chip err">⚠ {vCount} 违规</span>}
+                      {vCount === 0 && <span className="chip ok">正常</span>}
+                    </div>
+
+                    {/* 标题 */}
+                    <div className="ec-title" style={{ fontSize: 14, marginBottom: 8 }}>{w.title}</div>
+
+                    {/* 状态 + 部门 */}
+                    <div className="ec-meta">
+                      {(() => { const s = STATE_S[w.state]; return s ? (
+                        <span className={`tag st-${w.state}`}>{s.label}</span>
+                      ) : null; })()}
+                      <span className="tag" style={{
+                        borderColor: (DEPT_COLOR[w.org] || '#888') + '44',
+                        color: DEPT_COLOR[w.org] || '#888',
+                        background: (DEPT_COLOR[w.org] || '#888') + '18',
+                      }}>{w.org || '—'}</span>
+                    </div>
+
+                    {/* 进展摘要 */}
+                    {(task?.now && task.now !== '-') && (
+                      <div style={{ fontSize: 11, color: 'var(--muted)', marginBottom: 8, lineHeight: 1.5,
+                        overflow: 'hidden', textOverflow: 'ellipsis', display: '-webkit-box',
+                        WebkitLineClamp: 2, WebkitBoxOrient: 'vertical' }}>
+                        {task.now}
+                      </div>
+                    )}
+
+                    {/* 底部信息 */}
+                    <div className="ec-footer">
+                      <span className="hb">流转 {w.flow_count} 步</span>
+                      <span className="hb">🔑 {w.session_key_count ?? (w.session_keys ? Object.keys(w.session_keys).length : 0)} 会话</span>
+                      <span className="hb" style={{ marginLeft: 'auto' }}>
+                        {task?.updatedAt ? timeAgo(task.updatedAt) : '—'}
+                      </span>
+                    </div>
+                  </div>
+                );
+              })}
             </div>
           )}
-        </>)}
-      </div>
 
-      {/* ═══ 违规记录（按任务分组）═══ */}
-      <Section title={`🚨 违规记录 (${activeViols.length}条活跃${resolvedViols.length > 0 ? `，${resolvedViols.length}条已解决` : ''}，${violsByTask.size}个任务)`}
-        extra={
-          <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
-            <button className={`btn ${showResolved ? 'btn-g' : ''}`} onClick={() => setShowResolved(!showResolved)} style={{
-              fontSize: 11, padding: '4px 12px', borderRadius: 4,
-              border: showResolved ? '1px solid var(--line)' : '1px solid transparent',
-              opacity: showResolved ? 1 : 0.6, cursor: 'pointer',
-            }}>{showResolved ? '✅ 显示全部（含已解决）' : '🔍 仅显示活跃违规'}</button>
-          </div>
-        }
-      >
-        {displayViols.length === 0 ? (
-          <div className="mb-empty" style={{ padding: 20 }}>{isRunning ? '✅ 所有任务流程正常，暂无违规' : '暂无监察数据'}</div>
-        ) : (
-          <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
-            {Array.from(violsByTask.entries()).map(([tid, vs]) => {
-              const isResolved = !watchedTasks.some(w => w.task_id === tid);
-              const task = taskMap.get(tid);
-              return (
-                <div key={tid} onClick={() => openDetail(tid)}
-                  style={{ borderRadius: 10, background: isResolved ? 'var(--panel1)' : 'var(--panel2)',
-                    border: '1px solid var(--line)', overflow: 'hidden', opacity: isResolved ? 0.55 : 1,
-                    cursor: 'pointer', transition: 'box-shadow 0.2s',
-                  }}
-                  onMouseEnter={e => { (e.currentTarget as HTMLDivElement).style.boxShadow = '0 2px 12px rgba(0,0,0,0.1)'; }}
-                  onMouseLeave={e => { (e.currentTarget as HTMLDivElement).style.boxShadow = 'none'; }}
-                >
-                  <div style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '10px 14px' }}>
-                    <span style={{ fontSize: 12, fontWeight: 700, padding: '2px 8px', borderRadius: 4,
-                      background: '#6a9eff18', color: '#6a9eff' }}>{tid}</span>
-                    <span style={{ fontSize: 13, fontWeight: 600, flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                      {task?.title || vs[0]?.title || tid}</span>
-                    {isResolved && <span style={{ fontSize: 10, padding: '2px 6px', borderRadius: 4,
-                      background: '#2ecc8a18', color: '#2ecc8a' }}>✓ 已解决</span>}
-                    <span style={{ fontSize: 11, padding: '2px 8px', borderRadius: 4,
-                      background: vs.length > 0 ? '#ff527018' : '#2ecc8a18',
-                      color: vs.length > 0 ? '#ff5270' : '#2ecc8a' }}>{vs.length} 条违规</span>
-                  </div>
-                  <div style={{ maxHeight: 0, overflow: 'hidden' }} />
+          {/* 违规/通报快速摘要（点击跳转到违规通报Tab） */}
+          {(activeViols.length > 0 || notifications.length > 0) && (
+            <div style={{ marginTop: 20, display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
+              {/* 违规快速预览 */}
+              <div style={{ padding: 14, borderRadius: 12, background: 'var(--panel)', border: '1px solid var(--line)',
+                cursor: 'pointer' }} onClick={() => { setMainTab('violNotif'); setViolNotifTab('violation'); }}>
+                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 8 }}>
+                  <span style={{ fontSize: 12, fontWeight: 700, color: 'var(--danger)' }}>🚨 活跃违规 ({activeViols.length})</span>
+                  <span style={{ fontSize: 11, color: 'var(--muted)' }}>查看详情 →</span>
                 </div>
-              );
-            })}
-          </div>
-        )}
-      </Section>
-
-      {/* ═══ 归档任务回溯 ═══ */}
-      <Section title={`📦 归档任务回溯 (${archivedTasks.length})`}
-        extra={
-          <button onClick={() => setArchiveCollapsed(!archiveCollapsed)} style={{
-            fontSize: 11, padding: '3px 10px', borderRadius: 4, cursor: 'pointer',
-            background: 'var(--panel2)', color: 'var(--text)', border: '1px solid var(--line)',
-          }}>{archiveCollapsed ? '▸ 展开' : '▾ 折叠'}</button>
-        }
-      >
-        {!archiveCollapsed && (archivedTasks.length === 0 ? (
-          <div className="mb-empty" style={{ padding: 20 }}>暂无归档任务</div>
-        ) : (
-          <div className="ag-scroll" style={{ display: 'flex', gap: 12, overflowX: 'auto', paddingBottom: 6 }}>
-            {archivedTasks.map(t => {
-              const st = STATE_S[t.state] || STATE_S.Done;
-              const avCount = archivedViolations.filter(v => v.task_id === t.id).length;
-              const flowLog = t.flow_log || [];
-              const lastFlow = flowLog[flowLog.length - 1];
-              return (
-                <div key={t.id} onClick={() => openDetail(t.id, true)}
-                  style={{
-                    minWidth: 300, maxWidth: 300, flexShrink: 0,
-                    padding: 14, borderRadius: 10, cursor: 'pointer',
-                    background: 'var(--panel2)', border: `1px solid ${avCount > 0 ? '#ff527044' : 'var(--line)'}`,
-                    borderLeft: `4px solid ${t.state === 'Cancelled' ? '#888' : '#2ecc8a'}`,
-                    transition: 'box-shadow 0.2s',
-                  }}
-                  onMouseEnter={e => { (e.currentTarget as HTMLDivElement).style.boxShadow = '0 4px 20px rgba(0,0,0,0.15)'; }}
-                  onMouseLeave={e => { (e.currentTarget as HTMLDivElement).style.boxShadow = 'none'; }}
-                >
-                  <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8 }}>
-                    <span style={{ fontSize: 11, padding: '2px 8px', borderRadius: 4, fontWeight: 600,
-                      background: '#88888822', color: '#888', whiteSpace: 'nowrap' }}>{t.id}</span>
-                    <span style={{ fontSize: 11, padding: '2px 8px', borderRadius: 4, fontWeight: 600,
-                      background: st.bg, color: st.color }}>{st.label}</span>
-                  </div>
-                  <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 10, lineHeight: 1.4,
-                    overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{t.title}</div>
-
-                  {/* 流转摘要 */}
-                  <div style={{ fontSize: 11, color: 'var(--muted)', marginBottom: 10, lineHeight: 1.5 }}>
-                    流转 {flowLog.length} 步
-                    {avCount > 0 && <span style={{ color: '#ff5270', marginLeft: 8 }}>· {avCount} 条违规</span>}
-                  </div>
-                  {t.output && (
-                    <div style={{ fontSize: 11, color: 'var(--muted)', marginBottom: 10, lineHeight: 1.5,
-                      overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                      📎 {t.output}
-                    </div>
-                  )}
-
-                  {/* 最后流转 */}
-                  {lastFlow && (
-                    <div style={{ fontSize: 11, color: 'var(--muted)', borderTop: '1px solid var(--line)', paddingTop: 8 }}>
-                      最后: {lastFlow.from} → {lastFlow.to} {timeAgo(lastFlow.at)}
-                    </div>
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 4, maxHeight: 120, overflowY: 'auto' }}>
+                  {violsByTask.size === 0 ? (
+                    <div style={{ fontSize: 11, color: 'var(--muted)' }}>暂无活跃违规</div>
+                  ) : (
+                    Array.from(violsByTask.entries()).slice(0, 3).map(([tid, vs]) => {
+                      const task = taskMap.get(tid);
+                      return (
+                        <div key={tid} style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 11, padding: '4px 0' }}>
+                          <span style={{ color: 'var(--acc)', fontWeight: 600, whiteSpace: 'nowrap' }}>{tid}</span>
+                          <span style={{ flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                            {task?.title || vs[0]?.title || tid}
+                          </span>
+                          <span className="chip err" style={{ flexShrink: 0 }}>{vs.length}条</span>
+                        </div>
+                      );
+                    })
                   )}
                 </div>
-              );
-            })}
-          </div>
-        ))}
-      </Section>
+              </div>
 
-      {/* ═══ 说明 ═══ */}
-      <div style={{ marginTop: 20, padding: 16, borderRadius: 10, background: 'var(--panel2)',
-        border: '1px solid var(--line)', fontSize: 12, color: 'var(--muted)', lineHeight: 1.8 }}>
-        <div style={{ fontWeight: 700, marginBottom: 8, color: 'var(--text)' }}>📋 监察说明</div>
-        <div><b>监察范围：</b>仅监察 JJC- 开头的旨意任务，不监察对话</div>
-        <div><b>完整流程：</b>皇上 → 太子 → 中书省 → 门下省 → 中书省 → 尚书省 → 六部 → 尚书省 → 中书省 → 太子 → 皇上</div>
-        <div><b>越权调用：</b>from→to 不在合法流转对表内，监察会通过会话通知太子</div>
-        <div><b>流程跳步：</b>缺少必要环节，仅记录不通知</div>
-        <div><b>断链超时：</b>某部门超时未回应，监察自动唤醒 + 通知上级</div>
-        <div><b>自动归档：</b>任务完成超过 5 分钟自动归档，可在上方「归档任务回溯」中查看日志</div>
-        <div><b>运行方式：</b>pipeline_watchdog.py 每 60 秒由 run_loop.sh 调用一次</div>
-      </div>
+              {/* 通报快速预览 */}
+              <div style={{ padding: 14, borderRadius: 12, background: 'var(--panel)', border: '1px solid var(--line)',
+                cursor: 'pointer' }} onClick={() => { setMainTab('violNotif'); setViolNotifTab('notif'); }}>
+                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 8 }}>
+                  <span style={{ fontSize: 12, fontWeight: 700, color: 'var(--warn)' }}>📢 最近通报 ({notifications.length})</span>
+                  <span style={{ fontSize: 11, color: 'var(--muted)' }}>查看详情 →</span>
+                </div>
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 4, maxHeight: 120, overflowY: 'auto' }}>
+                  {notifications.length === 0 ? (
+                    <div style={{ fontSize: 11, color: 'var(--muted)' }}>暂无通报记录</div>
+                  ) : (
+                    notifications.slice(-3).reverse().map((n, i) => {
+                      const meta = NOTIF_META[n.type] || { icon: '📢', color: '#6a9eff' };
+                      return (
+                        <div key={`${n.sent_at}-${i}`} style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 11, padding: '4px 0' }}>
+                          <span>{meta.icon}</span>
+                          <span style={{ fontWeight: 600, color: meta.color }}>{n.type}</span>
+                          {n.to && <span style={{ color: 'var(--text)' }}>→ {n.to}</span>}
+                          <span style={{ flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', color: 'var(--muted)' }}>
+                            {n.summary || n.detail?.substring(0, 50) || ''}
+                          </span>
+                          <span style={{ color: 'var(--muted)', whiteSpace: 'nowrap' }}>{timeAgo(n.sent_at)}</span>
+                        </div>
+                      );
+                    })
+                  )}
+                </div>
+              </div>
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* ═══ Tab: 违规 & 通报 ═══ */}
+      {mainTab === 'violNotif' && (
+        <div>
+          {/* 子 Tab */}
+          <div className="audit-inner-tabs">
+            <button className={`audit-inner-tab ${violNotifTab === 'violation' ? 'active' : ''}`}
+              onClick={() => setViolNotifTab('violation')}>
+              🚨 违规记录 ({activeViols.length}条活跃{resolvedViols.length > 0 ? `，${resolvedViols.length}条已解决` : ''})
+            </button>
+            <button className={`audit-inner-tab ${violNotifTab === 'notif' ? 'active' : ''}`}
+              onClick={() => setViolNotifTab('notif')}>
+              📢 通报记录 ({notifications.length})
+            </button>
+            <div style={{ marginLeft: 'auto', display: 'flex', alignItems: 'center', gap: 8 }}>
+              {violNotifTab === 'violation' && (
+                <span className={`audit-pill ${showResolved ? 'active' : ''}`}
+                  onClick={() => setShowResolved(!showResolved)}>
+                  {showResolved ? '✅ 含已解决' : '🔍 仅活跃'}
+                </span>
+              )}
+            </div>
+          </div>
+
+          {/* 违规列表 */}
+          {violNotifTab === 'violation' && (
+            displayViols.length === 0 ? (
+              <div className="mb-empty">{isRunning ? '✅ 所有任务流程正常，暂无违规' : '暂无监察数据'}</div>
+            ) : (
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+                {Array.from(violsByTask.entries()).map(([tid, vs]) => {
+                  const isResolved = !watchedTasks.some(w => w.task_id === tid);
+                  const task = taskMap.get(tid);
+                  return (
+                    <div key={tid} onClick={() => openDetail(tid)}
+                      className={`edict-card audit-viol-card ${isResolved ? 'archived' : ''}`}>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+                        <span className="ec-id">{tid}</span>
+                        <span className="ec-title" style={{ flex: 1, fontSize: 13, marginBottom: 0 }}>
+                          {task?.title || vs[0]?.title || tid}
+                        </span>
+                        {isResolved && <span className="chip ok">✓ 已解决</span>}
+                        <span className="chip err">{vs.length} 条违规</span>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            )
+          )}
+
+          {/* 通报列表 */}
+          {violNotifTab === 'notif' && (
+            <>
+              {/* 分类筛选 */}
+              <div style={{ display: 'flex', gap: 6, marginBottom: 12, flexWrap: 'wrap' }}>
+                {NOTIF_CATS.map(c => {
+                  const cnt = notifCounts[c.key] || 0;
+                  if (c.key !== 'all' && cnt === 0) return null;
+                  const meta = NOTIF_META[c.key as string];
+                  return (
+                    <span key={c.key}
+                      className={`audit-pill ${notifCat === c.key ? 'active' : ''}`}
+                      onClick={() => setNotifCat(c.key)}>
+                      {meta?.icon || '📋'} {c.key === 'all' ? '全部' : c.key} {cnt > 0 ? `(${cnt})` : ''}
+                    </span>
+                  );
+                })}
+              </div>
+              {recentNotifs.length === 0 ? (
+                <div className="mb-empty">{isRunning ? '✅ 暂无通报，所有流程正常' : '暂无监察数据'}</div>
+              ) : (
+                <div className="ag-scroll" style={{ maxHeight: 520, overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: 6, paddingRight: 4 }}>
+                  {recentNotifs.map((n, i) => <NotifCard key={`${n.sent_at}-${i}`} n={n} onClick={() => {
+                    const tid = n.task_id || (n.task_ids || [])[0];
+                    if (tid) openDetail(tid);
+                  }} />)}
+                </div>
+              )}
+            </>
+          )}
+        </div>
+      )}
+
+      {/* ═══ Tab: 归档回溯 ═══ */}
+      {mainTab === 'archive' && (
+        <div>
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 12 }}>
+            <div style={{ fontSize: 13, fontWeight: 700 }}>归档任务 ({archivedTasks.length})</div>
+            <span className="audit-pill" onClick={() => setArchiveCollapsed(!archiveCollapsed)}>
+              {archiveCollapsed ? '▸ 展开' : '▾ 折叠'}
+            </span>
+          </div>
+          {!archiveCollapsed && (archivedTasks.length === 0 ? (
+            <div className="mb-empty">暂无归档任务</div>
+          ) : (
+            <div className="ag-scroll" style={{ display: 'flex', gap: 12, overflowX: 'auto', paddingBottom: 6 }}>
+              {archivedTasks.map(t => {
+                const st = STATE_S[t.state] || STATE_S.Done;
+                const avCount = archivedViolations.filter(v => v.task_id === t.id).length;
+                const flowLog = t.flow_log || [];
+                const lastFlow = flowLog[flowLog.length - 1];
+                return (
+                  <div key={t.id} onClick={() => openDetail(t.id, true)}
+                    className="edict-card archived audit-task-card archived-card"
+                    style={{
+                      minWidth: 300, maxWidth: 300, flexShrink: 0,
+                      borderLeft: `4px solid ${t.state === 'Cancelled' ? '#888' : 'var(--ok)'}`,
+                    }}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 6 }}>
+                      <span style={{ fontSize: 10, color: 'var(--muted)', fontWeight: 700 }}>{t.id}</span>
+                      <span className={`tag st-${t.state}`}>{st.label}</span>
+                      {avCount > 0 && <span className="chip err">⚠ {avCount} 违规</span>}
+                    </div>
+                    <div className="ec-title" style={{ fontSize: 14, marginBottom: 8 }}>{t.title}</div>
+
+                    <div style={{ fontSize: 11, color: 'var(--muted)', marginBottom: 8, lineHeight: 1.5 }}>
+                      流转 {flowLog.length} 步
+                      {avCount > 0 && <span style={{ color: 'var(--danger)', marginLeft: 8 }}>· {avCount} 条违规</span>}
+                    </div>
+                    {t.output && (
+                      <div style={{ fontSize: 11, color: 'var(--muted)', marginBottom: 8, lineHeight: 1.5,
+                        overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                        📎 {t.output}
+                      </div>
+                    )}
+
+                    {lastFlow && (
+                      <div className="ec-footer" style={{ borderTop: '1px solid var(--line)', marginTop: 8 }}>
+                        <span>最后: {lastFlow.from} → {lastFlow.to}</span>
+                        <span>{timeAgo(lastFlow.at)}</span>
+                      </div>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+          ))}
+        </div>
+      )}
+
+      {/* ═══ Tab: 监察说明 ═══ */}
+      {mainTab === 'about' && (
+        <div>
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 12 }}>
+            <div style={{ fontSize: 13, fontWeight: 700 }}>📋 监察规则说明</div>
+            <span className="audit-pill" onClick={() => setAboutCollapsed(!aboutCollapsed)}>
+              {aboutCollapsed ? '▸ 展开' : '▾ 折叠'}
+            </span>
+          </div>
+          {!aboutCollapsed && (
+            <div className="sub-config" style={{ fontSize: 12, color: 'var(--muted)', lineHeight: 1.8 }}>
+              <div><b>监察范围：</b>仅监察 JJC- 开头的旨意任务，不监察对话</div>
+              <div><b>完整流程：</b>皇上 → 太子 → 中书省 → 门下省 → 中书省 → 尚书省 → 六部 → 尚书省 → 中书省 → 太子 → 皇上</div>
+              <div><b>越权调用：</b>from→to 不在合法流转对表内，监察会通过会话通知太子</div>
+              <div><b>流程跳步：</b>缺少必要环节，仅记录不通知</div>
+              <div><b>断链超时：</b>某部门超时未回应，监察自动唤醒 + 通知上级</div>
+              <div><b>自动归档：</b>任务完成超过 5 分钟自动归档，可在「归档回溯」Tab 中查看日志</div>
+              <div><b>运行方式：</b>pipeline_watchdog.py 每 60 秒由 run_loop.sh 调用一次</div>
+            </div>
+          )}
+        </div>
+      )}
 
       {/* ═══ 详情面板（滑出覆盖层）═══ */}
       {selected && selTask && (
-        <div onClick={closeDetail} style={{
-          position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.35)', zIndex: 900, animation: 'fadeIn 0.2s',
-        }}>
+        <div onClick={closeDetail} className="modal-bg" style={{ padding: 0, alignItems: 'stretch', justifyContent: 'flex-end' }}>
+          <style>{`@keyframes slideIn{from{transform:translateX(100%)}to{transform:translateX(0)}}`}</style>
           <div onClick={e => e.stopPropagation()} style={{
-            position: 'absolute', right: 0, top: 0, bottom: 0, width: 540, maxWidth: '90vw',
-            background: 'var(--bg, #1a1a2e)', borderLeft: '1px solid var(--line)',
-            overflowY: 'auto', animation: 'slideIn 0.25s ease-out',
+            width: 560, maxWidth: '90vw', background: 'var(--panel)', borderLeft: '1px solid var(--line)',
+            overflowY: 'auto', animation: 'slideIn 0.25s ease-out', display: 'flex', flexDirection: 'column',
             boxShadow: '-4px 0 24px rgba(0,0,0,0.3)',
           }}>
-            <style>{`@keyframes fadeIn{from{opacity:0}to{opacity:1}}@keyframes slideIn{from{transform:translateX(100%)}to{transform:translateX(0)}}`}</style>
-
             {/* 面板头部 */}
-            <div style={{ position: 'sticky', top: 0, zIndex: 10, background: 'var(--bg, #1a1a2e)',
+            <div style={{ position: 'sticky', top: 0, zIndex: 10, background: 'var(--panel)',
               borderBottom: '1px solid var(--line)', padding: '16px 20px' }}>
               <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
                 <div>
                   <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 4 }}>
-                    <span style={{ fontSize: 12, fontWeight: 700, padding: '2px 8px', borderRadius: 4,
-                      background: '#6a9eff22', color: '#6a9eff' }}>{selected.id}</span>
+                    <span className="modal-id">{selected.id}</span>
                     {(() => { const s = STATE_S[selTask.state]; return s ? (
-                      <span style={{ fontSize: 11, padding: '2px 8px', borderRadius: 4, fontWeight: 600,
-                        background: s.bg, color: s.color }}>{s.label}</span>
+                      <span className={`tag st-${selTask.state}`}>{s.label}</span>
                     ) : null; })()}
                     {selTask.org && (
-                      <span style={{ fontSize: 11, padding: '2px 8px', borderRadius: 4,
+                      <span className="tag" style={{
+                        borderColor: (DEPT_COLOR[selTask.org] || '#888') + '44',
+                        color: DEPT_COLOR[selTask.org] || '#888',
                         background: (DEPT_COLOR[selTask.org] || '#888') + '18',
-                        color: DEPT_COLOR[selTask.org] || '#888' }}>{selTask.org}</span>
+                      }}>{selTask.org}</span>
                     )}
                   </div>
-                  <div style={{ fontSize: 15, fontWeight: 700 }}>{selTask.title}</div>
+                  <div className="modal-title" style={{ fontSize: 18, marginBottom: 0 }}>{selTask.title}</div>
                 </div>
                 <div style={{ display: 'flex', gap: 8 }}>
-                  <button onClick={() => { closeDetail(); setModalTaskId(selected.id); }} className="btn"
-                    style={{ fontSize: 11, padding: '4px 10px' }}>📋 看板</button>
-                  <button onClick={closeDetail} style={{ fontSize: 18, cursor: 'pointer', background: 'none',
-                    border: 'none', color: 'var(--muted)', padding: '0 4px', lineHeight: 1 }}>✕</button>
+                  <button onClick={() => { closeDetail(); setModalTaskId(selected.id); }} className="btn btn-g">
+                    📋 看板
+                  </button>
+                  <button onClick={closeDetail} className="modal-close" style={{ position: 'static' }}>✕</button>
                 </div>
               </div>
 
               {/* 标签切换 */}
-              <div style={{ display: 'flex', gap: 0, marginTop: 12 }}>
+              <div className="audit-inner-tabs" style={{ marginTop: 12, marginBottom: 0 }}>
                 {([
                   ['flow', '📜 流转记录', selTask.flow_log?.length || 0],
                   ['violation', '🚨 违规记录', selViolations.length],
                   ['notif', '📢 通报记录', selNotifs.length],
                   ['progress', '📊 进展日志', activityData?.activity?.length || 0],
                 ] as const).map(([k, label, cnt]) => (
-                  <button key={k} onClick={() => setDetailTab(k)} style={{
-                    fontSize: 12, padding: '6px 16px', cursor: 'pointer', fontWeight: 600,
-                    background: detailTab === k ? '#6a9eff18' : 'transparent',
-                    color: detailTab === k ? '#6a9eff' : 'var(--muted)',
-                    borderBottom: detailTab === k ? '2px solid #6a9eff' : '2px solid transparent',
-                    border: 'none', borderRadius: '6px 6px 0 0', transition: 'all 0.15s',
-                  }}>{label}{cnt > 0 && <span style={{ marginLeft: 4, fontSize: 10, opacity: 0.7 }}>({cnt})</span>}</button>
+                  <button key={k} className={`audit-inner-tab ${detailTab === k ? 'active' : ''}`}
+                    onClick={() => setDetailTab(k)}>
+                    {label}{cnt > 0 && <span className="tbadge">{cnt}</span>}
+                  </button>
                 ))}
               </div>
             </div>
 
             {/* 标签内容 */}
-            <div style={{ padding: '16px 20px' }}>
+            <div className="modal-body" style={{ padding: '16px 20px' }}>
               {detailTab === 'flow' && <FlowTimelinePanel task={selTask} />}
               {detailTab === 'violation' && <ViolationPanel violations={selViolations} />}
               {detailTab === 'notif' && <NotifPanel notifs={selNotifs} />}
@@ -538,29 +657,23 @@ export default function AuditPanelEnhanced() {
 
       {/* 详情面板 — 无任务数据时的兜底 */}
       {selected && !selTask && (
-        <div onClick={closeDetail} style={{
-          position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.35)', zIndex: 900,
-        }}>
+        <div onClick={closeDetail} className="modal-bg" style={{ padding: 0, alignItems: 'stretch', justifyContent: 'flex-end' }}>
           <div onClick={e => e.stopPropagation()} style={{
-            position: 'absolute', right: 0, top: 0, bottom: 0, width: 540, maxWidth: '90vw',
-            background: 'var(--bg, #1a1a2e)', borderLeft: '1px solid var(--line)',
+            width: 560, maxWidth: '90vw', background: 'var(--panel)', borderLeft: '1px solid var(--line)',
             overflowY: 'auto', padding: 20, animation: 'slideIn 0.25s ease-out',
           }}>
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 }}>
-              <div>
-                <span style={{ fontSize: 12, fontWeight: 700, padding: '2px 8px', borderRadius: 4,
-                  background: '#6a9eff22', color: '#6a9eff' }}>{selected.id}</span>
-                <span style={{ fontSize: 12, color: 'var(--muted)', marginLeft: 8 }}>
-                  {selected.archived ? '(归档任务)' : ''}</span>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                <span className="modal-id">{selected.id}</span>
+                {selected.archived && <span className="chip" style={{ opacity: 0.7 }}>(归档任务)</span>}
               </div>
-              <button onClick={closeDetail} style={{ fontSize: 18, cursor: 'pointer', background: 'none',
-                border: 'none', color: 'var(--muted)' }}>✕</button>
+              <button onClick={closeDetail} className="modal-close" style={{ position: 'static' }}>✕</button>
             </div>
             {selected.archived ? (
               <ArchiveDetailFallback taskId={selected.id} archivedViols={archivedViolations}
                 archivedNotifs={archivedNotifs} openDetail={openDetail} closeDetail={closeDetail} />
             ) : (
-              <div className="mb-empty" style={{ padding: 40 }}>任务数据未找到，请刷新后重试</div>
+              <div className="mb-empty">任务数据未找到，请刷新后重试</div>
             )}
           </div>
         </div>
@@ -570,48 +683,38 @@ export default function AuditPanelEnhanced() {
 }
 
 /* ═══════════════════════════════════════════════════════════════════════
-   子组件
+   子组件（保持原有功能不变）
    ═══════════════════════════════════════════════════════════════════════ */
-
-function Section({ title, children, extra }: { title: string; children: React.ReactNode; extra?: React.ReactNode }) {
-  return (
-    <div style={{ marginBottom: 20 }}>
-      <div style={{ fontSize: 14, fontWeight: 700, marginBottom: 10, borderBottom: '1px solid var(--line)', paddingBottom: 6,
-        display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-        <span>{title}</span>
-        {extra}
-      </div>
-      {children}
-    </div>
-  );
-}
 
 /* ── 通知卡片 ── */
 function NotifCard({ n, onClick }: { n: AuditNotification; onClick?: () => void }) {
   const meta = NOTIF_META[n.type] || { icon: '📢', color: '#6a9eff' };
   const sent = timeAgo(n.sent_at || (n as any).at || '');
   const [expanded, setExpanded] = useState(false);
+  const isFailed = n.status === 'failed';
   return (
     <div onClick={() => { if (n.detail) setExpanded(!expanded); if (onClick) onClick(); }}
-      style={{ padding: '8px 14px', borderRadius: 8, background: n.status === 'sent' ? 'var(--panel2)' : '#ff527008',
-        border: `1px solid ${n.status === 'sent' ? 'var(--line)' : '#ff527033'}`,
-        borderLeft: `3px solid ${meta.color}`, cursor: 'pointer', flexShrink: 0,
-        transition: 'background 0.15s' }}
-      onMouseEnter={e => { (e.currentTarget as HTMLDivElement).style.background = 'var(--panel1)'; }}
-      onMouseLeave={e => { (e.currentTarget as HTMLDivElement).style.background = n.status === 'sent' ? 'var(--panel2)' : '#ff527008'; }}
-    >
-      <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+      className="la-entry"
+      style={{
+        borderLeft: `3px solid ${meta.color}`,
+        background: isFailed ? '#ff527008' : undefined,
+        cursor: 'pointer',
+      }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
         <span style={{ fontSize: 13 }}>{meta.icon}</span>
         <span style={{ fontSize: 11, fontWeight: 700, color: meta.color, padding: '1px 6px', borderRadius: 4,
           background: `${meta.color}15` }}>{n.type}</span>
         {n.to && <span style={{ fontSize: 12, fontWeight: 600 }}>→ {n.to}</span>}
         {(n.task_id || n.task_ids) && (
-          <span style={{ fontSize: 11, padding: '2px 6px', borderRadius: 4, background: '#6a9eff15', color: '#6a9eff' }}>
-            {n.task_ids ? n.task_ids.join(', ') : n.task_id}</span>
+          <span className="ec-id" style={{ fontSize: 10 }}>
+            {n.task_ids ? n.task_ids.join(', ') : n.task_id}
+          </span>
         )}
-        <span style={{ fontSize: 11, color: 'var(--muted)', flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-          {n.summary || n.detail?.substring(0, 80) || ''}</span>
-        <span style={{ fontSize: 11, whiteSpace: 'nowrap' }}>{n.status === 'sent' ? '✅' : '❌'}</span>
+        <span style={{ fontSize: 11, color: 'var(--muted)', flex: 1, overflow: 'hidden',
+          textOverflow: 'ellipsis', whiteSpace: 'nowrap', minWidth: 0 }}>
+          {n.summary || n.detail?.substring(0, 80) || ''}
+        </span>
+        <span style={{ fontSize: 11, whiteSpace: 'nowrap' }}>{isFailed ? '❌' : '✅'}</span>
         <span style={{ fontSize: 11, color: 'var(--muted)', whiteSpace: 'nowrap' }}>{sent}</span>
       </div>
       {expanded && n.detail && (
@@ -625,60 +728,49 @@ function NotifCard({ n, onClick }: { n: AuditNotification; onClick?: () => void 
 /* ── 流转时间线面板 ── */
 function FlowTimelinePanel({ task }: { task: Task }) {
   const flowLog = task.flow_log || [];
-  if (flowLog.length === 0) return <div className="mb-empty" style={{ padding: 20 }}>暂无流转记录</div>;
+  if (flowLog.length === 0) return <div className="mb-empty">暂无流转记录</div>;
   return (
-    <div style={{ display: 'flex', flexDirection: 'column' }}>
-      {flowLog.map((f, i) => {
-        const fromColor = DEPT_COLOR[f.from] || '#888';
-        const toColor = DEPT_COLOR[f.to] || '#888';
-        const isLast = i === flowLog.length - 1;
-        const t = (() => {
-          try { const d = new Date(f.at.includes('T') ? f.at : f.at.replace(' ', 'T'));
-            return d.toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
-          } catch { return ''; }
-        })();
-        const dateStr = (() => {
-          try { const d = new Date(f.at.includes('T') ? f.at : f.at.replace(' ', 'T'));
-            return d.toLocaleDateString('zh-CN', { month: '2-digit', day: '2-digit' });
-          } catch { return ''; }
-        })();
-        return (
-          <div key={i} style={{ display: 'flex', gap: 12, alignItems: 'stretch' }}>
-            {/* 时间列 */}
-            <div style={{ width: 56, flexShrink: 0, textAlign: 'right', paddingTop: 2 }}>
-              <div style={{ fontSize: 11, color: 'var(--muted)' }}>{t}</div>
-              {i === 0 && <div style={{ fontSize: 10, color: 'var(--muted)', opacity: 0.6 }}>{dateStr}</div>}
-            </div>
-            {/* 时间线圆点 + 连接线 */}
-            <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', width: 24, flexShrink: 0 }}>
-              <div style={{
-                width: 12, height: 12, borderRadius: '50%',
-                background: toColor, marginTop: 3,
-                boxShadow: `0 0 6px ${toColor}44`,
-                flexShrink: 0,
-              }} />
-              {!isLast && <div style={{ width: 2, flex: 1, minHeight: 16, background: 'var(--line)', marginTop: 2, marginBottom: 2 }} />}
-            </div>
-            {/* 内容 */}
-            <div style={{ flex: 1, paddingBottom: isLast ? 0 : 14, minWidth: 0 }}>
-              <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
-                <span style={{ fontSize: 12, fontWeight: 700, color: fromColor }}>{f.from}</span>
-                <span style={{ fontSize: 11, color: 'var(--muted)' }}>→</span>
-                <span style={{ fontSize: 12, fontWeight: 700, color: toColor }}>{f.to}</span>
+    <div>
+      <div className="fl-timeline">
+        {flowLog.map((f, i) => {
+          const fromColor = DEPT_COLOR[f.from] || '#888';
+          const toColor = DEPT_COLOR[f.to] || '#888';
+          const t = (() => {
+            try { const d = new Date(f.at.includes('T') ? f.at : f.at.replace(' ', 'T'));
+              return d.toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+            } catch { return ''; }
+          })();
+          const dateStr = (() => {
+            try { const d = new Date(f.at.includes('T') ? f.at : f.at.replace(' ', 'T'));
+              return d.toLocaleDateString('zh-CN', { month: '2-digit', day: '2-digit' });
+            } catch { return ''; }
+          })();
+          return (
+            <div key={i} className="fl-item">
+              <div className="fl-time">
+                <div>{t}</div>
+                {i === 0 && <div style={{ opacity: 0.6 }}>{dateStr}</div>}
               </div>
-              {f.remark && <div style={{ fontSize: 11, color: 'var(--muted)', marginTop: 3, lineHeight: 1.5 }}>
-                {f.remark.replace(/^🧭\s*/, '')}</div>}
+              <div className="fl-dot" style={{ background: toColor, boxShadow: `0 0 6px ${toColor}44` }} />
+              <div className="fl-content">
+                <div className="fl-who">
+                  <span className="from" style={{ color: fromColor }}>{f.from}</span>
+                  <span style={{ color: 'var(--muted)', margin: '0 4px' }}>→</span>
+                  <span className="to" style={{ color: toColor }}>{f.to}</span>
+                </div>
+                {f.remark && <div className="fl-rem">{f.remark.replace(/^🧭\s*/, '')}</div>}
+              </div>
             </div>
-          </div>
-        );
-      })}
+          );
+        })}
+      </div>
     </div>
   );
 }
 
 /* ── 违规详情面板 ── */
 function ViolationPanel({ violations }: { violations: AuditViolation[] }) {
-  if (violations.length === 0) return <div className="mb-empty" style={{ padding: 20 }}>✅ 该任务无违规记录</div>;
+  if (violations.length === 0) return <div className="mb-empty">✅ 该任务无违规记录</div>;
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
       {violations.map((v, i) => {
@@ -702,7 +794,7 @@ function ViolationPanel({ violations }: { violations: AuditViolation[] }) {
 
 /* ── 通报详情面板 ── */
 function NotifPanel({ notifs }: { notifs: AuditNotification[] }) {
-  if (notifs.length === 0) return <div className="mb-empty" style={{ padding: 20 }}>该任务无通报记录</div>;
+  if (notifs.length === 0) return <div className="mb-empty">该任务无通报记录</div>;
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
       {notifs.map((n, i) => <NotifCard key={`${n.sent_at}-${i}`} n={n} />)}
@@ -715,17 +807,19 @@ function ProgressPanel({ activity, loading, progressLog, taskNow, taskTodos }: {
   activity: TaskActivityData | null; loading: boolean;
   progressLog: any[]; taskNow: string; taskTodos: any[];
 }) {
-  if (loading) return <div className="mb-empty" style={{ padding: 20 }}>加载中...</div>;
+  if (loading) return <div className="mb-empty">加载中...</div>;
 
   const entries = activity?.activity || progressLog || [];
-  if (entries.length === 0 && !taskNow) return <div className="mb-empty" style={{ padding: 20 }}>暂无进展记录</div>;
+  if (entries.length === 0 && !taskNow) return <div className="mb-empty">暂无进展记录</div>;
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
       {/* 阶段耗时 */}
       {activity?.phaseDurations && activity.phaseDurations.length > 0 && (
-        <div style={{ padding: 12, borderRadius: 8, background: 'var(--panel2)', border: '1px solid var(--line)' }}>
-          <div style={{ fontSize: 12, fontWeight: 700, marginBottom: 8 }}>⏱️ 阶段耗时</div>
+        <div className="sched-section" style={{ marginBottom: 0 }}>
+          <div className="sched-head">
+            <span className="sched-title">⏱️ 阶段耗时</span>
+          </div>
           <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
             {activity.phaseDurations.map((p, i) => (
               <div key={i} style={{ display: 'flex', justifyContent: 'space-between', fontSize: 11 }}>
@@ -745,45 +839,55 @@ function ProgressPanel({ activity, loading, progressLog, taskNow, taskTodos }: {
 
       {/* 当前进度 */}
       {taskNow && taskNow !== '-' && (
-        <div style={{ padding: 12, borderRadius: 8, background: '#6a9eff10', border: '1px solid #6a9eff33' }}>
-          <div style={{ fontSize: 11, color: '#6a9eff', fontWeight: 600, marginBottom: 4 }}>📍 当前进展</div>
-          <div style={{ fontSize: 12, color: 'var(--text)', lineHeight: 1.6 }}>{taskNow}</div>
+        <div className="cur-stage" style={{ marginBottom: 0 }}>
+          <span className="cs-icon">📍</span>
+          <div className="cs-info">
+            <div className="cs-action">当前进展</div>
+            <div style={{ fontSize: 12, color: 'var(--text)', lineHeight: 1.6, marginTop: 2 }}>{taskNow}</div>
+          </div>
         </div>
       )}
 
       {/* Todo 列表 */}
       {taskTodos && taskTodos.length > 0 && (
-        <div style={{ padding: 12, borderRadius: 8, background: 'var(--panel2)', border: '1px solid var(--line)' }}>
-          <div style={{ fontSize: 12, fontWeight: 700, marginBottom: 8 }}>📝 任务清单</div>
-          {taskTodos.map((todo: any, i: number) => (
-            <div key={i} style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 12, padding: '3px 0',
-              opacity: todo.status === 'completed' ? 0.5 : 1, textDecoration: todo.status === 'completed' ? 'line-through' : 'none' }}>
-              <span>{todo.status === 'completed' ? '✅' : todo.status === 'in-progress' ? '🔄' : '⬜'}</span>
-              <span style={{ color: 'var(--text)' }}>{todo.title}</span>
-            </div>
-          ))}
+        <div className="todo-section" style={{ marginBottom: 0 }}>
+          <div className="todo-header">
+            <span style={{ fontSize: 12, fontWeight: 700 }}>📝 任务清单</span>
+          </div>
+          <div className="todo-list">
+            {taskTodos.map((todo: any, i: number) => (
+              <div key={i} className={`todo-item ${todo.status === 'completed' ? 'done' : ''}`}>
+                <div className="t-row">
+                  <span className="t-icon">
+                    {todo.status === 'completed' ? '✅' : todo.status === 'in-progress' ? '🔄' : '⬜'}
+                  </span>
+                  <span className="t-title">{todo.title}</span>
+                </div>
+              </div>
+            ))}
+          </div>
         </div>
       )}
 
       {/* 进展日志列表 */}
       <div style={{ fontSize: 12, fontWeight: 700, marginBottom: 4 }}>📋 进展日志 ({entries.length})</div>
-      <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+      <div className="la-log" style={{ maxHeight: 300 }}>
         {entries.slice(-50).reverse().map((e: any, i: number) => {
           const at = e.at ? timeAgo(typeof e.at === 'number' ? new Date(e.at * 1000).toISOString() : e.at) : '';
           const agent = e.agent || e.agentLabel || '';
           const text = e.text || e.remark || '';
           const tool = e.tool || e.tools?.[0]?.name || '';
           return (
-            <div key={i} style={{ padding: '8px 10px', borderRadius: 6, background: 'var(--panel2)', border: '1px solid var(--line)' }}>
-              <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: text || tool ? 4 : 0 }}>
+            <div key={i} className="la-entry">
+              <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
                 {agent && (
                   <span style={{ fontSize: 11, fontWeight: 600, padding: '1px 6px', borderRadius: 3,
                     background: (DEPT_COLOR[agent] || '#888') + '18', color: DEPT_COLOR[agent] || '#888' }}>{agent}</span>
                 )}
                 {tool && <span style={{ fontSize: 10, color: '#a07aff' }}>🔧 {tool}</span>}
-                <span style={{ fontSize: 11, color: 'var(--muted)', marginLeft: 'auto' }}>{at}</span>
+                <span className="la-time">{at}</span>
               </div>
-              {text && <div style={{ fontSize: 11, color: 'var(--text)', lineHeight: 1.5 }}>{text}</div>}
+              {text && <div className="la-body" style={{ fontSize: 11, color: 'var(--text)', lineHeight: 1.5, marginTop: 2 }}>{text}</div>}
             </div>
           );
         })}
@@ -803,21 +907,11 @@ function ArchiveDetailFallback({ taskId, archivedViols, archivedNotifs, openDeta
 
   return (
     <div>
-      <div style={{ display: 'flex', gap: 0, marginBottom: 16 }}>
-        <button onClick={() => setTab('violation')} style={{
-          fontSize: 12, padding: '6px 16px', cursor: 'pointer', fontWeight: 600,
-          background: tab === 'violation' ? '#6a9eff18' : 'transparent',
-          color: tab === 'violation' ? '#6a9eff' : 'var(--muted)',
-          borderBottom: tab === 'violation' ? '2px solid #6a9eff' : '2px solid transparent',
-          border: 'none', borderRadius: '6px 6px 0 0',
-        }}>🚨 违规 ({viols.length})</button>
-        <button onClick={() => setTab('notif')} style={{
-          fontSize: 12, padding: '6px 16px', cursor: 'pointer', fontWeight: 600,
-          background: tab === 'notif' ? '#6a9eff18' : 'transparent',
-          color: tab === 'notif' ? '#6a9eff' : 'var(--muted)',
-          borderBottom: tab === 'notif' ? '2px solid #6a9eff' : '2px solid transparent',
-          border: 'none', borderRadius: '6px 6px 0 0',
-        }}>📢 通报 ({notifs.length})</button>
+      <div className="audit-inner-tabs" style={{ marginBottom: 16 }}>
+        <button className={`audit-inner-tab ${tab === 'violation' ? 'active' : ''}`}
+          onClick={() => setTab('violation')}>🚨 违规 ({viols.length})</button>
+        <button className={`audit-inner-tab ${tab === 'notif' ? 'active' : ''}`}
+          onClick={() => setTab('notif')}>📢 通报 ({notifs.length})</button>
       </div>
       {tab === 'violation' && <ViolationPanel violations={viols} />}
       {tab === 'notif' && <NotifPanel notifs={notifs} />}
