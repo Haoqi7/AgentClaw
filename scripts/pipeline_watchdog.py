@@ -58,6 +58,12 @@ BREAK_TIMEOUT_SEC = 90   # 1.5 分钟无回应判定为断链
 RECENT_DONE_MINUTES = 10  # 最近 N 分钟内完成的任务也需检查（防止速通逃逸）
 AUTO_ARCHIVE_MINUTES = 5  # Done 超过 N 分钟自动归档
 
+# ── 审议宽限期（秒）─────────────────────────────────────────────
+# 门下省审议需要较长时间，在此期间不触发断链检测
+REVIEW_GRACE_PERIODS = {
+    "Menxia": 300,   # 门下省审议：5 分钟宽限期（审议本身需要思考时间）
+}
+
 # ── 日志工具 ──────────────────────────────────────────────────────
 def log(msg):
     ts = datetime.datetime.now(_BJT).strftime("%H:%M:%S")
@@ -545,7 +551,7 @@ def check_direct_execution(task_id, flow_log, task_state=""):
     return None
 
 
-def check_broken_chain(task_id, flow_log):
+def check_broken_chain(task_id, flow_log, task_state=""):
     """检查最后一条 flow 是否断链（目标部门 1 分钟内无回应）。返回断链信息或 None。"""
     if not flow_log:
         return None
@@ -560,6 +566,10 @@ def check_broken_chain(task_id, flow_log):
         # 但如果流向太子且太子还没回复皇上，也不算断链（太子不归监察管）
         return None
 
+    # ── 审议宽限期：如果任务处于审议状态，给更长的等待时间 ──
+    dept_to = ID_TO_DEPT.get(last_to, last_to)
+    grace_period = REVIEW_GRACE_PERIODS.get(task_state, 0) or REVIEW_GRACE_PERIODS.get(dept_to, 0)
+
     # 解析最后一条 flow 的时间
     try:
         last_at = datetime.datetime.fromisoformat(last_at_str.replace("Z", "+00:00"))
@@ -571,6 +581,10 @@ def check_broken_chain(task_id, flow_log):
 
     if elapsed < BREAK_TIMEOUT_SEC:
         return None  # 还没超时
+
+    # 审议宽限期内不触发断链
+    if grace_period and elapsed < grace_period:
+        return None  # 审议中，给更多时间
 
     # 检查目标部门是否有后续 flow 记录（作为 from 出现）
     target_has_response = False
@@ -1439,7 +1453,7 @@ def _main_inner():
                 new_violations.append(violation)
 
         # ── 检查 3：断链超时 ──
-        broken = check_broken_chain(task_id, flow_log)
+        broken = check_broken_chain(task_id, flow_log, task_state)
         if broken:
             target_id = broken["target_agent_id"]
             target_label = broken["target_label"]
