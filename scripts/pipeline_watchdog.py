@@ -246,7 +246,7 @@ LEGAL_FLOWS = {
     ("尚书省", "中书省"),   # 汇总返回
     ("中书省", "太子"),     # 回奏
     ("太子",   "皇上"),     # 汇报皇上
-    # ("尚书省", "太子") 已移除：返回必须经中书省转交
+    ("尚书省", "太子")      # 直接汇报
 
     # ── 省部内部消息（自己给自己发内部处理消息）──
     ("中书省", "中书省"),   # 中书省内部处理（收准奏/方案修订等）
@@ -859,6 +859,7 @@ _CHILD_AGENT_ALLOWED_PAIRS = {
     ("zhongshu", "taizi"),
     ("menxia", "zhongshu"),
     ("shangshu", "zhongshu"),
+    ("shangshu", "taizi"),
     ("gongbu", "shangshu"),
     ("bingbu", "shangshu"),
     ("hubu", "shangshu"),
