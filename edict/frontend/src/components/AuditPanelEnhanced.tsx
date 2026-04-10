@@ -119,6 +119,48 @@ const MODAL_CSS = `
 .audit-modal-panel { animation: auditModalIn 0.25s ease-out; }
 `;
 
+/* ── 总览增强区域样式 ── */
+const OVERVIEW_CSS = `
+.ov-section { background: var(--panel2, rgba(255,255,255,0.03)); border: 1px solid var(--line);
+  border-radius: 10px; padding: 12px 14px; margin-bottom: 12px; }
+.ov-section-title { font-size: 11px; font-weight: 700; color: var(--muted); margin-bottom: 8px;
+  text-transform: uppercase; letter-spacing: 0.5px; display: flex; align-items: center; gap: 6; }
+
+/* 任务阶段分布条 */
+.ov-stage-bar { display: flex; height: 6px; border-radius: 3px; overflow: hidden; background: var(--line); }
+.ov-stage-seg { height: 100%; transition: width .3s ease; min-width: 0; }
+.ov-stage-legend { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 8px; }
+.ov-stage-item { display: flex; align-items: center; gap: 4px; font-size: 10px; color: var(--muted); }
+.ov-stage-dot { width: 6px; height: 6px; border-radius: 50%; flex-shrink: 0; }
+.ov-stage-count { font-weight: 600; color: var(--text); }
+
+/* 违规类型分布 */
+.ov-viol-dist { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+.ov-viol-chip { display: flex; align-items: center; gap: 4px; font-size: 10px; padding: 2px 8px;
+  border-radius: 4px; background: var(--panel); border: 1px solid var(--line); white-space: nowrap; }
+.ov-viol-chip-count { font-weight: 700; }
+.ov-viol-bar { width: 24px; height: 4px; border-radius: 2px; background: var(--line); overflow: hidden; display: inline-block; vertical-align: middle; }
+.ov-viol-bar-fill { height: 100%; border-radius: 2px; transition: width .3s; }
+
+/* 部门分布 */
+.ov-dept-cloud { display: flex; flex-wrap: wrap; gap: 6px; }
+.ov-dept-tag { font-size: 10px; padding: 2px 8px; border-radius: 4px; font-weight: 600;
+  border: 1px solid; white-space: nowrap; transition: all .15s; cursor: default; }
+.ov-dept-tag:hover { transform: scale(1.05); }
+
+/* 全局动态流 */
+.ov-feed-list { display: flex; flex-direction: column; gap: 4px; max-height: 160px; overflow-y: auto; }
+.ov-feed-item { display: flex; align-items: center; gap: 6px; font-size: 11px; padding: 4px 8px;
+  border-radius: 6px; background: rgba(255,255,255,0.02); transition: background .12s; cursor: pointer; }
+.ov-feed-item:hover { background: rgba(255,255,255,0.05); }
+.ov-feed-icon { flex-shrink: 0; font-size: 12px; }
+.ov-feed-type { font-weight: 600; white-space: nowrap; font-size: 10px; padding: 1px 5px; border-radius: 3px; }
+.ov-feed-summary { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--muted); }
+.ov-feed-time { color: var(--muted); white-space: nowrap; font-size: 10px; }
+.ov-feed-task { font-size: 10px; color: var(--acc); white-space: nowrap; max-width: 80px; overflow: hidden; text-overflow: ellipsis; }
+.ov-empty-feed { font-size: 11px; color: var(--muted); text-align: center; padding: 12px 0; }
+`;
+
 /* ── 卡片内嵌记录行样式 ── */
 const INLINE_ROW_CSS = `
 .audit-inline-row { display: flex; align-items: center; gap: 6px; font-size: 11px; padding: 3px 0;
@@ -239,6 +281,59 @@ export default function AuditPanelEnhanced() {
   // ── 预计算：全局最新违规/通报（用于 KPI 统计） ──
   const activeViolsCount = violations.filter(v => watchedTasks.some(w => w.task_id === v.task_id)).length;
 
+  // ── 总览增强数据 ──
+  // 任务阶段分布
+  const stateDist = useMemo(() => {
+    const m: Record<string, number> = {};
+    for (const w of watchedTasks) { m[w.state] = (m[w.state] || 0) + 1; }
+    return Object.entries(m).sort((a, b) => b[1] - a[1]);
+  }, [watchedTasks]);
+
+  // 违规类型分布（仅活跃任务）
+  const violTypeDist = useMemo(() => {
+    const wIds = new Set(watchedTasks.map(w => w.task_id));
+    const m: Record<string, number> = {};
+    for (const v of violations) { if (wIds.has(v.task_id)) m[v.type] = (m[v.type] || 0) + 1; }
+    return Object.entries(m).sort((a, b) => b[1] - a[1]);
+  }, [violations, watchedTasks]);
+  const violTypeMax = Math.max(...violTypeDist.map(([, c]) => c), 1);
+
+  // 部门分布（当前负责部门）
+  const deptDist = useMemo(() => {
+    const m: Record<string, number> = {};
+    for (const w of watchedTasks) { if (w.org) m[w.org] = (m[w.org] || 0) + 1; }
+    return Object.entries(m).sort((a, b) => b[1] - a[1]);
+  }, [watchedTasks]);
+
+  // 全局最新动态（违规+通报合并按时间排序，取最近10条）
+  const globalFeed = useMemo(() => {
+    const items: { kind: 'viol' | 'notif'; icon: string; type: string; color: string; summary: string; time: string; taskId: string }[] = [];
+    const wIds = new Set(watchedTasks.map(w => w.task_id));
+    for (const v of violations) {
+      if (wIds.has(v.task_id)) {
+        const meta = VIOL_META[v.type] || { icon: '⚠️', color: '#e8a040' };
+        items.push({ kind: 'viol', icon: meta.icon, type: v.type, color: meta.color,
+          summary: v.detail?.substring(0, 50) || v.title, time: v.detected_at, taskId: v.task_id });
+      }
+    }
+    for (const n of notifications) {
+      const tid = n.task_id || (n.task_ids || [])[0] || '';
+      if (wIds.has(tid)) {
+        const meta = NOTIF_META[n.type] || { icon: '📢', color: '#6a9eff' };
+        items.push({ kind: 'notif', icon: meta.icon, type: n.type, color: meta.color,
+          summary: n.summary || n.detail?.substring(0, 50) || '', time: n.sent_at || '', taskId: tid });
+      }
+    }
+    items.sort((a, b) => {
+      try {
+        const da = new Date(a.time.includes('T') ? a.time : a.time.replace(' ', 'T')).getTime();
+        const db = new Date(b.time.includes('T') ? b.time : b.time.replace(' ', 'T')).getTime();
+        return db - da;
+      } catch { return 0; }
+    });
+    return items.slice(0, 10);
+  }, [violations, notifications, watchedTasks]);
+
   // ── KPI 数据（移除了"通报记录"KPI，改为"活跃违规"） ──
   const kpis = [
     { icon: isRunning && !isStale ? '🟢' : isRunning && isStale ? '🟡' : '🔴',
@@ -269,7 +364,7 @@ export default function AuditPanelEnhanced() {
 
   return (
     <div>
-      <style>{SCROLLBAR_CSS}{INNER_TAB_CSS}{CARD_CSS}{PILL_CSS}{MODAL_CSS}{INLINE_ROW_CSS}</style>
+      <style>{SCROLLBAR_CSS}{INNER_TAB_CSS}{CARD_CSS}{PILL_CSS}{MODAL_CSS}{INLINE_ROW_CSS}{OVERVIEW_CSS}</style>
 
       {/* ═══ Header ═══ */}
       <div className="hdr" style={{ marginBottom: 14 }}>
@@ -317,7 +412,104 @@ export default function AuditPanelEnhanced() {
       {/* ═══ Tab: 监察总览 ═══ */}
       {mainTab === 'overview' && (
         <div>
-          {/* 任务卡片区域标题 + 筛选 */}
+          {/* ══ 概览增强区域：信息摘要面板（两列布局） ══ */}
+          {watchedCount > 0 && (
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(320px, 1fr))', gap: 12, marginBottom: 14 }}>
+
+              {/* ── 左列：任务阶段分布 + 部门分布 ── */}
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+                {/* 任务阶段分布 */}
+                <div className="ov-section">
+                  <div className="ov-section-title">📊 任务阶段分布</div>
+                  <div className="ov-stage-bar">
+                    {stateDist.map(([state, count]) => {
+                      const s = STATE_S[state];
+                      const pct = (count / watchedCount) * 100;
+                      return s ? <div key={state} className="ov-stage-seg" style={{ width: `${pct}%`, background: s.color }} title={`${s.label}: ${count}`} /> : null;
+                    })}
+                  </div>
+                  <div className="ov-stage-legend">
+                    {stateDist.map(([state, count]) => {
+                      const s = STATE_S[state];
+                      return s ? (
+                        <div key={state} className="ov-stage-item">
+                          <span className="ov-stage-dot" style={{ background: s.color }} />
+                          <span>{s.label}</span>
+                          <span className="ov-stage-count">{count}</span>
+                        </div>
+                      ) : null;
+                    })}
+                  </div>
+                </div>
+
+                {/* 部门分布 */}
+                {deptDist.length > 0 && (
+                  <div className="ov-section">
+                    <div className="ov-section-title">🏛️ 部门分布</div>
+                    <div className="ov-dept-cloud">
+                      {deptDist.map(([dept, count]) => {
+                        const c = DEPT_COLOR[dept] || '#888';
+                        return (
+                          <span key={dept} className="ov-dept-tag"
+                            style={{ color: c, borderColor: c + '44', background: c + '15' }}>
+                            {dept} <span style={{ opacity: 0.7, fontWeight: 400, marginLeft: 2 }}>x{count}</span>
+                          </span>
+                        );
+                      })}
+                    </div>
+                  </div>
+                )}
+
+                {/* 违规类型分布 */}
+                {violTypeDist.length > 0 && (
+                  <div className="ov-section">
+                    <div className="ov-section-title">🚨 违规类型分布 (共 {activeViolsCount})</div>
+                    <div className="ov-viol-dist">
+                      {violTypeDist.map(([type, count]) => {
+                        const meta = VIOL_META[type] || { icon: '⚠️', color: '#e8a040' };
+                        const pct = (count / violTypeMax) * 100;
+                        return (
+                          <div key={type} className="ov-viol-chip">
+                            <span>{meta.icon}</span>
+                            <span className="ov-viol-chip-count" style={{ color: meta.color }}>{count}</span>
+                            <span style={{ color: 'var(--muted)' }}>{type}</span>
+                            <span className="ov-viol-bar"><span className="ov-viol-bar-fill" style={{ width: `${pct}%`, background: meta.color }} /></span>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  </div>
+                )}
+              </div>
+
+              {/* ── 右列：全局最新动态流 ── */}
+              <div className="ov-section" style={{ display: 'flex', flexDirection: 'column' }}>
+                <div className="ov-section-title" style={{ marginBottom: globalFeed.length > 0 ? 6 : 0 }}>
+                  📡 最新动态 <span style={{ fontWeight: 400, opacity: 0.6 }}>({globalFeed.length} 条)</span>
+                </div>
+                {globalFeed.length > 0 ? (
+                  <div className="ov-feed-list ag-scroll">
+                    {globalFeed.map((item, i) => (
+                      <div key={`${item.kind}-${i}`} className="ov-feed-item"
+                        onClick={() => openDetail(item.taskId)}>
+                        <span className="ov-feed-icon">{item.icon}</span>
+                        <span className="ov-feed-type" style={{ color: item.color, background: item.color + '15' }}>
+                          {item.type}
+                        </span>
+                        <span className="ov-feed-summary">{item.summary}</span>
+                        <span className="ov-feed-task" title={item.taskId}>{item.taskId}</span>
+                        <span className="ov-feed-time">{timeAgo(item.time)}</span>
+                      </div>
+                    ))}
+                  </div>
+                ) : (
+                  <div className="ov-empty-feed">暂无最新动态，一切正常</div>
+                )}
+              </div>
+            </div>
+          )}
+
+          {/* ══ 任务卡片区域标题 + 筛选 ══ */}
           <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 12 }}>
             <div style={{ fontSize: 13, fontWeight: 700 }}>正在监察的任务 ({watchedCount})</div>
             <div style={{ display: 'flex', gap: 6 }}>
