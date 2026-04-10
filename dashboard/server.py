@@ -178,8 +178,23 @@ def cors_headers(h):
     elif ext_origin and req_origin == ext_origin:
         origin = req_origin
     else:
-        # 未知 Origin，不设置 Allow-Origin（安全：避免任意域反射）
-        return
+        # Fix Docker 部署：动态匹配 Origin 与 Host 头
+        # 当用户通过外部 IP（如 http://192.168.1.100:7891）访问时，
+        # Origin 为 http://192.168.1.100:7891，Host 为 192.168.1.100:7891
+        # 此时应该放行（Origin 和 Host 指向同一服务）
+        host_hdr = h.headers.get('Host', '').strip()
+        if host_hdr and req_origin:
+            # 构造期望的 origin：支持 http 和 https（反向代理场景）
+            for scheme in ('http://', 'https://'):
+                expected = f'{scheme}{host_hdr}'
+                if req_origin == expected:
+                    origin = req_origin
+                    break
+            else:
+                # Origin 与 Host 不匹配，拒绝
+                return
+        else:
+            return
     h.send_header('Access-Control-Allow-Origin', origin)
     h.send_header('Access-Control-Allow-Methods', 'GET, POST, OPTIONS')
     h.send_header('Access-Control-Allow-Headers', 'Content-Type')
@@ -260,7 +275,13 @@ def _check_api_auth(handler):
     for src in (origin, referer):
         if src and _port_pat.search(src):
             return True
-    # 无 Origin 且 Host 匹配（如 curl localhost:7891）
+    # Fix Docker 部署：Host 匹配服务器端口即可放行（不再限制 localhost）
+    # 场景：Docker 外部访问时 Host 为 external-ip:7891
+    if host:
+        _host_port_pat = _re.compile(rf':({port})(/|$)')
+        if _host_port_pat.search(host):
+            return True
+    # 兼容旧逻辑：无 Origin 且 Host 为 localhost
     if not origin and host and (host == f'127.0.0.1:{port}' or host == f'localhost:{port}'):
         return True
     auth_header = handler.headers.get('Authorization', '')
