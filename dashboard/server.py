@@ -138,7 +138,6 @@ def _get_external_gateway_url(handler):
     # 2/3. 从外部基础 URL 推断（替换端口号为 Gateway 端口）
     try:
         internal_gw = _get_gateway_base_url()
-        from urllib.parse import urlparse
         parsed = urlparse(internal_gw)
         gw_port = parsed.port or 18789
         external_base = _infer_external_base(handler)
@@ -3345,7 +3344,6 @@ class Handler(BaseHTTPRequestHandler):
             # 可达性预检：服务端尝试连接构造的外部 URL，判断浏览器是否可达
             url_reachable = False
             try:
-                from urllib.parse import urlparse
                 parsed = urlparse(gw_ext_url)
                 gw_host = parsed.hostname or ''
                 gw_port = parsed.port or 18789
