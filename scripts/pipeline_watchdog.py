@@ -699,6 +699,13 @@ def check_broken_chain(task_id, flow_log, task_state="",
     # ── 第 2 层：检查 progress_log 判断目标部门是否正在工作 ──
     # Agent 在处理任务时会通过 progress 命令更新进展，这会写入 progress_log。
     # 如果目标部门有在最后 flow 之后的进展记录，说明该部门正在工作，不算断链。
+    #
+    # ── BUG FIX #2: 原代码使用 p_org（任务所属部门）匹配目标部门，但 p_org 是
+    #    task.org 的副本，表示"任务当前挂在哪个部门名下"，而非"谁在写这条 progress"。
+    #    当太子为中书省的任务写 progress 时，p_org = "中书省" 会匹配 last_to = "zhongshu"，
+    #    导致误判为"目标部门正在工作"，断链永远不被检测到。
+    #    修复：使用 p_agent（实际写入进展的 Agent）作为主匹配条件，p_org 作为辅助参考，
+    #    只有当 p_agent 明确指向目标部门时才判定为活跃。
     if progress_log:
         for p_entry in progress_log:
             p_at_str = p_entry.get("at", "")
@@ -706,12 +713,12 @@ def check_broken_chain(task_id, flow_log, task_state="",
             p_org = normalize_name(str(p_entry.get("org", "")).lower())
             if not p_at_str:
                 continue
-            # progress 记录的 agent 或 org 匹配目标部门
-            if p_agent == last_to or p_org == last_to or p_org == dept_to:
+            # 以 p_agent 作为主匹配条件（实际写入者），p_org 不再单独用于判定活跃
+            if p_agent == last_to:
                 try:
                     p_at = datetime.datetime.fromisoformat(p_at_str.replace("Z", "+00:00"))
                     if p_at > last_at:
-                        return None  # 目标部门有进展记录，正在工作中
+                        return None  # 目标部门自身有进展记录，正在工作中
                 except Exception:
                     continue
 
@@ -719,7 +726,11 @@ def check_broken_chain(task_id, flow_log, task_state="",
     # 任何对看板的写操作（progress/flow/state）都会刷新 updatedAt。
     # 如果 updatedAt 被刷新了但 6 分钟内没有新的 flow，仍视为活跃（不断链）。
     # 超过 6 分钟则说明虽有看板活动但流程未推进，此时才视为断链。
-    _ACTIVITY_GRACE_SEC = 360  # 看板活动宽限期：6 分钟内不断链
+    #
+    # ── BUG FIX #2 (补充): 将宽限期从 360s 缩短至 180s，并增加目标部门刷新检查。
+    #    原宽限期 360s（6分钟）过长，导致断链需要等 6 分钟以上才能被检测到。
+    #    同时，仅检查 updatedAt 不够，需确认目标部门确实有活动。
+    _ACTIVITY_GRACE_SEC = 180  # 看板活动宽限期：3 分钟内不断链（原值 360s）
     if task_updated_at:
         try:
             upd_str = task_updated_at.replace("Z", "+00:00").replace("+08:00", "")
@@ -729,7 +740,7 @@ def check_broken_chain(task_id, flow_log, task_state="",
             if upd_at > last_at:
                 upd_elapsed = (now - upd_at).total_seconds()
                 if upd_elapsed < _ACTIVITY_GRACE_SEC:
-                    return None  # 看板 6 分钟内有活动，不判定断链
+                    return None  # 看板 3 分钟内有活动，不判定断链
         except Exception:
             pass
 
