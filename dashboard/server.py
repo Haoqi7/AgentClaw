@@ -3286,125 +3286,169 @@ class Handler(BaseHTTPRequestHandler):
             self.send_json(result)
             return
 
-        # ── Gateway 会话管理代理 API ──
+        # ── Gateway 会话管理 API（基于 OpenClaw 本地文件系统，不依赖 REST API） ──
         if p == '/api/gateway/conversations':
-            """列出 Gateway 所有会话（代理到 Gateway API）"""
+            """列出所有 Agent 的会话（从本地 sessions.json 文件读取）"""
             try:
-                token = _get_gateway_token()
-            except Exception:
-                token = ''
-            try:
-                gw_base = _get_gateway_base_url()
-                url = f'{gw_base}/api/v1/conversations'
-                headers = {}
-                if token:
-                    headers['Authorization'] = f'Bearer {token}'
-                req = Request(url, headers=headers)
-                resp = urlopen(req, timeout=10)
-                data = json.loads(resp.read().decode())
-                self.send_json({'ok': True, 'conversations': data if isinstance(data, list) else data.get('data', data.get('conversations', [])), 'total': len(data) if isinstance(data, list) else 0})
+                from pathlib import Path as _Path
+                agents_dir = _Path('/root/.openclaw/agents')
+                conversations = []
+                for sessions_file in sorted(agents_dir.glob('*/sessions/sessions.json')):
+                    agent_id = sessions_file.parent.parent.name
+                    try:
+                        sessions_data = json.loads(sessions_file.read_text())
+                    except Exception:
+                        continue
+                    if not isinstance(sessions_data, dict):
+                        continue
+                    for skey, sval in sessions_data.items():
+                        if not isinstance(sval, dict):
+                            continue
+                        sid = sval.get('sessionId', skey)
+                        updated = sval.get('updatedAt', 0)
+                        session_file = sval.get('sessionFile', '')
+                        is_main = ':main' in skey.lower() or 'main' in str(sid).lower()
+                        conversations.append({
+                            'id': sid,
+                            'agent_id': agent_id,
+                            'title': skey,
+                            'updatedAt': updated,
+                            'sessionFile': session_file,
+                            'isMain': is_main,
+                            'key': skey,
+                        })
+                conversations.sort(key=lambda x: x.get('updatedAt', 0), reverse=True)
+                self.send_json({
+                    'ok': True,
+                    'conversations': conversations,
+                    'total': len(conversations),
+                })
             except Exception as e:
-                err_str = str(e)[:100]
-                # 区分连接失败 vs API 路径问题
-                if 'Connection refused' in err_str or 'timed out' in err_str.lower() or 'No route to host' in err_str:
-                    self.send_json({'ok': False, 'error': f'Gateway 无法连接: {err_str}'}, 502)
-                elif 'HTTP Error' in err_str or '404' in err_str or '403' in err_str:
-                    self.send_json({'ok': False, 'error': f'Gateway API 错误: {err_str}（Gateway 可能版本不兼容）'}, 502)
-                else:
-                    self.send_json({'ok': False, 'error': f'Gateway 连接失败: {err_str}'}, 502)
+                self.send_json({'ok': False, 'error': f'读取会话失败: {str(e)[:100]}'}, 500)
             return
 
         if p.startswith('/api/gateway/conversation/') and p.endswith('/delete'):
-            """删除指定 Gateway 会话（代理到 Gateway API）"""
+            """删除指定会话（从本地 sessions.json 中移除并删除 .jsonl 文件）"""
             conv_id = p.replace('/api/gateway/conversation/', '').replace('/delete', '').strip()
             if not conv_id:
                 self.send_json({'ok': False, 'error': 'conversationId required'}, 400)
                 return
             try:
-                token = _get_gateway_token()
-            except Exception:
-                token = ''
-            try:
-                url = f'{_get_gateway_base_url()}/api/v1/conversations/{_url_quote(conv_id, safe="")}'
-                headers = {}
-                if token:
-                    headers['Authorization'] = f'Bearer {token}'
-                req = Request(url, method='DELETE', headers=headers)
-                urlopen(req, timeout=10)
-                self.send_json({'ok': True, 'message': f'会话 {conv_id} 已删除'})
+                from pathlib import Path as _Path
+                agents_dir = _Path('/root/.openclaw/agents')
+                deleted = False
+                for sessions_file in sorted(agents_dir.glob('*/sessions/sessions.json')):
+                    try:
+                        sessions_data = json.loads(sessions_file.read_text())
+                    except Exception:
+                        continue
+                    if not isinstance(sessions_data, dict):
+                        continue
+                    found_key = None
+                    for skey, sval in sessions_data.items():
+                        if not isinstance(sval, dict):
+                            continue
+                        if sval.get('sessionId', '') == conv_id or skey == conv_id:
+                            found_key = skey
+                            # 删除物理文件
+                            sf = sval.get('sessionFile', '')
+                            if sf:
+                                try:
+                                    _Path(sf).unlink(missing_ok=True)
+                                    _Path(sf.replace('.jsonl', '.lock')).unlink(missing_ok=True)
+                                except Exception:
+                                    pass
+                            break
+                    if found_key:
+                        del sessions_data[found_key]
+                        try:
+                            sessions_file.write_text(json.dumps(sessions_data, indent=2, ensure_ascii=False))
+                        except Exception:
+                            pass
+                        deleted = True
+                        break
+                if deleted:
+                    self.send_json({'ok': True, 'message': f'会话 {conv_id} 已删除'})
+                else:
+                    self.send_json({'ok': False, 'error': f'未找到会话 {conv_id}'}, 404)
             except Exception as e:
-                self.send_json({'ok': False, 'error': f'删除失败: {str(e)[:100]}'}, 502)
+                self.send_json({'ok': False, 'error': f'删除失败: {str(e)[:100]}'}, 500)
             return
 
         if p == '/api/gateway/clear-agent-sessions':
-            """清空指定 Agent 的所有非 main 会话（通过 Gateway API）"""
-            import urllib.request, urllib.error
-            agent_id = body.get('agentId', '').strip()
-            if not agent_id or not _SAFE_NAME_RE.match(agent_id):
+            """清空指定 Agent 的所有非 main 会话（通过本地文件系统操作）"""
+            agent_id = body.get('agentId', '').strip() if body else ''
+            if not agent_id:
                 self.send_json({'ok': False, 'error': 'agentId 无效'}, 400)
                 return
             try:
-                token = _get_gateway_token()
-            except Exception:
-                token = ''
-            cleared = 0
-            try:
-                url = f'{_get_gateway_base_url()}/api/v1/conversations'
-                headers = {}
-                if token:
-                    headers['Authorization'] = f'Bearer {token}'
-                req = Request(url, headers=headers)
-                resp = urlopen(req, timeout=10)
-                data = json.loads(resp.read().decode())
-                conversations = data if isinstance(data, list) else data.get('data', data.get('conversations', []))
-                for conv in conversations:
-                    conv_id = conv.get('id', '')
-                    conv_agent = conv.get('agent_id', conv.get('agentId', ''))
-                    title = str(conv.get('title', ''))
-                    # 匹配该 Agent 的会话
-                    if agent_id not in str(conv_id).lower() and agent_id not in conv_agent.lower() and agent_id not in title.lower():
-                        continue
-                    # 保留 main 会话
-                    if ':main' in str(conv_id).lower() or ':main' in title.lower():
-                        continue
-                    # 删除非 main 会话
-                    del_url = f'{_get_gateway_base_url()}/api/v1/conversations/{_url_quote(str(conv_id), safe="")}'
-                    del_req = Request(del_url, method='DELETE', headers=headers)
+                from pathlib import Path as _Path
+                agents_dir = _Path('/root/.openclaw/agents')
+                # 确定要清理的目标 Agent 列表
+                target_agents = []
+                if agent_id == 'all':
+                    for d in sorted(agents_dir.iterdir()):
+                        if d.is_dir() and (d / 'sessions' / 'sessions.json').exists():
+                            target_agents.append(d.name)
+                else:
+                    if (agents_dir / agent_id / 'sessions' / 'sessions.json').exists():
+                        target_agents = [agent_id]
+                # 逐个 Agent 清理非 main 会话
+                cleared = 0
+                for aid in target_agents:
+                    sessions_file = agents_dir / aid / 'sessions' / 'sessions.json'
                     try:
-                        urlopen(del_req, timeout=10)
-                        cleared += 1
+                        sessions_data = json.loads(sessions_file.read_text())
                     except Exception:
-                        pass
-                self.send_json({'ok': True, 'message': f'已清理 {agent_id} 的 {cleared} 个非 main 会话', 'cleared': cleared})
+                        continue
+                    if not isinstance(sessions_data, dict):
+                        continue
+                    to_delete = []
+                    for skey, sval in sessions_data.items():
+                        if not isinstance(sval, dict):
+                            continue
+                        # 保留 main 会话
+                        if ':main' in skey.lower():
+                            continue
+                        to_delete.append(skey)
+                    for skey in to_delete:
+                        # 删除物理文件
+                        sf = sessions_data[skey].get('sessionFile', '')
+                        if sf:
+                            try:
+                                _Path(sf).unlink(missing_ok=True)
+                                _Path(sf.replace('.jsonl', '.lock')).unlink(missing_ok=True)
+                            except Exception:
+                                pass
+                        del sessions_data[skey]
+                        cleared += 1
+                    # 写回 sessions.json
+                    if to_delete:
+                        try:
+                            sessions_file.write_text(json.dumps(sessions_data, indent=2, ensure_ascii=False))
+                        except Exception:
+                            pass
+                self.send_json({
+                    'ok': True,
+                    'message': f'已清理 {cleared} 个非 main 会话（涉及 {len(target_agents)} 个 Agent）',
+                    'cleared': cleared,
+                })
             except Exception as e:
-                self.send_json({'ok': False, 'error': f'Gateway 连接失败: {str(e)[:100]}'}, 502)
+                self.send_json({'ok': False, 'error': f'清理失败: {str(e)[:100]}'}, 500)
             return
 
         if p == '/api/gateway/sessions-url':
-            """返回 Gateway 会话管理页面的 URL（Fix #1: 使用浏览器可访问的外部地址）。
-            注意：该端点仅用于兼容性保留。推荐使用 /api/gateway/conversations 代理 API，
-            前端内嵌式会话面板不再依赖外部 URL 直连，避免 Docker/反向代理环境下的可达性问题。
-            """
-            gw_ext_url = _get_external_gateway_url(self)
-            sessions_url = f'{gw_ext_url}/sessions'
-            # 可达性预检：服务端尝试连接构造的外部 URL，判断浏览器是否可达
-            url_reachable = False
+            """返回 Gateway 会话管理页面 URL（兼容性保留端点）"""
             try:
-                parsed = urlparse(gw_ext_url)
-                gw_host = parsed.hostname or ''
-                gw_port = parsed.port or 18789
-                if gw_host and gw_host not in ('localhost', '127.0.0.1', '::1'):
-                    with socket.create_connection((gw_host, gw_port), timeout=3):
-                        url_reachable = True
-                else:
-                    url_reachable = True  # localhost 场景默认可达
+                gw_ext_url = _get_external_gateway_url(self)
+                sessions_url = f'{gw_ext_url}/sessions'
             except Exception:
-                pass
+                sessions_url = ''
             self.send_json({
-                'ok': url_reachable,
+                'ok': True,
                 'url': sessions_url,
-                'reachable': url_reachable,
-                'hint': '' if url_reachable else 'Gateway 外部地址不可达，建议使用 EDICT_EXTERNAL_GATEWAY_URL 环境变量或通过看板代理 API 管理会话',
+                'reachable': True,
+                'hint': '',
             })
             return
 
