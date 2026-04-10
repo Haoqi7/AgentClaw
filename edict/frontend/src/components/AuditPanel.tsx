@@ -1,7 +1,7 @@
-import { useEffect, useRef, useState } from 'react';
-import { useStore, timeAgo, isArchived } from '../store';
+import { useEffect, useRef, useState, useMemo } from 'react';
+import { useStore, timeAgo } from '../store';
 import { api } from '../api';
-import type { AuditViolation, WatchedTask, AuditNotification, Task } from '../api';
+import type { AuditViolation, WatchedTask, AuditNotification } from '../api';
 
 /** 违规类型对应的样式 */
 const TYPE_META: Record<string, { icon: string; color: string; bg: string }> = {
@@ -32,6 +32,18 @@ const NOTIFY_TYPE_META: Record<string, { icon: string; color: string }> = {
   '违规': { icon: '🚨', color: '#ff5270' },
 };
 
+/** 通知分类定义 */
+const NOTIFY_CATEGORIES = [
+  { key: 'all', label: '全部', icon: '📋' },
+  { key: '越权通报', label: '越权通报', icon: '🚨' },
+  { key: '跳步通报', label: '跳步通报', icon: '⚡' },
+  { key: '断链唤醒', label: '断链唤醒', icon: '🔔' },
+  { key: '断链通知', label: '断链通知', icon: '📡' },
+  { key: '会话警告', label: '会话警告', icon: '🔑' },
+  { key: '归档', label: '归档', icon: '📦' },
+  { key: '巡检', label: '巡检', icon: '🔍' },
+] as const;
+
 /** 任务状态对应标签 */
 const STATE_LABEL: Record<string, string> = {
   Taizi: '太子分拣',
@@ -47,14 +59,12 @@ const STATE_LABEL: Record<string, string> = {
 export default function AuditPanel() {
   const auditData = useStore((s) => s.auditData);
   const loadAudit = useStore((s) => s.loadAudit);
-  const liveStatus = useStore((s) => s.liveStatus);
-  const tasks = liveStatus?.tasks || [];
 
   useEffect(() => {
     loadAudit();
   }, [loadAudit]);
 
-  // 每 10 秒自动刷新监察数据（比其他面板更频繁）
+  // 每 10 秒自动刷新监察数据
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
   useEffect(() => {
     timerRef.current = setInterval(() => {
@@ -72,13 +82,10 @@ export default function AuditPanel() {
   const checkCount = auditData?.check_count || 0;
   const totalViolations = auditData?.total_violations || 0;
   const notifications: AuditNotification[] = auditData?.notifications || [];
-  const archivedViolations: AuditViolation[] = auditData?.archived_violations || [];
-  const archivedNotifications: AuditNotification[] = auditData?.archived_notifications || [];
 
   // 监察运行状态判断
   const isRunning = !!lastCheck;
   const lastCheckAgo = timeAgo(lastCheck);
-  // 如果最后检查时间超过 3 分钟，认为监察可能停止
   const isStale = (() => {
     if (!lastCheck) return true;
     try {
@@ -90,19 +97,16 @@ export default function AuditPanel() {
   })();
 
   // 区分活跃违规和已解决违规
-  // 已解决：任务已完成(Done)或已取消(Cancelled)的违规
   const watchedTaskIds = new Set(watchedTasks.map(t => t.task_id));
   const activeViolations = violations.filter(v => watchedTaskIds.has(v.task_id));
   const resolvedViolations = violations.filter(v => !watchedTaskIds.has(v.task_id));
   const [showResolved, setShowResolved] = useState(false);
 
-  // 当前显示的违规列表
   const displayViolations = showResolved ? violations : activeViolations;
 
-  // 按任务 ID 分组违规记录（区分活跃/已解决）
-  const violationsByTask = (() => {
+  // 按任务 ID 分组违规记录
+  const violationsByTask = useMemo(() => {
     const map = new Map<string, AuditViolation[]>();
-    // 使用当前显示的违规列表
     const source = displayViolations;
     const recent = source.slice(-200).reverse();
     for (const v of recent) {
@@ -111,10 +115,27 @@ export default function AuditPanel() {
       map.get(key)!.push(v);
     }
     return map;
-  })();
+  }, [displayViolations]);
 
-  // 通知记录倒序
-  const recentNotifications = notifications.slice(-50).reverse();
+  // 通知分类筛选状态
+  const [notifCategory, setNotifCategory] = useState<string>('all');
+  const [notifCollapsed, setNotifCollapsed] = useState(false);
+
+  // 通知记录倒序 + 分类过滤
+  const recentNotifications = useMemo(() => {
+    const base = notifications.slice(-50).reverse();
+    if (notifCategory === 'all') return base;
+    return base.filter(n => n.type === notifCategory);
+  }, [notifications, notifCategory]);
+
+  // 统计各分类通知数量
+  const notifCounts = useMemo(() => {
+    const counts: Record<string, number> = { all: notifications.length };
+    for (const n of notifications) {
+      counts[n.type] = (counts[n.type] || 0) + 1;
+    }
+    return counts;
+  }, [notifications]);
 
   return (
     <div>
@@ -178,68 +199,82 @@ export default function AuditPanel() {
         )}
       </Section>
 
-      {/* ── 已归档任务 ── */}
-      {(() => {
-        const archivedTasks = (tasks || []).filter((t: Task) => isArchived(t) && /^JJC-/i.test(t.id || ''));
-        return (
-          <Section title={`📦 已归档旨意 (${archivedTasks.length})`}>
-            {archivedTasks.length === 0 ? (
+      {/* ── 通报记录（可折叠 + 分类 + 固定大小滑动）── */}
+      <div style={{ marginBottom: 20 }}>
+        <div style={{
+          fontSize: 14, fontWeight: 700, marginBottom: 10,
+          borderBottom: '1px solid var(--line)', paddingBottom: 6,
+          display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+        }}>
+          <span>📢 通报记录 ({recentNotifications.length})</span>
+          <button
+            onClick={() => setNotifCollapsed(!notifCollapsed)}
+            style={{
+              fontSize: 11, padding: '3px 10px', borderRadius: 4, cursor: 'pointer',
+              background: 'var(--panel2)', color: 'var(--text)',
+              border: '1px solid var(--line)',
+            }}
+          >
+            {notifCollapsed ? '▸ 展开' : '▾ 折叠'}
+          </button>
+        </div>
+
+        {!notifCollapsed && (
+          <>
+            {/* 分类标签栏 */}
+            <div style={{
+              display: 'flex', gap: 6, marginBottom: 10, flexWrap: 'wrap',
+            }}>
+              {NOTIFY_CATEGORIES.map(cat => {
+                const count = notifCounts[cat.key] || 0;
+                if (cat.key !== 'all' && count === 0) return null;
+                return (
+                  <button
+                    key={cat.key}
+                    onClick={() => setNotifCategory(cat.key)}
+                    style={{
+                      fontSize: 11, padding: '4px 10px', borderRadius: 4,
+                      cursor: 'pointer', whiteSpace: 'nowrap',
+                      background: notifCategory === cat.key
+                        ? (NOTIFY_TYPE_META[cat.key]?.color || '#6a9eff') + '22'
+                        : 'var(--panel2)',
+                      color: notifCategory === cat.key
+                        ? (NOTIFY_TYPE_META[cat.key]?.color || '#6a9eff')
+                        : 'var(--muted)',
+                      border: `1px solid ${notifCategory === cat.key
+                        ? (NOTIFY_TYPE_META[cat.key]?.color || '#6a9eff') + '44'
+                        : 'var(--line)'}`,
+                      fontWeight: notifCategory === cat.key ? 600 : 400,
+                    }}
+                  >
+                    {cat.icon} {cat.label} {count > 0 ? `(${count})` : ''}
+                  </button>
+                );
+              })}
+            </div>
+
+            {/* 通知列表（固定高度滚动） */}
+            {recentNotifications.length === 0 ? (
               <div className="mb-empty" style={{ padding: 20 }}>
-                暂无归档任务（任务完成超过 5 分钟自动归档）
+                {isRunning ? '✅ 暂无通报，所有流程正常' : '暂无监察数据'}
               </div>
             ) : (
-              <div style={{ display: 'flex', flexDirection: 'column', gap: 6, maxHeight: 300, overflowY: 'auto' }}>
-                {archivedTasks.slice(0, 50).map((t: Task) => (
-                  <div key={t.id} style={{
-                    display: 'flex', alignItems: 'center', gap: 10, padding: '8px 12px',
-                    borderRadius: 6, background: 'var(--panel2)', border: '1px solid var(--line)',
-                    opacity: 0.75,
-                  }}>
-                    <span style={{
-                      fontSize: 11, padding: '2px 6px', borderRadius: 3,
-                      background: '#6a9eff18', color: '#6a9eff', fontWeight: 600, whiteSpace: 'nowrap',
-                    }}>
-                      {t.id}
-                    </span>
-                    <span style={{ flex: 1, fontSize: 12, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                      {t.title}
-                    </span>
-                    <span style={{
-                      fontSize: 10, padding: '2px 6px', borderRadius: 3,
-                      background: '#2ecc8a18', color: '#2ecc8a', whiteSpace: 'nowrap',
-                    }}>
-                      {STATE_LABEL[t.state as keyof typeof STATE_LABEL] || t.state}
-                    </span>
-                    <span style={{ fontSize: 10, color: 'var(--muted)', whiteSpace: 'nowrap' }}>
-                      {t.archivedAt ? timeAgo(t.archivedAt) : ''}
-                    </span>
-                  </div>
+              <div style={{
+                maxHeight: 480,
+                overflowY: 'auto',
+                display: 'flex',
+                flexDirection: 'column',
+                gap: 6,
+                paddingRight: 4,
+              }}>
+                {recentNotifications.map((n, i) => (
+                  <NotificationCard key={`${n.sent_at}-${i}`} notification={n} />
                 ))}
-                {archivedTasks.length > 50 && (
-                  <div style={{ fontSize: 11, color: 'var(--muted)', textAlign: 'center', padding: 8 }}>
-                    仅显示最近 50 条，共 {archivedTasks.length} 条归档
-                  </div>
-                )}
               </div>
             )}
-          </Section>
-        );
-      })()}
-
-      {/* ── 通报记录 ── */}
-      <Section title={`📢 通报记录 (${recentNotifications.length})`}>
-        {recentNotifications.length === 0 ? (
-          <div className="mb-empty" style={{ padding: 20 }}>
-            {isRunning ? '✅ 暂无通报，所有流程正常' : '暂无监察数据'}
-          </div>
-        ) : (
-          <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
-            {recentNotifications.map((n, i) => (
-              <NotificationCard key={`${n.sent_at}-${i}`} notification={n} />
-            ))}
-          </div>
+          </>
         )}
-      </Section>
+      </div>
 
       {/* ── 违规记录（按任务分组）── */}
       <Section title={`🚨 违规记录 (${activeViolations.length}条活跃${resolvedViolations.length > 0 ? `，${resolvedViolations.length}条已解决` : ''}，${violationsByTask.size}个任务)`}>
@@ -289,26 +324,6 @@ export default function AuditPanel() {
         )}
       </Section>
 
-      {/* ── 已归档违规记录（Issue #5）── */}
-      <Section title={`📦 已归档违规 (${archivedViolations.length}条)`}>
-        {archivedViolations.length === 0 ? (
-          <div className="mb-empty" style={{ padding: 20 }}>
-            暂无归档违规记录
-          </div>
-        ) : (
-          <div style={{ display: 'flex', flexDirection: 'column', gap: 8, maxHeight: 400, overflowY: 'auto' }}>
-            {archivedViolations.slice(-100).reverse().map((v, i) => (
-              <ViolationCard key={`archived-${v.detected_at}-${v.flow_index ?? i}`} violation={v} />
-            ))}
-            {archivedViolations.length > 100 && (
-              <div style={{ fontSize: 11, color: 'var(--muted)', textAlign: 'center', padding: 8 }}>
-                仅显示最近 100 条，共 {archivedViolations.length} 条归档违规
-              </div>
-            )}
-          </div>
-        )}
-      </Section>
-
       {/* ── 说明 ── */}
       <div style={{
         marginTop: 20, padding: 16, borderRadius: 10,
@@ -324,7 +339,7 @@ export default function AuditPanel() {
         <div><b>断链超时：</b>某部门 1 分钟内未回应，监察自动唤醒 + 通知上级</div>
         <div><b>会话未注册：</b>任务有跨部门通信但无 session_key 记录，说明 Agent 未使用 session-keys save，存在会话膨胀风险</div>
         <div><b>会话通信过多：</b>同一部门对通信次数超过正常阈值，说明可能未复用 session，反复 spawn 新会话</div>
-        <div><b>自动归档：</b>任务完成超过 5 分钟自动归档</div>
+        <div><b>自动归档：</b>任务完成超过 5 分钟自动归档，归档任务不在流程监察中显示</div>
         <div><b>运行方式：</b>pipeline_watchdog.py 每 60 秒由 run_loop.sh 调用一次</div>
       </div>
     </div>
@@ -451,7 +466,7 @@ function WatchedTaskCard({ task, onUpdate }: { task: WatchedTask; onUpdate: () =
         </div>
       </div>
 
-      {/* Session Keys 详情（展开时显示） */}
+      {/* Session Keys 详情 */}
       {showKeys && (
         <div style={{
           marginTop: 8, padding: '8px 10px', borderRadius: 6,
@@ -492,7 +507,6 @@ function WatchedTaskCard({ task, onUpdate }: { task: WatchedTask; onUpdate: () =
 
 function NotificationCard({ notification }: { notification: AuditNotification }) {
   const meta = NOTIFY_TYPE_META[notification.type] || { icon: '📢', color: '#6a9eff' };
-  // 兼容新旧字段名：sent_at/at, to/target, summary/detail
   const _sentAt = notification.sent_at || (notification as any).at || '';
   const sent = timeAgo(_sentAt);
   const isSent = notification.status === 'sent';
@@ -507,6 +521,7 @@ function NotificationCard({ notification }: { notification: AuditNotification })
       border: `1px solid ${isSent ? 'var(--line)' : '#ff527033'}`,
       borderLeft: `3px solid ${meta.color}`,
       cursor: notification.detail ? 'pointer' : 'default',
+      flexShrink: 0,
     }}
       onClick={() => notification.detail && setExpanded(!expanded)}
     >
@@ -557,7 +572,6 @@ function NotificationCard({ notification }: { notification: AuditNotification })
 
 function TaskViolationGroup({ taskId, violations, isResolved }: { taskId: string; violations: AuditViolation[]; isResolved?: boolean }) {
   const [collapsed, setCollapsed] = useState(false);
-  // 从第一条违规获取任务标题
   const title = violations[0]?.title || taskId;
 
   return (
@@ -601,7 +615,7 @@ function TaskViolationGroup({ taskId, violations, isResolved }: { taskId: string
         </span>
       </div>
 
-      {/* 违规列表（可滚动） */}
+      {/* 违规列表（固定高度滚动） */}
       {!collapsed && (
         <div style={{
           maxHeight: 320, overflowY: 'auto', padding: '8px 14px',
