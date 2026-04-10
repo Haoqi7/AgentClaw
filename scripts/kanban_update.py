@@ -484,8 +484,88 @@ def _resolve_agent_id(target):
     return _STATE_AGENT_MAP.get(target, '')
 
 
+def _async_spawn_and_save_key(agent_id, message, task_id, from_id, to_label):
+    """异步唤醒 Agent 并自动保存 sessionKey（完全不阻塞调用方）。
+
+    原理：启动一个后台 Python 进程，该进程执行 openclaw agent --json，
+    提取 sessionKey 后写入 session_keys 注册表。主进程立即返回。
+
+    修改说明：原代码使用 subprocess.run 同步阻塞最长 150 秒等待 Agent 回复，
+    改为 Popen 异步执行，主流程不再等待 Agent 确认即可继续后续步骤。
+    """
+    tasks_file_escaped = json.dumps(str(TASKS_FILE))
+    from_id_escaped = json.dumps(from_id)
+    task_id_escaped = json.dumps(task_id)
+    agent_id_escaped = json.dumps(agent_id)
+    message_escaped = json.dumps(message)
+
+    script = f'''import json, subprocess, sys, pathlib, re, os, datetime as _dt
+def _now_iso():
+    _BJT = _dt.timezone(_dt.timedelta(hours=8))
+    return _dt.datetime.now(_BJT).isoformat()
+try:
+    result = subprocess.run(
+        ["openclaw", "agent", "--agent", {agent_id_escaped}, "-m", {message_escaped}, "--json", "--timeout", "120"],
+        capture_output=True, text=True, timeout=150,
+    )
+    output = (result.stdout or "") + (result.stderr or "")
+    key = None
+    try:
+        data = json.loads(output.strip())
+        key = data.get("sessionKey") or data.get("session_key")
+        if key and str(key).strip().lower() in ("null", "none", ""):
+            key = None
+        else:
+            key = str(key).strip()
+    except Exception:
+        m = re.search(r'{{[^{{}}]*"sessionKey"\\s*:\\s*"([^"]+)"[^{{}}]*}}', output)
+        if m:
+            k = m.group(1).strip()
+            if k.lower() not in ("null", "none", ""):
+                key = k
+    if key and {from_id_escaped}:
+        tasks_file = {tasks_file_escaped}
+        if pathlib.Path(tasks_file).exists():
+            import tempfile
+            tasks = json.loads(pathlib.Path(tasks_file).read_text())
+            t = next((x for x in tasks if x.get("id") == {task_id_escaped}), None)
+            if t:
+                pair = ":".join(sorted([{from_id_escaped}, {agent_id_escaped}]))
+                t.setdefault("session_keys", {{}})[pair] = {{
+                    "sessionKey": key, "savedAt": _now_iso(),
+                    "agents": [{from_id_escaped}, {agent_id_escaped}],
+                }}
+                fd, tmp = tempfile.mkstemp(dir=pathlib.Path(tasks_file).parent, suffix=".tmp")
+                with os.fdopen(fd, "w") as f:
+                    json.dump(tasks, f, indent=2, ensure_ascii=False)
+                os.replace(tmp, tasks_file)
+                print(f"[async-spawn] key saved: {task_id_escaped} {{pair}}", flush=True)
+            else:
+                print(f"[async-spawn] task not found: {task_id_escaped}", flush=True)
+        else:
+            print(f"[async-spawn] tasks file not found: {{tasks_file}}", flush=True)
+    else:
+        print(f"[async-spawn] no sessionKey extracted for {agent_id_escaped}", flush=True)
+except subprocess.TimeoutExpired:
+    print(f"[async-spawn] timeout for {agent_id_escaped}", flush=True)
+except Exception as e:
+    print(f"[async-spawn] error: {{e}}", flush=True)
+'''
+    try:
+        subprocess.Popen(
+            ['python3', '-c', script],
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+        )
+        log.info(f'🚀 异步唤醒: {to_label} ({agent_id}) | 任务 {task_id} | 不阻塞主流程')
+    except Exception as e:
+        log.warning(f'🚀 异步唤醒失败: {to_label} ({agent_id}): {e}')
+
+
 def _notify_agent(agent_id, task_id, from_org, to_org, title='', remark='', current_session_key=None, _retry=0):
     """通知目标 Agent 有新任务/流转（含 Session Key 复用机制 — 程序层核心保障）。
+
+    修改说明（发完即走）：首次通知改为全异步，不再阻塞等待 Agent 回复确认。
+    sessionKey 由后台脚本异步提取并保存到注册表。
 
     - 🔑 Session Key 机制（核心保障）：优先复用已有会话（sessions_send），避免会话膨胀。
       首次通知时使用 --json 获取 sessionKey 并自动保存到任务的 session_keys 注册表。
@@ -559,12 +639,7 @@ def _notify_agent(agent_id, task_id, from_org, to_org, title='', remark='', curr
         parts.append(f"🚀 你需要做的：")
         parts.append(action_items)
     parts.append(f"")
-    parts.append(f"⚠️ 【交接协议 - 强制执行】")
-    parts.append(f"收到此消息后，你必须做的第一件事：")
-    parts.append(f"  立即回复确认：「{confirm_fmt}」")
-    parts.append(f"  要求：{deadline}")
-    parts.append(f"")
-    parts.append(f"请立即处理！")
+    parts.append(f"请立即开始处理，无需回复确认！")
 
     message = '\n'.join(parts)
 
@@ -604,18 +679,11 @@ def _notify_agent(agent_id, task_id, from_org, to_org, title='', remark='', curr
             )
             log.info(f'🔑 已发送【复用会话】通知给 {to_label} ({agent_id}) | 任务 {task_id} | key={existing_key[:30]}...')
         else:
-            # 无 key → openclaw agent --json → 提取 sessionKey → 自动保存
-            result = subprocess.run(
-                ['openclaw', 'agent', '--agent', agent_id, '-m', message, '--json', '--timeout', '120'],
-                capture_output=True, text=True, timeout=150,
+            # 无 key → 异步唤醒 Agent + 异步保存 sessionKey（完全不阻塞主流程）
+            _async_spawn_and_save_key(
+                agent_id=agent_id, message=message, task_id=task_id,
+                from_id=from_id, to_label=to_label,
             )
-            output = (result.stdout or '') + (result.stderr or '')
-            key = _extract_session_key_from_json(output)
-            if key and from_id:
-                log.info(f'🔑 首次通知: 自动保存 sessionKey | {task_id} | {from_id}:{agent_id}')
-                cmd_session_keys_save(task_id, from_id, agent_id, key)
-            else:
-                log.info(f'📨 已发送【针对性】通知给 {to_label} ({agent_id}) | 任务 {task_id}（未获取 sessionKey）')
     except Exception as e:
         log.warning(f'⚠️ 通知 {to_label} ({agent_id}) 失败 (第{_retry+1}次): {e}')
         if _retry < 1:

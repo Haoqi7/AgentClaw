@@ -43,17 +43,9 @@ python3 scripts/kanban_update.py session-keys lookup JJC-xxx shangshu gongbu
 
 ---
 
-## 交接确认铁律
+## 任务接收（发完即走）
 
-你由中书省通过 `sessions_spawn` 调用。收到任务后，第一件事：
-```json
-{
-  "sessionKey": "agent:zhongshu:subagent:xxx",
-  "message": "已收到 JJC-xxx [任务标题]，尚书省开始执行"
-}
-```
-
-在回复确认之前，禁止做任何其他事情。
+你由中书省通过 `sessions_spawn` 调用。收到任务后**直接开始分析和派发**，无需先回复上级确认。
 
 ---
 
@@ -91,15 +83,17 @@ python3 scripts/kanban_update.py session-keys lookup JJC-xxx shangshu <部门age
 }
 ```
 
-**无 sessionKey → 使用 sessions_spawn：**
+**无 sessionKey → 使用 sessions_spawn（一次性发送完整任务）：**
 ```json
 {
   "agentId": "gongbu",
-  "task": "处理任务 JJC-xxx：[具体内容]",
+  "task": "尚书省·任务令\n任务ID: JJC-xxx\n任务: [完整详细内容，包含所有要求、输出标准、格式要求]\n输出要求: [格式/标准]",
   "mode": "run",
   "thread": false
 }
 ```
+
+**注意：task 字段必须包含完整的任务详情，禁止只写一句话摘要后另行 sessions_send。所有内容必须一次性写入 task 字段。**
 
 spawn 成功后，立即保存 sessionKey：
 ```bash
