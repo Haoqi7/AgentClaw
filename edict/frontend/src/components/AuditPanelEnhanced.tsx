@@ -92,7 +92,8 @@ const INNER_TAB_CSS = `
 
 /* ── 卡片悬浮动画 ── */
 const CARD_CSS = `
-.audit-task-card { transition: border-color .15s, transform .1s, box-shadow .15s; cursor: pointer; }
+.audit-task-card { transition: border-color .15s, transform .1s, box-shadow .15s; cursor: pointer;
+  display: flex; flex-direction: column; }
 .audit-task-card:hover { border-color: var(--acc); transform: translateY(-2px); box-shadow: 0 4px 20px rgba(106,158,255,.1); }
 .audit-task-card.archived-card:hover { border-color: #2e3d6a; box-shadow: 0 4px 20px rgba(0,0,0,.15); }
 `;
@@ -122,9 +123,9 @@ const MODAL_CSS = `
 /* ── 总览增强区域样式 ── */
 const OVERVIEW_CSS = `
 .ov-section { background: var(--panel2, rgba(255,255,255,0.03)); border: 1px solid var(--line);
-  border-radius: 10px; padding: 12px 14px; margin-bottom: 12px; }
+  border-radius: 10px; padding: 12px 14px; }
 .ov-section-title { font-size: 11px; font-weight: 700; color: var(--muted); margin-bottom: 8px;
-  text-transform: uppercase; letter-spacing: 0.5px; display: flex; align-items: center; gap: 6; }
+  text-transform: uppercase; letter-spacing: 0.5px; display: flex; align-items: center; gap: 6px; }
 
 /* 违规类型分布 */
 .ov-viol-dist { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
@@ -141,7 +142,7 @@ const OVERVIEW_CSS = `
 .ov-dept-tag:hover { transform: scale(1.05); }
 
 /* 全局动态流 */
-.ov-feed-list { display: flex; flex-direction: column; gap: 4px; max-height: 160px; overflow-y: auto; }
+.ov-feed-list { display: flex; flex-direction: column; gap: 4px; flex: 1; overflow-y: auto; }
 .ov-feed-item { display: flex; align-items: center; gap: 6px; font-size: 11px; padding: 4px 8px;
   border-radius: 6px; background: rgba(255,255,255,0.02); transition: background .12s; cursor: pointer; }
 .ov-feed-item:hover { background: rgba(255,255,255,0.05); }
@@ -400,7 +401,7 @@ export default function AuditPanelEnhanced() {
         <div>
           {/* ══ 概览增强区域：信息摘要面板（两列布局） ══ */}
           {watchedCount > 0 && (
-            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(320px, 1fr))', gap: 12, marginBottom: 14 }}>
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12, marginBottom: 14 }}>
 
               {/* ── 左列：部门分布 + 违规类型分布 ── */}
               <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
@@ -445,7 +446,7 @@ export default function AuditPanelEnhanced() {
               </div>
 
               {/* ── 右列：全局最新动态流 ── */}
-              <div className="ov-section" style={{ display: 'flex', flexDirection: 'column' }}>
+              <div className="ov-section" style={{ display: 'flex', flexDirection: 'column', minHeight: 0 }}>
                 <div className="ov-section-title" style={{ marginBottom: globalFeed.length > 0 ? 6 : 0 }}>
                   📡 最新动态 <span style={{ fontWeight: 400, opacity: 0.6 }}>({globalFeed.length} 条)</span>
                 </div>
@@ -485,8 +486,8 @@ export default function AuditPanelEnhanced() {
           {filteredWatched.length === 0 ? (
             <div className="mb-empty">当前没有活跃旨意任务，监察处于待命状态</div>
           ) : (
-            /* ── 任务卡片网格（一行展示三个任务） ── */
-            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(360px, 1fr))', gap: 14, paddingBottom: 8 }}>
+            /* ── 任务卡片网格（一行展示两个任务） ── */
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, 1fr)', gap: 14, paddingBottom: 8 }}>
               {filteredWatched.map(w => {
                 const vCount = violations.filter(v => v.task_id === w.task_id).length;
                 const task = taskMap.get(w.task_id);
@@ -582,7 +583,7 @@ export default function AuditPanelEnhanced() {
           {!archiveCollapsed && (archivedTasks.length === 0 ? (
             <div className="mb-empty">暂无归档任务，任务完成后将自动归档于此</div>
           ) : (
-            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(360px, 1fr))', gap: 14, paddingBottom: 8 }}>
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, 1fr)', gap: 14, paddingBottom: 8 }}>
               {archivedTasks.map(t => {
                 const st = STATE_S[t.state] || STATE_S.Done;
                 const avCount = archivedViolations.filter(v => v.task_id === t.id).length;
