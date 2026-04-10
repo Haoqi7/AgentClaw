@@ -440,11 +440,33 @@ try:
             "请立即确认任务状态并更新进展（progress 命令）。\\n\\n"
             "⚠️ 看板已有此任务，请勿重复创建。"
         )
-        subprocess.Popen(
-            ["openclaw", "agent", "--agent", {agent_id_escaped}, "-m", msg, "--timeout", "120"],
-            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-        )
-        print(f"[stall-watchdog] {task_id_escaped} 已催办 {agent_label_escaped}", flush=True)
+        # 查找该任务对应的 session key（精准发送到子代理，不打 main session）
+        existing_key = None
+        try:
+            tasks_data = json.loads(pathlib.Path({tasks_file_escaped}).read_text())
+            task_obj = next((x for x in tasks_data if x.get("id") == {task_id_escaped}), None)
+            if task_obj:
+                target = {agent_id_escaped}
+                for _pair, _entry in task_obj.get("session_keys", {{}}).items():
+                    _agents = _entry.get("agents", [])
+                    if target in _agents and _entry.get("sessionKey"):
+                        existing_key = _entry["sessionKey"]
+                        break
+        except Exception:
+            pass
+
+        if existing_key:
+            subprocess.Popen(
+                ["openclaw", "sessions", "send", "--session-key", existing_key, "-m", msg],
+                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            )
+            print(f"[stall-watchdog] {task_id_escaped} 已通过 session 催办 {agent_label_escaped}", flush=True)
+        else:
+            subprocess.Popen(
+                ["openclaw", "sessions", "spawn", "--agent", {agent_id_escaped}, "--task", msg, "--mode", "run", "--thread", "false"],
+                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            )
+            print(f"[stall-watchdog] {task_id_escaped} 已 spawn 催办 {agent_label_escaped}", flush=True)
 except Exception as e:
     print(f"[stall-watchdog] {task_id_escaped} 检查失败: {e}", flush=True)
 '''
@@ -505,7 +527,7 @@ def _now_iso():
     return _dt.datetime.now(_BJT).isoformat()
 try:
     result = subprocess.run(
-        ["openclaw", "agent", "--agent", {agent_id_escaped}, "-m", {message_escaped}, "--json", "--timeout", "120"],
+        ["openclaw", "sessions", "spawn", "--agent", {agent_id_escaped}, "--task", {message_escaped}, "--mode", "run", "--thread", "false", "--json"],
         capture_output=True, text=True, timeout=150,
     )
     output = (result.stdout or "") + (result.stderr or "")
@@ -530,7 +552,7 @@ try:
             tasks = json.loads(pathlib.Path(tasks_file).read_text())
             t = next((x for x in tasks if x.get("id") == {task_id_escaped}), None)
             if t:
-                pair = ":".join(sorted([{from_id_escaped}, {agent_id_escaped}]))
+                pair = f"{from_id_escaped}:{agent_id_escaped}" 
                 t.setdefault("session_keys", {{}})[pair] = {{
                     "sessionKey": key, "savedAt": _now_iso(),
                     "agents": [{from_id_escaped}, {agent_id_escaped}],
@@ -668,17 +690,13 @@ def _notify_agent(agent_id, task_id, from_org, to_org, title='', remark='', curr
     # 解析发送方 agent_id（用于 session_keys pair 查找）
     from_id = _resolve_agent_id(from_org) or (from_org.strip().lower() if from_org else '')
 
-    # 查找已有 sessionKey
+    # 查找已有 sessionKey（按目标 Agent 查找，忽略方向性，支持封驳回传场景）
     existing_key = None
     try:
         tasks = load()
         t = find_task(tasks, task_id)
         if t:
-            pair = _normalize_pair(from_id, agent_id) if from_id else None
-            if pair:
-                entry = t.get('session_keys', {}).get(pair)
-                if entry and entry.get('sessionKey'):
-                    existing_key = entry['sessionKey']
+            existing_key = _find_session_key_for_agent(t, agent_id)
     except Exception:
         pass
 
@@ -756,15 +774,13 @@ def agent_communicate(task_id, from_agent, to_agent, message, timeout=120):
     pair = _normalize_pair(from_id, to_id)
     to_label = _AGENT_LABELS.get(to_id, to_id)
 
-    # ── 1. 查找已有 sessionKey ──
+    # ── 1. 查找已有 sessionKey（按目标 Agent 查找，支持封驳回传） ──
     existing_key = None
     try:
         tasks = load()
         t = find_task(tasks, task_id)
         if t:
-            entry = t.get('session_keys', {}).get(pair)
-            if entry and entry.get('sessionKey'):
-                existing_key = entry['sessionKey']
+            existing_key = _find_session_key_for_agent(t, to_id)
     except Exception as e:
         log.warning(f'agent_communicate: 查找 session_key 失败: {e}')
 
@@ -785,7 +801,7 @@ def agent_communicate(task_id, from_agent, to_agent, message, timeout=120):
     # ── 2b. 无 key → openclaw agent --json → 提取 key → 自动保存 ──
     try:
         result = subprocess.run(
-            ['openclaw', 'agent', '--agent', to_id, '-m', message, '--json', '--timeout', str(timeout)],
+            ["openclaw", "sessions", "spawn", "--agent", to_id, "--task", message, "--mode", "run", "--thread", "false", "--json"],
             capture_output=True, text=True, timeout=timeout + 30,
         )
         output = (result.stdout or '') + (result.stderr or '')
@@ -823,14 +839,41 @@ def find_task(tasks, task_id):
 #   kanban_update.py session-keys list   JJC-xxx
 # ═══════════════════════════════════════════════════════════════════════
 
+def _find_session_key_for_agent(task_data, target_agent_id):
+    """按目标 Agent 查找该任务中已存在的 session key（忽略方向性）。
+    
+    封驳场景：from=menxia, agent=zhongshu
+    中书省的 key 存在 "taizi:zhongshu" 下，方向性查找 "menxia:zhongshu" 会找不到
+    因此遍历所有 pair，找包含 target_agent_id 的条目
+    
+    Args:
+        task_data: 任务 dict（来自 tasks_source.json）
+        target_agent_id: 目标 agent_id（如 'zhongshu'）
+    
+    Returns:
+        sessionKey 字符串，或 None
+    """
+    if not task_data or not target_agent_id:
+        return None
+    target = target_agent_id.strip().lower()
+    for pair, entry in task_data.get('session_keys', {}).items():
+        agents = entry.get('agents', [])
+        if target in [a.strip().lower() for a in agents]:
+            key = entry.get('sessionKey')
+            if key and str(key).strip().lower() not in ('null', 'none', ''):
+                return str(key).strip()
+    return None
+
+
 def _normalize_pair(agent_a, agent_b):
     """将两个 agent_id 规范化为有序 pair key（字母序排列，确保双向查找一致）。
     
     例如: _normalize_pair('zhongshu', 'menxia') → 'menxia:zhongshu'
           _normalize_pair('menxia', 'zhongshu') → 'menxia:zhongshu'  (相同结果)
     """
-    parts = sorted([agent_a.strip().lower(), agent_b.strip().lower()])
-    return f'{parts[0]}:{parts[1]}'
+    a = agent_a.strip().lower()
+    b = agent_b.strip().lower()
+    return f'{a}:{b}'
 
 
 def _extract_session_key_from_json(output_text):
@@ -862,8 +905,9 @@ def _extract_session_key_from_json(output_text):
 
 
 def _lookup_session_key(task_id, agent_a, agent_b):
-    """快速查找任务中两个 agent 之间已保存的 sessionKey（不写日志，供内部调用）。
+    """查找任务中两个 agent 之间的 sessionKey（兼容新旧 pair 格式）。
     
+    优先查方向性 pair（新），再查 sorted pair（旧），最后按目标 Agent 遍历。
     返回 sessionKey 字符串或 None。
     """
     try:
@@ -871,9 +915,18 @@ def _lookup_session_key(task_id, agent_a, agent_b):
         t = find_task(tasks, task_id)
         if not t:
             return None
-        pair = _normalize_pair(agent_a, agent_b)
-        entry = t.get('session_keys', {}).get(pair)
-        return entry.get('sessionKey') if entry else None
+        # 优先：方向性 pair（新格式）
+        dir_pair = _normalize_pair(agent_a, agent_b)
+        entry = t.get('session_keys', {}).get(dir_pair)
+        if entry and entry.get('sessionKey'):
+            return entry.get('sessionKey')
+        # 兼容：旧的 sorted pair
+        old_pair = ':'.join(sorted([agent_a.strip().lower(), agent_b.strip().lower()]))
+        entry = t.get('session_keys', {}).get(old_pair)
+        if entry and entry.get('sessionKey'):
+            return entry.get('sessionKey')
+        # 兜底：按目标 Agent 遍历（与 _find_session_key_for_agent 一致）
+        return _find_session_key_for_agent(t, agent_b)
     except Exception:
         return None
 
@@ -1468,6 +1521,46 @@ def cmd_done(task_id, output_path='', summary=''):
                     f'建议太子后续调用 flow 命令补录：flow {task_id} 太子 皇上 回奏皇上'
                 )
             
+            # ── 自动补全流转：六部有产出 + 太子已收到汇报 → 自动补全并允许完成 ──
+            # 当以下两个条件同时满足时，认为任务实质上已完成：
+            #   1. output 字段非空（六部有产出）
+            #   2. flow_log 中存在 中书省→太子 或 尚书省→太子（太子已收到汇报）
+            # 此时自动补全缺失的回传流转记录，然后允许标记 Done。
+            _has_output = bool((t.get('output', '') or output_path).strip())
+            _has_taizi_reported = has_return_to_taizi or has_shangshu_direct_to_taizi
+            if _has_output and _has_taizi_reported and missing_steps:
+                _auto_filled = []
+                _now = now_iso()
+                # 补全 尚书省→中书省
+                if not has_return_to_zhongshu:
+                    t.setdefault('flow_log', []).append({
+                        'at': _now, 'from': '尚书省', 'to': '中书省',
+                        'remark': '[自动补全] 尚书省汇总六部成果返回中书省',
+                        'agent': 'system', 'agentLabel': '系统自动补全',
+                    })
+                    _auto_filled.append('尚书省→中书省')
+                # 补全 中书省→太子（仅当尚书省也没有直报太子时）
+                if not has_return_to_taizi and not has_shangshu_direct_to_taizi:
+                    t.setdefault('flow_log', []).append({
+                        'at': _now, 'from': '中书省', 'to': '太子',
+                        'remark': '[自动补全] 中书省回奏太子',
+                        'agent': 'system', 'agentLabel': '系统自动补全',
+                    })
+                    _auto_filled.append('中书省→太子')
+                # 补全 太子→皇上
+                if not has_report_to_huangshang:
+                    t.setdefault('flow_log', []).append({
+                        'at': _now, 'from': '太子', 'to': '皇上',
+                        'remark': '[自动补全] 太子汇报皇上（六部已有产出且太子已收到汇报，系统自动补全回奏环节）',
+                        'agent': 'system', 'agentLabel': '系统自动补全',
+                    })
+                    _auto_filled.append('太子→皇上')
+                log.info(
+                    f'🔧 旨意任务 {task_id} 自动补全流转：{"、".join(_auto_filled)} '
+                    f'（条件：output 非空 + 太子已收到汇报）'
+                )
+                missing_steps = []
+
             if missing_steps:
                 log.warning(
                     f'⚠️ 旨意任务 {task_id} 未完成回奏皇上，不允许标记 Done。'

@@ -246,7 +246,7 @@ LEGAL_FLOWS = {
     ("尚书省", "中书省"),   # 汇总返回
     ("中书省", "太子"),     # 回奏
     ("太子",   "皇上"),     # 汇报皇上
-    ("尚书省", "太子")      # 直接汇报
+    # ("尚书省", "太子") 已移除：返回必须经中书省转交
 
     # ── 省部内部消息（自己给自己发内部处理消息）──
     ("中书省", "中书省"),   # 中书省内部处理（收准奏/方案修订等）
@@ -418,6 +418,24 @@ def normalize_name(raw):
     return NAME_TO_ID.get(stripped, stripped.lower())
 
 
+def _find_task_session_key_for_agent(task_data, target_agent_id):
+    """按目标 Agent 查找该任务中已存在的 session key（忽略方向性）。
+    
+    用于断链处理时精准发送消息到该任务的子代理 session，
+    而不是打到 Agent 的 main session。
+    """
+    if not task_data or not target_agent_id:
+        return None
+    target = target_agent_id.strip().lower()
+    for pair, entry in task_data.get('session_keys', {}).items():
+        agents = entry.get('agents', [])
+        if target in [a.strip().lower() for a in agents]:
+            key = entry.get('sessionKey')
+            if key and str(key).strip().lower() not in ('null', 'none', ''):
+                return str(key).strip()
+    return None
+
+
 def wake_agent(agent_id, reason=""):
     """唤醒指定 Agent（异步发送心跳消息，不阻塞主循环）。返回 (success, detail)。
     
@@ -435,11 +453,12 @@ def wake_agent(agent_id, reason=""):
     )
     try:
         subprocess.Popen(
-            ["openclaw", "agent", "--agent", agent_id, "-m", msg, "--timeout", "120"],
+            ["openclaw", "sessions", "spawn", "--agent", agent_id, "--task", msg,
+             "--mode", "run", "--thread", "false"],
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
         )
-        log(f"已唤醒 {label} ({agent_id})")
+        log(f"已唤醒 {label} ({agent_id}) [subagent session]")
         # 异步验证：30秒后在后台线程中检查 Agent 是否活跃，不阻塞主循环
         def _verify_agent():
             time.sleep(30)
@@ -447,7 +466,8 @@ def wake_agent(agent_id, reason=""):
                 log(f"{label} ({agent_id}) 唤醒后30秒仍无活动，尝试二次唤醒")
                 try:
                     subprocess.Popen(
-                        ["openclaw", "agent", "--agent", agent_id, "-m", msg, "--timeout", "120"],
+                        ["openclaw", "sessions", "spawn", "--agent", agent_id, "--task", msg,
+                         "--mode", "run", "--thread", "false"],
                         stdout=subprocess.DEVNULL,
                         stderr=subprocess.DEVNULL,
                     )
@@ -457,7 +477,7 @@ def wake_agent(agent_id, reason=""):
             else:
                 log(f"{label} ({agent_id}) 唤醒后已活跃")
         threading.Thread(target=_verify_agent, daemon=True).start()
-        return True, f"已向 {label} 发送唤醒消息"
+        return True, f"已向 {label} 发送唤醒消息 [subagent session]"
     except Exception as e:
         log(f"唤醒 {label} ({agent_id}) 失败: {e}")
         return False, str(e)[:200]
@@ -470,7 +490,8 @@ def notify_agent(agent_id, message):
     label = ID_TO_LABEL.get(agent_id, agent_id)
     try:
         result = subprocess.run(
-            ["openclaw", "agent", "--agent", agent_id, "-m", message, "--timeout", "30"],
+            ["openclaw", "sessions", "spawn", "--agent", agent_id, "--task", message,
+             "--mode", "run", "--thread", "false"],
             capture_output=True, text=True, timeout=60
         )
         success = result.returncode == 0
@@ -859,7 +880,6 @@ _CHILD_AGENT_ALLOWED_PAIRS = {
     ("zhongshu", "taizi"),
     ("menxia", "zhongshu"),
     ("shangshu", "zhongshu"),
-    ("shangshu", "taizi"),
     ("gongbu", "shangshu"),
     ("bingbu", "shangshu"),
     ("hubu", "shangshu"),
@@ -1714,12 +1734,23 @@ def _main_inner():
                         f"⚠️ 看板已有此任务，请勿重复创建。"
                     )
                     try:
-                        subprocess.Popen(
-                            ["openclaw", "agent", "--agent", parent_id, "-m", re_dispatch_msg, "--timeout", "120"],
-                            stdout=subprocess.DEVNULL,
-                            stderr=subprocess.DEVNULL,
-                        )
-                        log(f"已通知 {parent_label} 重新派发 {target_label} | {task_id}")
+                        # 精准发送到该任务的父级子代理 session，不打 main session
+                        _task_session_key = _find_task_session_key_for_agent(task, parent_id)
+                        if _task_session_key:
+                            subprocess.Popen(
+                                ["openclaw", "sessions", "send", "--session-key", _task_session_key, "-m", re_dispatch_msg],
+                                stdout=subprocess.DEVNULL,
+                                stderr=subprocess.DEVNULL,
+                            )
+                            log(f"已通知 {parent_label} 重新派发 {target_label} | {task_id} [复用 session]")
+                        else:
+                            subprocess.Popen(
+                                ["openclaw", "sessions", "spawn", "--agent", parent_id, "--task", re_dispatch_msg,
+                                 "--mode", "run", "--thread", "false"],
+                                stdout=subprocess.DEVNULL,
+                                stderr=subprocess.DEVNULL,
+                            )
+                            log(f"已通知 {parent_label} 重新派发 {target_label} | {task_id} [新 subagent]")
                     except Exception as e:
                         log(f"通知 {parent_label} 重新派发失败: {e}")
                         wake_ok = False
@@ -1744,12 +1775,23 @@ def _main_inner():
                         f"⚠️ 看板已有此任务，请勿重复创建。"
                     )
                     try:
-                        subprocess.Popen(
-                            ["openclaw", "agent", "--agent", parent_id, "-m", re_dispatch_msg, "--timeout", "120"],
-                            stdout=subprocess.DEVNULL,
-                            stderr=subprocess.DEVNULL,
-                        )
-                        log(f"已补充通知 {parent_label} 重新派发 {target_label} | {task_id}")
+                        # 精准发送到该任务的父级子代理 session，不打 main session
+                        _task_session_key = _find_task_session_key_for_agent(task, parent_id)
+                        if _task_session_key:
+                            subprocess.Popen(
+                                ["openclaw", "sessions", "send", "--session-key", _task_session_key, "-m", re_dispatch_msg],
+                                stdout=subprocess.DEVNULL,
+                                stderr=subprocess.DEVNULL,
+                            )
+                            log(f"已补充通知 {parent_label} 重新派发 {target_label} | {task_id} [复用 session]")
+                        else:
+                            subprocess.Popen(
+                                ["openclaw", "sessions", "spawn", "--agent", parent_id, "--task", re_dispatch_msg,
+                                 "--mode", "run", "--thread", "false"],
+                                stdout=subprocess.DEVNULL,
+                                stderr=subprocess.DEVNULL,
+                            )
+                            log(f"已补充通知 {parent_label} 重新派发 {target_label} | {task_id} [新 subagent]")
                     except Exception as e:
                         log(f"补充通知 {parent_label} 失败: {e}")
                     # 记录补充通知动作
