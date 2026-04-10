@@ -12,6 +12,8 @@
 用法:
   # 新建任务（收旨时）
   python3 kanban_update.py create JJC-20260223-012 "任务标题" Zhongshu 中书省 中书令
+  # 新建任务并使用当前会话发送通知（避免创建新会话）
+  python3 kanban_update.py create JJC-20260223-012 "任务标题" Zhongshu 中书省 中书令 "备注" --current-session-key "agent:taizi:feishu:direct:xxx"
 
   # 更新状态
   python3 kanban_update.py state JJC-20260223-012 Menxia "规划方案已提交门下省"
@@ -482,7 +484,7 @@ def _resolve_agent_id(target):
     return _STATE_AGENT_MAP.get(target, '')
 
 
-def _notify_agent(agent_id, task_id, from_org, to_org, title='', remark='', _retry=0):
+def _notify_agent(agent_id, task_id, from_org, to_org, title='', remark='', current_session_key=None, _retry=0):
     """通知目标 Agent 有新任务/流转（含 Session Key 复用机制 — 程序层核心保障）。
 
     - 🔑 Session Key 机制（核心保障）：优先复用已有会话（sessions_send），避免会话膨胀。
@@ -495,6 +497,8 @@ def _notify_agent(agent_id, task_id, from_org, to_org, title='', remark='', _ret
       包含该部门的核心职责提醒和具体执行步骤指导。
     - 唤醒重试：首次失败后 3 秒重试一次。
     - 🔒 会话去重：同一任务 + 同一目标 Agent 在短时间内不重复唤醒。
+    - 📨 当前会话支持：如果提供了 current_session_key，则直接发送到该会话，
+      而不是创建新会话，确保消息回到原始对话。
     """
     if not agent_id:
         return
@@ -583,7 +587,15 @@ def _notify_agent(agent_id, task_id, from_org, to_org, title='', remark='', _ret
         pass
 
     try:
-        if existing_key:
+        if current_session_key:
+            # 有当前会话key → 直接发送到当前会话
+            proc = subprocess.Popen(
+                ['openclaw', 'sessions', 'send', '--session-key', current_session_key, '-m', message],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+            log.info(f'📨 已发送【当前会话】通知给 {to_label} ({agent_id}) | 任务 {task_id} | 使用当前会话key')
+        elif existing_key:
             # 有 key → sessions_send 复用会话
             proc = subprocess.Popen(
                 ['openclaw', 'sessions', 'send', '--session-key', existing_key, '-m', message],
@@ -974,8 +986,18 @@ def _is_valid_task_title(title):
     return True, ''
 
 
-def cmd_create(task_id, title, state, org, official, remark=None):
-    """新建任务（收旨时立即调用）"""
+def cmd_create(task_id, title, state, org, official, remark=None, current_session_key=None):
+    """新建任务（收旨时立即调用）
+    
+    Args:
+        task_id: 任务ID
+        title: 任务标题
+        state: 初始状态
+        org: 初始部门
+        official: 负责人
+        remark: 备注
+        current_session_key: 当前会话的sessionKey，如果有则使用该会话发送通知
+    """
     # 清洗标题（剥离元数据）
     title = _sanitize_title(title)
     # 旨意标题校验
@@ -1026,6 +1048,7 @@ def cmd_create(task_id, title, state, org, official, remark=None):
         to_org=actual_org,
         title=title,
         remark=clean_remark,
+        current_session_key=current_session_key,
     )
 
     log.info(f'✅ 创建 {task_id} | {title[:30]} | state={state}')
@@ -1529,7 +1552,26 @@ if __name__ == '__main__':
         print(__doc__)
         sys.exit(1)
     if cmd == 'create':
-        cmd_create(args[1], args[2], args[3], args[4], args[5], args[6] if len(args)>6 else None)
+        # 解析可选 --current-session-key 参数
+        create_pos = []
+        current_session_key = None
+        i = 1
+        while i < len(args):
+            if args[i] == '--current-session-key' and i + 1 < len(args):
+                current_session_key = args[i + 1]
+                i += 2
+            else:
+                create_pos.append(args[i])
+                i += 1
+        cmd_create(
+            create_pos[0] if len(create_pos) > 0 else '',
+            create_pos[1] if len(create_pos) > 1 else '',
+            create_pos[2] if len(create_pos) > 2 else '',
+            create_pos[3] if len(create_pos) > 3 else '',
+            create_pos[4] if len(create_pos) > 4 else '',
+            create_pos[5] if len(create_pos) > 5 else None,
+            current_session_key=current_session_key
+        )
     elif cmd == 'state':
         cmd_state(args[1], args[2], args[3] if len(args)>3 else None)
     elif cmd == 'flow':
