@@ -3315,8 +3315,32 @@ class Handler(BaseHTTPRequestHandler):
             return
 
         if p == '/api/gateway/sessions-url':
-            """返回 Gateway 会话管理页面的 URL（Fix #1: 使用浏览器可访问的外部地址）"""
-            self.send_json({'ok': True, 'url': f'{_get_external_gateway_url(self)}/sessions'})
+            """返回 Gateway 会话管理页面的 URL（Fix #1: 使用浏览器可访问的外部地址）。
+            注意：该端点仅用于兼容性保留。推荐使用 /api/gateway/conversations 代理 API，
+            前端内嵌式会话面板不再依赖外部 URL 直连，避免 Docker/反向代理环境下的可达性问题。
+            """
+            gw_ext_url = _get_external_gateway_url(self)
+            sessions_url = f'{gw_ext_url}/sessions'
+            # 可达性预检：服务端尝试连接构造的外部 URL，判断浏览器是否可达
+            url_reachable = False
+            try:
+                from urllib.parse import urlparse
+                parsed = urlparse(gw_ext_url)
+                gw_host = parsed.hostname or ''
+                gw_port = parsed.port or 18789
+                if gw_host and gw_host not in ('localhost', '127.0.0.1', '::1'):
+                    with socket.create_connection((gw_host, gw_port), timeout=3):
+                        url_reachable = True
+                else:
+                    url_reachable = True  # localhost 场景默认可达
+            except Exception:
+                pass
+            self.send_json({
+                'ok': url_reachable,
+                'url': sessions_url,
+                'reachable': url_reachable,
+                'hint': '' if url_reachable else 'Gateway 外部地址不可达，建议使用 EDICT_EXTERNAL_GATEWAY_URL 环境变量或通过看板代理 API 管理会话',
+            })
             return
 
         if p == '/api/archive-task':
