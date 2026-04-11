@@ -462,11 +462,12 @@ try:
             )
             print(f"[stall-watchdog] {task_id_escaped} 已通过 session 催办 {agent_label_escaped}", flush=True)
         else:
+            # 【关键修复】使用 openclaw agent（非 sessions spawn）确保催办消息被 Agent 接收
             subprocess.Popen(
-                ["openclaw", "sessions", "spawn", "--agent", {agent_id_escaped}, "--task", msg, "--mode", "run", "--thread", "false"],
+                ["openclaw", "agent", "--agent", {agent_id_escaped}, "-m", msg, "--timeout", "120"],
                 stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
             )
-            print(f"[stall-watchdog] {task_id_escaped} 已 spawn 催办 {agent_label_escaped}", flush=True)
+            print(f"[stall-watchdog] {task_id_escaped} 已 openclaw agent 催办 {agent_label_escaped}", flush=True)
 except Exception as e:
     print(f"[stall-watchdog] {task_id_escaped} 检查失败: {e}", flush=True)
 '''
@@ -507,13 +508,17 @@ def _resolve_agent_id(target):
 
 
 def _async_spawn_and_save_key(agent_id, message, task_id, from_id, to_label):
-    """异步唤醒 Agent 并自动保存 sessionKey（完全不阻塞调用方）。
+    """异步唤醒 Agent 并标记通知完成（完全不阻塞调用方）。
 
-    修复（解决中书永远收不到通知的 Bug）：
-    1. 后台脚本成功提取 sessionKey 后，将 _lastNotify[agent_id].done 标记为 True
-    2. 后台脚本失败时，不修改 done 状态（保持 False），让冷却机制 30 秒后放行重试
-    3. 所有输出写入日志文件（不再使用 DEVNULL），方便排查失败原因
-    4. 增加异步验证线程，失败时记录详细日志
+    【关键修复】使用 openclaw agent（非 sessions spawn）唤醒 Agent。
+
+    根因：openclaw sessions spawn 只创建会话但不触发 Agent LLM 处理，
+    Agent 不会收到消息。openclaw agent 直接触发 Agent 的 LLM 处理管道。
+
+    sessionKey 管理变更：
+    - openclaw agent 使用 Agent 的 main session，不返回独立 sessionKey
+    - 后续 Agent 自身的 sessions_spawn（在 SOUL.md 流程中）会创建子会话
+    - 程序层不再依赖 sessions spawn 返回的 sessionKey
     """
     tasks_file_escaped = json.dumps(str(TASKS_FILE))
     from_id_escaped = json.dumps(from_id)
@@ -521,59 +526,43 @@ def _async_spawn_and_save_key(agent_id, message, task_id, from_id, to_label):
     agent_id_escaped = json.dumps(agent_id)
     message_escaped = json.dumps(message)
 
-    script = f'''import json, subprocess, sys, pathlib, re, os, datetime as _dt
+    script = f'''import json, subprocess, sys, pathlib, os, datetime as _dt
 def _now_iso():
     _BJT = _dt.timezone(_dt.timedelta(hours=8))
     return _dt.datetime.now(_BJT).isoformat()
 try:
+    # 【关键修复】使用 openclaw agent 唤醒（与 dashboard/server.py 一致）
     result = subprocess.run(
-        ["openclaw", "sessions", "spawn", "--agent", {agent_id_escaped}, "--task", {message_escaped}, "--mode", "run", "--thread", "false", "--json"],
-        capture_output=True, text=True, timeout=150,
+        ["openclaw", "agent", "--agent", {agent_id_escaped}, "-m", {message_escaped}, "--timeout", "120"],
+        capture_output=True, text=True, timeout=130,
     )
     output = (result.stdout or "") + (result.stderr or "")
-    key = None
-    try:
-        data = json.loads(output.strip())
-        key = data.get("sessionKey") or data.get("session_key")
-        if key and str(key).strip().lower() in ("null", "none", ""):
-            key = None
-        else:
-            key = str(key).strip()
-    except Exception:
-        m = re.search(r'{{[^{{}}]*"sessionKey"\\s*:\\s*"([^"]+)"[^{{}}]*}}', output)
-        if m:
-            k = m.group(1).strip()
-            if k.lower() not in ("null", "none", ""):
-                key = k
-    if key and {from_id_escaped}:
+
+    # 无论是否提取到 sessionKey，只要 returncode==0 就标记 done=True
+    if result.returncode == 0:
         tasks_file = {tasks_file_escaped}
         if pathlib.Path(tasks_file).exists():
             import tempfile
             tasks = json.loads(pathlib.Path(tasks_file).read_text())
             t = next((x for x in tasks if x.get("id") == {task_id_escaped}), None)
             if t:
-                pair = f"{from_id_escaped}:{agent_id_escaped}" 
-                t.setdefault("session_keys", {{}})[pair] = {{
-                    "sessionKey": key, "savedAt": _now_iso(),
-                    "agents": [{from_id_escaped}, {agent_id_escaped}],
-                }}
-                # 修复：标记 done=True 表示异步通知已成功确认
+                # 标记 done=True 表示异步通知已成功送达
                 t.setdefault("_lastNotify", {{}}).setdefault({agent_id_escaped}, {{}})["done"] = True
                 fd, tmp = tempfile.mkstemp(dir=pathlib.Path(tasks_file).parent, suffix=".tmp")
                 with os.fdopen(fd, "w") as f:
                     json.dump(tasks, f, indent=2, ensure_ascii=False)
                 os.replace(tmp, tasks_file)
-                print(f"[async-spawn] key saved + done=True: {task_id_escaped} {{pair}}", flush=True)
+                print(f"[async-wake] done=True: {task_id_escaped} -> {agent_id_escaped} [openclaw agent rc=0]", flush=True)
             else:
-                print(f"[async-spawn] task not found: {task_id_escaped}", flush=True)
+                print(f"[async-wake] task not found: {task_id_escaped}", flush=True)
         else:
-            print(f"[async-spawn] tasks file not found: {{tasks_file}}", flush=True)
+            print(f"[async-wake] tasks file not found: {{tasks_file}}", flush=True)
     else:
-        print(f"[async-spawn] no sessionKey extracted for {agent_id_escaped}", flush=True)
+        print(f"[async-wake] FAILED rc={{result.returncode}} for {agent_id_escaped}: {{output[:300]}}", flush=True)
 except subprocess.TimeoutExpired:
-    print(f"[async-spawn] timeout for {agent_id_escaped}", flush=True)
+    print(f"[async-wake] timeout for {agent_id_escaped}", flush=True)
 except Exception as e:
-    print(f"[async-spawn] error: {{e}}", flush=True)
+    print(f"[async-wake] error: {{e}}", flush=True)
 '''
     # ── BUG FIX #1: 将 DEVNULL 改为写入日志文件 + 添加异步验证线程 ──
     # 原代码使用 stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL，
@@ -840,21 +829,19 @@ def agent_communicate(task_id, from_agent, to_agent, message, timeout=120):
             log.warning(f'🔑 sessions_send 失败: {pair}, 降级为 openclaw agent: {e}')
             # 降级：如果 send 失败，走 spawn 路径
 
-    # ── 2b. 无 key → openclaw agent --json → 提取 key → 自动保存 ──
+    # ── 2b. 无 key → openclaw agent 唤醒（确保消息被 Agent LLM 处理）──
     try:
         result = subprocess.run(
-            ["openclaw", "sessions", "spawn", "--agent", to_id, "--task", message, "--mode", "run", "--thread", "false", "--json"],
+            ["openclaw", "agent", "--agent", to_id, "-m", message, "--timeout", "120"],
             capture_output=True, text=True, timeout=timeout + 30,
         )
         output = (result.stdout or '') + (result.stderr or '')
-        key = _extract_session_key_from_json(output)
 
-        if key:
-            log.info(f'🔑 首次通信: {task_id} | {pair} → 获取 sessionKey, 自动保存')
-            cmd_session_keys_save(task_id, from_id, to_id, key)
-            return key
+        if result.returncode == 0:
+            log.info(f'📨 通信完成 [openclaw agent]: {task_id} | {pair} → {to_label}')
+            return None  # openclaw agent 不返回独立 sessionKey
         else:
-            log.info(f'📨 通信完成（未获取到 sessionKey）: {task_id} | {pair} → {to_label}')
+            log.warning(f'📨 通信失败: {task_id} | {pair} → {to_label} | rc={result.returncode} | {output[:200]}')
             return None
     except subprocess.TimeoutExpired:
         log.warning(f'agent_communicate 超时: {task_id} | {pair} → {to_label} ({timeout}s)')
