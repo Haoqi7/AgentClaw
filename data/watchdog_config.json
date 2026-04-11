@@ -24,5 +24,7 @@
   "max_violations": 200,
   "max_archived_violations": 500,
   "max_archived_notifications": 100,
-  "wake_retry_enabled": true
+  "wake_retry_enabled": true,
+  "adaptive_enabled": true,
+  "multitask_enabled": true
 }

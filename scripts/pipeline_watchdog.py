@@ -66,7 +66,29 @@ REVIEW_GRACE_PERIODS = {
 }
 
 # ── 极端停滞阈值 ─────────────────────────────────────────────────
-EXTREME_STALL_THRESHOLD = 30 * 60  # 30分钟无任何更新视为极端停滞
+EXTREME_STALL_THRESHOLD = 20 * 60  # 20分钟无任何更新视为极端停滞
+
+# ── 多任务动态调整配置 ────────────────────────────────────────────
+# 多任务并行时，中书省等关键节点需要处理多个任务，断链超时应适当放宽
+# 避免因 Agent 正在处理其他任务而误判为断链
+MULTITASK_BREAK_TIMEOUT = {     # 断链超时（秒）— 按活跃任务数阶梯递增
+    1: 90,    # 单任务：90s（默认，不变）
+    2: 120,   # 双任务：120s（+30s）
+    3: 150,   # 三任务：150s（+60s）
+    4: 180,   # 四任务：180s（+90s）
+}
+MULTITASK_ACTIVITY_GRACE = {   # 看板活动宽限期（秒）— 第3层断链检测
+    1: 180,   # 单任务：180s（3分钟）
+    2: 240,   # 双任务：240s（4分钟）
+    3: 300,   # 三任务：300s（5分钟）
+    4: 360,   # 四任务：360s（6分钟，上限）
+}
+MULTITASK_REVIEW_GRACE_SCALE = {  # 审议宽限期乘数
+    1: 1.0,
+    2: 1.3,
+    3: 1.6,
+    4: 2.0,
+}
 
 # ── 自适应配置 ────────────────────────────────────────────────────
 # 运行时可覆盖的配置（由 _load_watchdog_config() 从 watchdog_config.json 加载）
@@ -94,6 +116,7 @@ _cfg = {
     "stability_window": 20,  # 最近 N 轮检查用于计算稳定性
     "stability_threshold_high": 0.8,  # 高稳定性阈值（>此值减少通知）
     "adaptive_grace_boost_sec": 60,  # 自适应宽限期增量（秒）
+    "multitask_enabled": True,  # 多任务动态调整开关
 }
 
 
@@ -715,7 +738,8 @@ def check_direct_execution(task_id, flow_log, task_state=""):
 
 def check_broken_chain(task_id, flow_log, task_state="",
                         progress_log=None, task_updated_at="",
-                        break_timeout=None, review_grace=None):
+                        break_timeout=None, review_grace=None,
+                        active_task_count=1):
     """检查最后一条 flow 是否断链（目标部门无回应）。返回断链信息或 None。
 
     判断"回应"的依据（按优先级递进）：
@@ -813,7 +837,15 @@ def check_broken_chain(task_id, flow_log, task_state="",
     # ── BUG FIX #2 (补充): 将宽限期从 360s 缩短至 180s，并增加目标部门刷新检查。
     #    原宽限期 360s（6分钟）过长，导致断链需要等 6 分钟以上才能被检测到。
     #    同时，仅检查 updatedAt 不够，需确认目标部门确实有活动。
-    _ACTIVITY_GRACE_SEC = 180  # 看板活动宽限期：3 分钟内不断链（原值 360s）
+    # ── 多任务动态调整：看板活动宽限期 ──
+    # 多任务并行时 Agent 处理速度变慢，活动宽限期按活跃任务数动态延长
+    _ACTIVITY_GRACE_SEC = 180  # 单任务默认值
+    if active_task_count and active_task_count >= 2:
+        # 按阶梯取值，超过4个任务取最大值
+        _ACTIVITY_GRACE_SEC = MULTITASK_ACTIVITY_GRACE.get(
+            min(active_task_count, 4),
+            360  # 兜底上限
+        )
     if task_updated_at:
         try:
             upd_str = task_updated_at.replace("Z", "+00:00").replace("+08:00", "")
@@ -1065,8 +1097,8 @@ def check_cross_agent_violation(task_id, flow_log, task_state=""):
     return violations
 
 
-# 极端停滞阈值
-EXTREME_STALL_THRESHOLD = 30 * 60  # 30分钟无任何更新视为极端停滞
+# 极端停滞阈值（使用模块顶部定义，此处仅为注释参考）
+# EXTREME_STALL_THRESHOLD 已在模块顶部定义为 20 * 60（20分钟）
 
 
 def check_extreme_stall(task_id, flow_log, task_state, updated_at_str, stall_threshold=None):
@@ -1389,6 +1421,7 @@ def _main_inner():
     _max_violations = _cfg.get("max_violations", 200)
     _max_arch_violations = _cfg.get("max_archived_violations", 500)
     _max_arch_notifs = _cfg.get("max_archived_notifications", 100)
+    _multitask_enabled = _cfg.get("multitask_enabled", True)
 
     # ── 第一时间写入心跳，表明监察在运行（即使后续崩溃也能证明）──
     _write_heartbeat()
@@ -1487,6 +1520,36 @@ def _main_inner():
 
     new_violations = []
     woken_agents = set()  # 同一轮只唤醒一次
+
+    # ═══════════════════════════════════════════════════════════════════
+    #  多任务动态调整：根据活跃任务数动态调整监察参数
+    # ═══════════════════════════════════════════════════════════════════
+    # 多任务并行时，中书省等关键节点需同时处理多个任务，
+    # 原有的单任务断链超时（90s）和活动宽限期（180s）会导致大量误报。
+    # 此处根据当前活跃旨意任务数动态调整各项阈值。
+    _active_task_count = len(truly_active)  # 活跃旨意任务数（不含 Done/Cancelled）
+
+    if _multitask_enabled and _active_task_count >= 2:
+        # ── 动态调整断链超时 ──
+        _mt_key = min(_active_task_count, 4)  # 超过4个任务取最大值
+        _mt_break_timeout = MULTITASK_BREAK_TIMEOUT.get(_mt_key, 180)
+        if _mt_break_timeout > _break_timeout:
+            log(f"多任务检测：{_active_task_count} 个活跃任务，断链超时 {_break_timeout}s → {_mt_break_timeout}s")
+            _break_timeout = _mt_break_timeout
+
+        # ── 动态调整审议宽限期（按乘数放大）──
+        _mt_grace_scale = MULTITASK_REVIEW_GRACE_SCALE.get(_mt_key, 2.0)
+        _review_grace_dynamic = {}
+        for _k, _v in _review_grace.items():
+            if isinstance(_v, (int, float)):
+                _review_grace_dynamic[_k] = int(_v * _mt_grace_scale)
+            else:
+                _review_grace_dynamic[_k] = _v
+        if _mt_grace_scale > 1.0:
+            log(f"多任务检测：审议宽限期乘数 {_mt_grace_scale}x，Menxia 宽限期 {_review_grace.get('Menxia', 0)}s → {_review_grace_dynamic.get('Menxia', 0)}s")
+            _review_grace = _review_grace_dynamic
+    else:
+        _active_task_count = 1  # 单任务或关闭多任务检测时，传 1
 
     # ── 自适应行为：根据历史稳定性动态调整检测参数 ──
     _adaptive_enabled = _cfg.get("adaptive_enabled", True)
@@ -1738,6 +1801,7 @@ def _main_inner():
                 task_updated_at=_task_updated_at,
                 break_timeout=_break_timeout,
                 review_grace=_review_grace,
+                active_task_count=_active_task_count,
             )
             if broken:
                 target_id = broken["target_agent_id"]
