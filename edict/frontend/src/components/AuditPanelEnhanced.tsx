@@ -535,7 +535,7 @@ export default function AuditPanelEnhanced() {
                       </span>
                     </div>
 
-                    {/* ── 会话 Key 列表（可展开） ── */
+                    {/* ── 会话 Key 列表（可展开） ── */}
                     {expandedSessionCard === w.task_id && w.session_keys && Object.keys(w.session_keys).length > 0 && (
                       <div style={{ borderTop: '1px solid var(--line)', marginTop: 4, paddingTop: 6, paddingBottom: 4 }}>
                         {Object.entries(w.session_keys).map(([role, info]) => (
