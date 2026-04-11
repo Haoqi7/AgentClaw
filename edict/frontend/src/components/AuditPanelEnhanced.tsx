@@ -357,7 +357,7 @@ export default function AuditPanelEnhanced() {
         <div>
           <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
             <span style={{ fontSize: 20, fontWeight: 800 }}>🛡️ 流程监察</span>
-            <span className="chip" style={{ fontSize: 10, opacity: 0.8, borderColor: 'var(--acc)', color: 'var(--acc)', background: 'var(--acc)' + '18' }>v2</span>
+            <span className="chip" style={{ fontSize: 10, opacity: 0.8, borderColor: 'var(--acc)', color: 'var(--acc)', background: 'var(--acc)' + '18' }}>v2</span>
           </div>
           <div className="sub-text">监督三省六部任务流转完整性，检测越权、跳步、断链</div>
         </div>
