@@ -169,7 +169,7 @@ const INLINE_ROW_CSS = `
    主组件
    ═══════════════════════════════════════════════════════════════════════ */
 
-type MainTab = 'overview' | 'archive' | 'about';
+type MainTab = 'overview' | 'archive';
 
 export default function AuditPanelEnhanced() {
   const auditData = useStore((s) => s.auditData);
@@ -265,11 +265,11 @@ export default function AuditPanelEnhanced() {
     return watchedTasks.filter(w => cardFilter === 'violated' ? vIds.has(w.task_id) : !vIds.has(w.task_id));
   }, [watchedTasks, violations, cardFilter]);
 
+  // ── 卡片会话 Key 展开状态 ──
+  const [expandedSessionCard, setExpandedSessionCard] = useState<string | null>(null);
+
   // ── 归档 Tab ──
   const [archiveCollapsed, setArchiveCollapsed] = useState(false);
-
-  // ── 说明 Tab ──
-  const [aboutCollapsed, setAboutCollapsed] = useState(true);
 
   // ── 预计算：全局最新违规/通报（用于 KPI 统计） ──
   const activeViolsCount = violations.filter(v => watchedTasks.some(w => w.task_id === v.task_id)).length;
@@ -336,7 +336,6 @@ export default function AuditPanelEnhanced() {
   const mainTabs: { key: MainTab; label: string; icon: string; badge?: number }[] = [
     { key: 'overview', label: '监察总览', icon: '👁️' },
     { key: 'archive', label: '归档任务回溯', icon: '📦', badge: archivedTasks.length || undefined },
-    { key: 'about', label: '监察说明', icon: '📋' },
   ];
 
   // ── 辅助函数：获取某任务最新的3条违规 ──
@@ -358,7 +357,7 @@ export default function AuditPanelEnhanced() {
         <div>
           <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
             <span style={{ fontSize: 20, fontWeight: 800 }}>🛡️ 流程监察</span>
-            <span className="chip" style={{ fontSize: 10, opacity: 0.8, borderColor: 'var(--acc)', color: 'var(--acc)', background: 'var(--acc)' + '18' }}>v1</span>
+            <span className="chip" style={{ fontSize: 10, opacity: 0.8, borderColor: 'var(--acc)', color: 'var(--acc)', background: 'var(--acc)' + '18' }>v2</span>
           </div>
           <div className="sub-text">监督三省六部任务流转完整性，检测越权、跳步、断链</div>
         </div>
@@ -401,10 +400,10 @@ export default function AuditPanelEnhanced() {
         <div>
           {/* ══ 概览增强区域：信息摘要面板（两列布局） ══ */}
           {watchedCount > 0 && (
-            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12, marginBottom: 14 }}>
+            <div style={{ display: 'grid', gridTemplateColumns: '2fr 3fr', gap: 12, marginBottom: 14 }}>
 
               {/* ── 左列：部门分布 + 违规类型分布 ── */}
-              <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 12, minHeight: 0 }}>
                 {/* 部门分布 */}
                 {deptDist.length > 0 && (
                   <div className="ov-section">
@@ -446,7 +445,7 @@ export default function AuditPanelEnhanced() {
               </div>
 
               {/* ── 右列：全局最新动态流 ── */}
-              <div className="ov-section" style={{ display: 'flex', flexDirection: 'column', minHeight: 0 }}>
+              <div className="ov-section" style={{ display: 'flex', flexDirection: 'column', minHeight: 0, flex: 1 }}>
                 <div className="ov-section-title" style={{ marginBottom: globalFeed.length > 0 ? 6 : 0 }}>
                   📡 最新动态 <span style={{ fontWeight: 400, opacity: 0.6 }}>({globalFeed.length} 条)</span>
                 </div>
@@ -527,12 +526,26 @@ export default function AuditPanelEnhanced() {
                     {/* 底部元信息 */}
                     <div className="ec-footer" style={{ marginBottom: 8, paddingBottom: 0, borderBottom: 'none' }}>
                       <span className="hb">流转 {w.flow_count} 步</span>
-                      <span className="hb">🔑 {w.session_key_count ?? (w.session_keys ? Object.keys(w.session_keys).length : 0)} 会话</span>
+                      <span className="hb" style={{ cursor: 'pointer' }} onClick={(e) => { e.stopPropagation(); setExpandedSessionCard(expandedSessionCard === w.task_id ? null : w.task_id); }}>
+                        🔑 {w.session_key_count ?? (w.session_keys ? Object.keys(w.session_keys).length : 0)} 会话 {expandedSessionCard === w.task_id ? '▾' : '▸'}
+                      </span>
                       {vCount > 0 && <span className="hb" style={{ color: 'var(--danger)' }}>⚠ {vCount} 违规</span>}
                       <span className="hb" style={{ marginLeft: 'auto' }}>
                         {task?.updatedAt ? timeAgo(task.updatedAt) : '—'}
                       </span>
                     </div>
+
+                    {/* ── 会话 Key 列表（可展开） ── */
+                    {expandedSessionCard === w.task_id && w.session_keys && Object.keys(w.session_keys).length > 0 && (
+                      <div style={{ borderTop: '1px solid var(--line)', marginTop: 4, paddingTop: 6, paddingBottom: 4 }}>
+                        {Object.entries(w.session_keys).map(([role, info]) => (
+                          <div key={role} style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 10, marginBottom: 3, lineHeight: 1.4 }}>
+                            <span style={{ fontWeight: 600, color: DEPT_COLOR[role] || 'var(--acc)', whiteSpace: 'nowrap' }}>{role}</span>
+                            <span style={{ color: 'var(--muted)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', fontFamily: 'monospace', fontSize: 9 }} title={info.sessionKey}>{info.sessionKey}</span>
+                          </div>
+                        ))}
+                      </div>
+                    )}
 
                     {/* ── 卡片内嵌：最新3条通报 + 3条违规（共6行） ── */}
                     {(recentNotifs.length > 0 || recentViols.length > 0) && (
@@ -655,29 +668,6 @@ export default function AuditPanelEnhanced() {
               })}
             </div>
           ))}
-        </div>
-      )}
-
-      {/* ═══ Tab: 监察说明 ═══ */}
-      {mainTab === 'about' && (
-        <div>
-          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 12 }}>
-            <div style={{ fontSize: 13, fontWeight: 700 }}>📋 监察规则说明</div>
-            <span className="audit-pill" onClick={() => setAboutCollapsed(!aboutCollapsed)}>
-              {aboutCollapsed ? '▸ 展开' : '▾ 折叠'}
-            </span>
-          </div>
-          {!aboutCollapsed && (
-            <div className="sub-config" style={{ fontSize: 12, color: 'var(--muted)', lineHeight: 1.8 }}>
-              <div><b>监察范围：</b>仅监察 JJC- 开头的旨意任务，不监察对话</div>
-              <div><b>完整流程：</b>皇上 → 太子 → 中书省 → 门下省 → 中书省 → 尚书省 → 六部 → 尚书省 → 中书省 → 太子 → 皇上</div>
-              <div><b>越权调用：</b>from→to 不在合法流转对表内，监察会通过会话通知太子</div>
-              <div><b>流程跳步：</b>缺少必要环节，仅记录不通知</div>
-              <div><b>断链超时：</b>某部门超时未回应，监察自动唤醒 + 通知上级</div>
-              <div><b>自动归档：</b>任务完成超过 5 分钟自动归档，可在「归档任务回溯」Tab 中查看日志</div>
-              <div><b>运行方式：</b>pipeline_watchdog.py 每 60 秒由 run_loop.sh 调用一次</div>
-            </div>
-          )}
         </div>
       )}
 
