@@ -156,6 +156,10 @@ _STATE_AGENT_MAP = {
     'Assigned': 'zhongshu',
     # 'Review': 'shangshu',  # 已移除：Review 状态由尚书省自行触发，无需程序通知
     'Pending': 'zhongshu',
+    # V4 修复：Done → taizi（任务完成时程序自动通知太子，避免中书省 LLM 手动发 message
+    # 导致飞书 "Unknown target taizi" 报错。飞书渠道需要真实 chatId，不认识 agent_id。
+    # 修复后：中书省标记 Done → 程序唤醒太子 → 太子回奏皇上，中书省无需手动通知。）
+    'Done': 'taizi',
 }
 
 _ORG_AGENT_MAP = {
@@ -746,6 +750,7 @@ def _notify_agent(agent_id, task_id, from_org, to_org, title='', remark='', curr
     _notify_sync_success = False  # 异步路径默认 False，同步路径设为 True
 
     try:
+        _session_send_failed = False  # V4：标记 sessions_send 是否失败（用于降级判断）
         if current_session_key:
             # 有当前会话key → 直接发送到当前会话
             result = subprocess.run(
@@ -756,7 +761,8 @@ def _notify_agent(agent_id, task_id, from_org, to_org, title='', remark='', curr
             if _notify_sync_success:
                 log.info(f'📨 已发送【当前会话】通知给 {to_label} ({agent_id}) | 任务 {task_id} | 使用当前会话key')
             else:
-                log.warning(f'📨 【当前会话】通知 {to_label} 失败: rc={result.returncode} | stderr: {(result.stderr or "")[:200]}')
+                _session_send_failed = True
+                log.warning(f'📨 【当前会话】通知 {to_label} 失败: rc={result.returncode} | stderr: {(result.stderr or "")[:200]} → V4降级: 清除过期key，改用 openclaw agent 唤醒')
         elif existing_key:
             # 有 key → sessions_send 复用会话
             result = subprocess.run(
@@ -767,8 +773,38 @@ def _notify_agent(agent_id, task_id, from_org, to_org, title='', remark='', curr
             if _notify_sync_success:
                 log.info(f'🔑 已发送【复用会话】通知给 {to_label} ({agent_id}) | 任务 {task_id} | key={existing_key[:30]}...')
             else:
-                log.warning(f'🔑 【复用会话】通知 {to_label} 失败: rc={result.returncode} | stderr: {(result.stderr or "")[:200]}')
-        else:
+                _session_send_failed = True
+                log.warning(f'🔑 【复用会话】通知 {to_label} 失败: rc={result.returncode} | stderr: {(result.stderr or "")[:200]} → V4降级: 清除过期key，改用 openclaw agent 唤醒')
+
+        # ── V4 修复：sessions_send 失败 → 清除过期 key → 降级到 openclaw agent 唤醒 ──
+        # 根因：session 过期后 sessions_send 返回非零，但原代码只记 warning 不降级，
+        # 导致通知丢失。礼部5分钟收不到通知就是这个原因。
+        if _session_send_failed:
+            # 清除过期的 session_key（防止后续继续尝试已失效的 key）
+            def _clear_stale_key(tasks):
+                t = find_task(tasks, task_id)
+                if not t:
+                    return tasks
+                keys = t.get('session_keys', {})
+                for pair_key in list(keys.keys()):
+                    if agent_id in pair_key:
+                        stale_key = keys.pop(pair_key, None)
+                        if stale_key:
+                            log.info(f'🗑️ 已清除过期 session_key: {pair_key} = {stale_key[:30]}...')
+                return tasks
+            try:
+                atomic_json_update(TASKS_FILE, _clear_stale_key, [])
+            except Exception as _e:
+                log.warning(f'🗑️ 清除过期 key 失败: {_e}')
+
+            # 降级到 openclaw agent 直接唤醒（与无 key 路径一致）
+            log.info(f'🔄 V4降级: sessions_send 失败，改用 openclaw agent 唤醒 {to_label} ({agent_id}) | 任务 {task_id}')
+            _notify_sync_success = False  # 降级后走异步路径
+            _async_spawn_and_save_key(
+                agent_id=agent_id, message=message, task_id=task_id,
+                from_id=from_id, to_label=to_label,
+            )
+        elif not current_session_key and not existing_key:
             # 无 key → 异步唤醒 Agent + 异步保存 sessionKey（完全不阻塞主流程）
             # _notify_sync_success 保持 False，由后台脚本成功后标记 True
             _async_spawn_and_save_key(
@@ -853,18 +889,39 @@ def agent_communicate(task_id, from_agent, to_agent, message, timeout=120):
         log.warning(f'agent_communicate: 查找 session_key 失败: {e}')
 
     # ── 2a. 有 key → sessions_send（复用会话）──
+    # V4 修复：Popen（不等结果、吞输出）→ subprocess.run() + returncode 检查 + 失败降级
     if existing_key:
         try:
-            proc = subprocess.Popen(
+            send_result = subprocess.run(
                 ['openclaw', 'sessions', 'send', '--session-key', existing_key, '-m', message],
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
+                capture_output=True, text=True, timeout=60,
             )
-            log.info(f'🔑 复用会话: {task_id} | {pair} → sessions_send')
-            return existing_key
+            if send_result.returncode == 0:
+                log.info(f'🔑 复用会话成功: {task_id} | {pair} → sessions_send')
+                return existing_key
+            else:
+                # V4: sessions_send 失败 → 清除过期 key → 降级到 openclaw agent
+                send_err = (send_result.stderr or '')[:200]
+                log.warning(f'🔑 sessions_send 失败: {pair} | rc={send_result.returncode} | {send_err} → V4降级: 清除过期key，改用 openclaw agent')
+                # 清除过期的 session_key
+                def _clear_stale_key_comm(tasks):
+                    t = find_task(tasks, task_id)
+                    if not t:
+                        return tasks
+                    keys = t.get('session_keys', {})
+                    for pk in list(keys.keys()):
+                        if to_id in pk:
+                            stale = keys.pop(pk, None)
+                            if stale:
+                                log.info(f'🗑️ [communicate] 已清除过期 session_key: {pk}')
+                    return tasks
+                try:
+                    atomic_json_update(TASKS_FILE, _clear_stale_key_comm, [])
+                except Exception:
+                    pass
+                # 不 return，继续走下方的 openclaw agent 路径
         except Exception as e:
-            log.warning(f'🔑 sessions_send 失败: {pair}, 降级为 openclaw agent: {e}')
-            # 降级：如果 send 失败，走 spawn 路径
+            log.warning(f'🔑 sessions_send 异常: {pair}: {e} → V4降级: 改用 openclaw agent')
 
     # ── 2b. 无 key → openclaw agent 唤醒（确保消息被 Agent LLM 处理）──
     try:
