@@ -145,9 +145,15 @@ _STATE_AGENT_MAP = {
     'Taizi': 'taizi',
     'Zhongshu': 'zhongshu',
     'Menxia': 'menxia',
-    # 'Assigned' 已移除：门下省准奏后 state 变为 Assigned，
-    # 但此时中书省尚未处理门下省的返回结果，不应由程序层提前通知尚书省。
-    # 尚书省由中书省通过 LLM 层 sessions_spawn 唤醒（唯一的 LLM 层通知环节）。
+    # V3 修复：Assigned → zhongshu（不是 shangshu！）
+    # 根因：旧代码将 Assigned 从映射表移除，导致门下省准奏后 state→Assigned 时
+    # _resolve_agent_id('Assigned') 返回空 → _notify_agent() 直接退出 → 无人被唤醒
+    # 中书省此时已休眠，不会主动醒来转交尚书省 → 流程卡死！
+    # 修复后：门下省准奏 → state=Assigned → 程序唤醒中书省 → 中书省转交尚书省
+    # 注意：映射到 zhongshu 而非 shangshu，因为按三省六部流程，
+    # 门下省准奏后应先回到中书省，由中书省审查后转交尚书省派发。
+    #尚书省由中书省通过 LLM 层 sessions_spawn 唤醒（唯一的 LLM 层通知环节）。
+    'Assigned': 'zhongshu',
     # 'Review': 'shangshu',  # 已移除：Review 状态由尚书省自行触发，无需程序通知
     'Pending': 'zhongshu',
 }
@@ -510,89 +516,120 @@ def _resolve_agent_id(target):
 def _async_spawn_and_save_key(agent_id, message, task_id, from_id, to_label):
     """异步唤醒 Agent 并标记通知完成（完全不阻塞调用方）。
 
-    【关键修复】使用 openclaw agent（非 sessions spawn）唤醒 Agent。
+    【V3 关键修复】直接调用 openclaw agent，消除双层子进程嵌套。
 
-    根因：openclaw sessions spawn 只创建会话但不触发 Agent LLM 处理，
-    Agent 不会收到消息。openclaw agent 直接触发 Agent 的 LLM 处理管道。
+    根因分析（用户反馈部署后中书省仍无法唤醒）:
+    - 旧方案(V2): python3 -c script → subprocess.run(["openclaw", "agent", ...])
+      双层子进程嵌套导致 openclaw agent 运行环境异常（信号处理、
+      进程组、文件描述符传递等问题），消息能送达 Gateway 但 Agent
+      实际不处理。只有心跳路径（pipeline_watchdog/server.py 的单层调用）能成功。
+    - 新方案(V3): subprocess.Popen(["openclaw", "agent", ...]) + daemon thread
+      与 dashboard/server.py wake_agent() 完全一致的单层直接调用。
+      消除 python3 -c 中间层，确保 openclaw agent 与心跳路径环境一致。
 
     sessionKey 管理变更：
     - openclaw agent 使用 Agent 的 main session，不返回独立 sessionKey
     - 后续 Agent 自身的 sessions_spawn（在 SOUL.md 流程中）会创建子会话
     - 程序层不再依赖 sessions spawn 返回的 sessionKey
     """
-    tasks_file_escaped = json.dumps(str(TASKS_FILE))
-    from_id_escaped = json.dumps(from_id)
-    task_id_escaped = json.dumps(task_id)
-    agent_id_escaped = json.dumps(agent_id)
-    message_escaped = json.dumps(message)
-
-    script = f'''import json, subprocess, sys, pathlib, os, datetime as _dt
-def _now_iso():
-    _BJT = _dt.timezone(_dt.timedelta(hours=8))
-    return _dt.datetime.now(_BJT).isoformat()
-try:
-    # 【关键修复】使用 openclaw agent 唤醒（与 dashboard/server.py 一致）
-    result = subprocess.run(
-        ["openclaw", "agent", "--agent", {agent_id_escaped}, "-m", {message_escaped}, "--timeout", "120"],
-        capture_output=True, text=True, timeout=130,
-    )
-    output = (result.stdout or "") + (result.stderr or "")
-
-    # 无论是否提取到 sessionKey，只要 returncode==0 就标记 done=True
-    if result.returncode == 0:
-        tasks_file = {tasks_file_escaped}
-        if pathlib.Path(tasks_file).exists():
-            import tempfile
-            tasks = json.loads(pathlib.Path(tasks_file).read_text())
-            t = next((x for x in tasks if x.get("id") == {task_id_escaped}), None)
-            if t:
-                # 标记 done=True 表示异步通知已成功送达
-                t.setdefault("_lastNotify", {{}}).setdefault({agent_id_escaped}, {{}})["done"] = True
-                fd, tmp = tempfile.mkstemp(dir=pathlib.Path(tasks_file).parent, suffix=".tmp")
-                with os.fdopen(fd, "w") as f:
-                    json.dump(tasks, f, indent=2, ensure_ascii=False)
-                os.replace(tmp, tasks_file)
-                print(f"[async-wake] done=True: {task_id_escaped} -> {agent_id_escaped} [openclaw agent rc=0]", flush=True)
-            else:
-                print(f"[async-wake] task not found: {task_id_escaped}", flush=True)
-        else:
-            print(f"[async-wake] tasks file not found: {{tasks_file}}", flush=True)
-    else:
-        print(f"[async-wake] FAILED rc={{result.returncode}} for {agent_id_escaped}: {{output[:300]}}", flush=True)
-except subprocess.TimeoutExpired:
-    print(f"[async-wake] timeout for {agent_id_escaped}", flush=True)
-except Exception as e:
-    print(f"[async-wake] error: {{e}}", flush=True)
-'''
-    # ── BUG FIX #1: 将 DEVNULL 改为写入日志文件 + 添加异步验证线程 ──
-    # 原代码使用 stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL，
-    # 导致子进程的所有错误输出被静默吞掉，无法诊断唤醒失败原因。
+    # ── 日志文件（记录 openclaw agent 的完整输出，用于诊断）──
     _log_dir = _BASE / 'data' / 'async_spawn_logs'
     _log_dir.mkdir(parents=True, exist_ok=True)
     _ts_tag = datetime.datetime.now().strftime('%Y%m%d_%H%M%S')
     _log_file = _log_dir / f'{task_id}_{agent_id}_{_ts_tag}.log'
 
+    # ── V3: 直接启动 openclaw agent 进程（单层调用，与心跳路径一致）──
     try:
-        with open(str(_log_file), 'w') as _lf:
-            proc = subprocess.Popen(
-                ['python3', '-c', script],
-                stdout=_lf, stderr=_lf,
-            )
-        log.info(f'🚀 异步唤醒: {to_label} ({agent_id}) | 任务 {task_id} | 日志: {_log_file.name}')
-
-        # 异步验证线程：10秒后检查进程退出码，如异常则记录日志
-        def _verify_spawn():
-            import time as _t
-            _t.sleep(10)
-            _rc = proc.poll()
-            if _rc is not None and _rc != 0:
-                log.warning(f'🚀 异步唤醒异常退出: {to_label} ({agent_id}) | pid={proc.pid} rc={_rc} | 日志: {_log_file.name}')
-            elif _rc == 0:
-                log.info(f'🚀 异步唤醒已完成: {to_label} ({agent_id}) | 日志: {_log_file.name}')
-            # rc is None means still running — normal, don't log
-        threading.Thread(target=_verify_spawn, daemon=True).start()
+        _lf = open(str(_log_file), 'w')
+        proc = subprocess.Popen(
+            ["openclaw", "agent", "--agent", agent_id, "-m", message, "--timeout", "120"],
+            stdout=_lf, stderr=_lf,
+        )
+        log.info(f'🚀 异步唤醒: {to_label} ({agent_id}) | 任务 {task_id} | pid={proc.pid} | 日志: {_log_file.name}')
     except Exception as e:
-        log.warning(f'🚀 异步唤醒失败: {to_label} ({agent_id}): {e}')
+        log.warning(f'🚀 异步唤醒启动失败: {to_label} ({agent_id}): {e}')
+        return
+
+    # ── 异步等待线程：完成后更新 _lastNotify + 写入诊断日志 ──
+    def _wait_and_record():
+        import time as _t
+        try:
+            # 等待进程完成（最多140秒）
+            _rc = proc.wait(timeout=140)
+
+            # 写入诊断信息到日志文件
+            try:
+                _lf.write(f'\n[async-wake] process exited with rc={_rc}\n')
+            except Exception:
+                pass
+            finally:
+                try:
+                    _lf.close()
+                except Exception:
+                    pass
+
+            if _rc == 0:
+                # 成功：标记 _lastNotify done=True
+                def _mark_done(tasks):
+                    t = find_task(tasks, task_id)
+                    if t:
+                        t.setdefault("_lastNotify", {}).setdefault(agent_id, {})["done"] = True
+                    return tasks
+                try:
+                    atomic_json_update(TASKS_FILE, _mark_done, [])
+                except Exception:
+                    pass
+                log.info(f'🚀 异步唤醒成功: {to_label} ({agent_id}) | task={task_id} | rc=0 | 日志: {_log_file.name}')
+            else:
+                # 失败：读取日志文件最后500字符写入 warning
+                try:
+                    _diag = _log_file.read_text()[-500:] if _log_file.exists() else '(日志文件不存在)'
+                except Exception:
+                    _diag = '(无法读取日志)'
+                log.warning(f'🚀 异步唤醒失败: {to_label} ({agent_id}) | task={task_id} | rc={_rc} | 诊断: {_diag}')
+                # 5秒后重试一次（与 pipeline_watchdog.py wake_agent 一致）
+                _t.sleep(5)
+                try:
+                    _lf2 = open(str(_log_dir / f'{task_id}_{agent_id}_{_ts_tag}_retry.log'), 'w')
+                    retry_proc = subprocess.Popen(
+                        ["openclaw", "agent", "--agent", agent_id, "-m", message, "--timeout", "120"],
+                        stdout=_lf2, stderr=_lf2,
+                    )
+                    retry_rc = retry_proc.wait(timeout=140)
+                    try:
+                        _lf2.close()
+                    except Exception:
+                        pass
+                    if retry_rc == 0:
+                        def _mark_done2(tasks):
+                            t = find_task(tasks, task_id)
+                            if t:
+                                t.setdefault("_lastNotify", {}).setdefault(agent_id, {})["done"] = True
+                            return tasks
+                        try:
+                            atomic_json_update(TASKS_FILE, _mark_done2, [])
+                        except Exception:
+                            pass
+                        log.info(f'🚀 异步唤醒重试成功: {to_label} ({agent_id}) | task={task_id}')
+                    else:
+                        log.warning(f'🚀 异步唤醒重试仍失败: {to_label} ({agent_id}) | task={task_id} | rc={retry_rc}')
+                except Exception as _retry_e:
+                    log.warning(f'🚀 异步唤醒重试异常: {to_label} ({agent_id}): {_retry_e}')
+        except subprocess.TimeoutExpired:
+            try:
+                _lf.write(f'\n[async-wake] timeout (140s)\n')
+                _lf.close()
+            except Exception:
+                pass
+            log.warning(f'🚀 异步唤醒超时: {to_label} ({agent_id}) | task={task_id} | 140s')
+        except Exception as _e:
+            try:
+                _lf.close()
+            except Exception:
+                pass
+            log.warning(f'🚀 异步等待异常: {to_label} ({agent_id}): {_e}')
+
+    threading.Thread(target=_wait_and_record, daemon=True).start()
 
 
 def _notify_agent(agent_id, task_id, from_org, to_org, title='', remark='', current_session_key=None, _retry=0):
