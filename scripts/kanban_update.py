@@ -509,11 +509,11 @@ def _resolve_agent_id(target):
 def _async_spawn_and_save_key(agent_id, message, task_id, from_id, to_label):
     """异步唤醒 Agent 并自动保存 sessionKey（完全不阻塞调用方）。
 
-    原理：启动一个后台 Python 进程，该进程执行 openclaw agent --json，
-    提取 sessionKey 后写入 session_keys 注册表。主进程立即返回。
-
-    修改说明：原代码使用 subprocess.run 同步阻塞最长 150 秒等待 Agent 回复，
-    改为 Popen 异步执行，主流程不再等待 Agent 确认即可继续后续步骤。
+    修复（解决中书永远收不到通知的 Bug）：
+    1. 后台脚本成功提取 sessionKey 后，将 _lastNotify[agent_id].done 标记为 True
+    2. 后台脚本失败时，不修改 done 状态（保持 False），让冷却机制 30 秒后放行重试
+    3. 所有输出写入日志文件（不再使用 DEVNULL），方便排查失败原因
+    4. 增加异步验证线程，失败时记录详细日志
     """
     tasks_file_escaped = json.dumps(str(TASKS_FILE))
     from_id_escaped = json.dumps(from_id)
@@ -557,11 +557,13 @@ try:
                     "sessionKey": key, "savedAt": _now_iso(),
                     "agents": [{from_id_escaped}, {agent_id_escaped}],
                 }}
+                # 修复：标记 done=True 表示异步通知已成功确认
+                t.setdefault("_lastNotify", {{}}).setdefault({agent_id_escaped}, {{}})["done"] = True
                 fd, tmp = tempfile.mkstemp(dir=pathlib.Path(tasks_file).parent, suffix=".tmp")
                 with os.fdopen(fd, "w") as f:
                     json.dump(tasks, f, indent=2, ensure_ascii=False)
                 os.replace(tmp, tasks_file)
-                print(f"[async-spawn] key saved: {task_id_escaped} {{pair}}", flush=True)
+                print(f"[async-spawn] key saved + done=True: {task_id_escaped} {{pair}}", flush=True)
             else:
                 print(f"[async-spawn] task not found: {task_id_escaped}", flush=True)
         else:
@@ -640,6 +642,7 @@ def _notify_agent(agent_id, task_id, from_org, to_org, title='', remark='', curr
                 log.warning(f'🔒 全局去重：{task_id} 已通知 {notify_count} 次，达到上限 {_MAX_NOTIFY_PER_TASK}，停止通知')
                 return
             # 🔒 冷却去重：同一任务+同一Agent需等待冷却时间才能再次通知
+            # 修复：已确认成功的通知用 90s 冷却，异步待确认的用 30s 冷却（允许快速重试）
             last_notify = t.get('_lastNotify', {})
             agent_notify_info = last_notify.get(agent_id, {})
             if agent_notify_info.get('done'):
@@ -651,6 +654,19 @@ def _notify_agent(agent_id, task_id, from_org, to_org, title='', remark='', curr
                         elapsed = (now_dt - last_dt).total_seconds()
                         if elapsed < _NOTIFY_COOLDOWN_SEC:
                             log.info(f'🔒 冷却去重：{task_id} → {agent_id}，{elapsed:.0f}s前已通知，需等待 {_NOTIFY_COOLDOWN_SEC}s')
+                            return
+                    except Exception:
+                        pass
+            else:
+                # 异步待确认：使用更短的冷却时间，允许快速重试
+                last_at = agent_notify_info.get('at', '')
+                if last_at:
+                    try:
+                        last_dt = datetime.datetime.fromisoformat(last_at.replace('Z', '+00:00'))
+                        now_dt = datetime.datetime.now(last_dt.tzinfo) if last_dt.tzinfo else datetime.datetime.now()
+                        elapsed = (now_dt - last_dt).total_seconds()
+                        if elapsed < _NOTIFY_COOLDOWN_ASYNC_SEC:
+                            log.info(f'🔒 异步冷却去重：{task_id} → {agent_id}，{elapsed:.0f}s前已发送（未确认），需等待 {_NOTIFY_COOLDOWN_ASYNC_SEC}s')
                             return
                     except Exception:
                         pass
@@ -700,25 +716,35 @@ def _notify_agent(agent_id, task_id, from_org, to_org, title='', remark='', curr
     except Exception:
         pass
 
+    # ── 修复：标记通知路径类型（同步/异步），用于去重记录 ──
+    _notify_sync_success = False  # 异步路径默认 False，同步路径设为 True
+
     try:
         if current_session_key:
             # 有当前会话key → 直接发送到当前会话
-            proc = subprocess.Popen(
+            result = subprocess.run(
                 ['openclaw', 'sessions', 'send', '--session-key', current_session_key, '-m', message],
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
+                capture_output=True, text=True, timeout=60,
             )
-            log.info(f'📨 已发送【当前会话】通知给 {to_label} ({agent_id}) | 任务 {task_id} | 使用当前会话key')
+            _notify_sync_success = result.returncode == 0
+            if _notify_sync_success:
+                log.info(f'📨 已发送【当前会话】通知给 {to_label} ({agent_id}) | 任务 {task_id} | 使用当前会话key')
+            else:
+                log.warning(f'📨 【当前会话】通知 {to_label} 失败: rc={result.returncode} | stderr: {(result.stderr or "")[:200]}')
         elif existing_key:
             # 有 key → sessions_send 复用会话
-            proc = subprocess.Popen(
+            result = subprocess.run(
                 ['openclaw', 'sessions', 'send', '--session-key', existing_key, '-m', message],
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
+                capture_output=True, text=True, timeout=60,
             )
-            log.info(f'🔑 已发送【复用会话】通知给 {to_label} ({agent_id}) | 任务 {task_id} | key={existing_key[:30]}...')
+            _notify_sync_success = result.returncode == 0
+            if _notify_sync_success:
+                log.info(f'🔑 已发送【复用会话】通知给 {to_label} ({agent_id}) | 任务 {task_id} | key={existing_key[:30]}...')
+            else:
+                log.warning(f'🔑 【复用会话】通知 {to_label} 失败: rc={result.returncode} | stderr: {(result.stderr or "")[:200]}')
         else:
             # 无 key → 异步唤醒 Agent + 异步保存 sessionKey（完全不阻塞主流程）
+            # _notify_sync_success 保持 False，由后台脚本成功后标记 True
             _async_spawn_and_save_key(
                 agent_id=agent_id, message=message, task_id=task_id,
                 from_id=from_id, to_label=to_label,
@@ -732,13 +758,29 @@ def _notify_agent(agent_id, task_id, from_org, to_org, title='', remark='', curr
         return
 
     # ═══════════════════════════════════════════════════════════════════════
-    # 🔒 会话去重：记录本次通知（标记 done=true，后续不再重复通知）
+    # 🔒 会话去重：记录本次通知
+    #
+    # 修复（解决中书永远收不到通知的 Bug）：
+    # 原代码在异步 spawn 完成之前就标记 done=True，导致：
+    #   1. 如果异步 spawn 失败，去重记录仍标记为 done
+    #   2. 后续 90 秒内所有重试通知被冷却机制拦截
+    #   3. 中书永远不会收到通知
+    #
+    # 修复方案：
+    #   - 当走异步路径（_async_spawn_and_save_key）时，先标记 done=False（待确认）
+    #   - 后台脚本成功时将 done 改为 True
+    #   - 后台脚本失败时不修改，让冷却机制在 30 秒后自动放行重试
+    #   - 当走同步路径（sessions_send 复用已有会话）时，直接标记 done=True
     # ═══════════════════════════════════════════════════════════════════════
     def _record_notify(tasks):
         t = find_task(tasks, task_id)
         if not t:
             return tasks
-        t.setdefault('_lastNotify', {})[agent_id] = {'at': now_iso(), 'remark': remark[:60] if remark else '', 'done': True}
+        t.setdefault('_lastNotify', {})[agent_id] = {
+            'at': now_iso(),
+            'remark': remark[:60] if remark else '',
+            'done': _notify_sync_success,  # 同步路径=True，异步路径=False
+        }
         return tasks
     try:
         atomic_json_update(TASKS_FILE, _record_notify, [])
@@ -1228,7 +1270,8 @@ _NO_NOTIFY_STATES = {'Done', 'Cancelled'}
 # 防止 LLM 反复 spawn subagent 导致会话爆炸
 # ═══════════════════════════════════════════════════════════════════════
 _MAX_NOTIFY_PER_TASK = 16       # 单个任务最多通知（唤醒）16 次
-_NOTIFY_COOLDOWN_SEC = 90       # 同一任务+同一Agent冷却时间（秒）
+_NOTIFY_COOLDOWN_SEC = 90       # 同一任务+同一Agent冷却时间（秒）- 同步成功后
+_NOTIFY_COOLDOWN_ASYNC_SEC = 30  # 异步待确认的冷却时间（秒）- 异步路径更短，允许快速重试
 
 
 def cmd_state(task_id, new_state, now_text=None):

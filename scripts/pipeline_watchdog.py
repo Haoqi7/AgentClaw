@@ -437,10 +437,15 @@ def _find_task_session_key_for_agent(task_data, target_agent_id):
 
 
 def wake_agent(agent_id, reason=""):
-    """唤醒指定 Agent（异步发送心跳消息，不阻塞主循环）。返回 (success, detail)。
+    """唤醒指定 Agent。返回 (success, detail)。
     
-    修复：原实现中 time.sleep(30) 会阻塞整个 watchdog 主循环，导致
-    其他任务检查全部延迟。改为使用后台线程异步验证。
+    修复策略（解决表面唤醒 Bug）：
+    1. 先用同步 subprocess.run 执行 openclaw sessions spawn，捕获完整输出
+    2. 检查 returncode 确认命令是否成功
+    3. 如果同步失败，30秒后异步重试一次
+    4. 不再使用 DEVNULL 吞掉错误——所有输出都记录到日志
+    
+    之前用 Popen+DEVNULL 导致命令失败也返回 True，用户看不到任何会话。
     """
     if agent_id in ("huangshang", "皇上"):
         return False, "不唤醒皇上"
@@ -452,39 +457,75 @@ def wake_agent(agent_id, reason=""):
         f"请确认在线并继续处理待办任务。"
     )
     try:
-        subprocess.Popen(
+        # ── 第一步：同步执行，捕获完整输出用于诊断 ──
+        result = subprocess.run(
             ["openclaw", "sessions", "spawn", "--agent", agent_id, "--task", msg,
              "--mode", "run", "--thread", "false"],
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
+            capture_output=True, text=True, timeout=120,
         )
-        log(f"已唤醒 {label} ({agent_id}) [subagent session]")
-        # 异步验证：30秒后在后台线程中检查 Agent 是否活跃，不阻塞主循环
-        def _verify_agent():
-            time.sleep(30)
-            if not is_agent_awake(agent_id):
-                log(f"{label} ({agent_id}) 唤醒后30秒仍无活动，尝试二次唤醒")
+        output = (result.stdout or "").strip()
+        error = (result.stderr or "").strip()
+        
+        if result.returncode == 0:
+            log(f"已唤醒 {label} ({agent_id}) [同步成功] | output: {output[:150]}")
+            # 异步验证：30秒后在后台线程中确认 Agent 已活跃
+            def _verify_agent():
+                time.sleep(30)
+                if not is_agent_awake(agent_id):
+                    log(f"{label} ({agent_id}) 唤醒后30秒仍无活动，尝试二次唤醒")
+                    try:
+                        result2 = subprocess.run(
+                            ["openclaw", "sessions", "spawn", "--agent", agent_id, "--task", msg,
+                             "--mode", "run", "--thread", "false"],
+                            capture_output=True, text=True, timeout=120,
+                        )
+                        out2 = (result2.stdout or "").strip()
+                        err2 = (result2.stderr or "").strip()
+                        if result2.returncode == 0:
+                            log(f"已二次唤醒 {label} ({agent_id}) [成功] | output: {out2[:150]}")
+                        else:
+                            log(f"二次唤醒 {label} ({agent_id}) 失败: rc={result2.returncode} | stderr: {err2[:200]}")
+                    except Exception as e2:
+                        log(f"二次唤醒 {label} ({agent_id}) 异常: {e2}")
+                else:
+                    log(f"{label} ({agent_id}) 唤醒后已活跃")
+            threading.Thread(target=_verify_agent, daemon=True).start()
+            return True, f"已向 {label} 发送唤醒消息 [同步成功]"
+        else:
+            # 同步失败，记录详细错误
+            log(f"唤醒 {label} ({agent_id}) 失败: rc={result.returncode} | stdout: {output[:200]} | stderr: {error[:200]}")
+            # 异步重试一次（不阻塞主循环）
+            def _retry_wake():
+                time.sleep(5)
                 try:
-                    subprocess.Popen(
+                    retry_result = subprocess.run(
                         ["openclaw", "sessions", "spawn", "--agent", agent_id, "--task", msg,
                          "--mode", "run", "--thread", "false"],
-                        stdout=subprocess.DEVNULL,
-                        stderr=subprocess.DEVNULL,
+                        capture_output=True, text=True, timeout=120,
                     )
-                    log(f"已二次唤醒 {label} ({agent_id})")
+                    retry_out = (retry_result.stdout or "").strip()
+                    retry_err = (retry_result.stderr or "").strip()
+                    if retry_result.returncode == 0:
+                        log(f"唤醒重试 {label} ({agent_id}) 成功 | output: {retry_out[:150]}")
+                    else:
+                        log(f"唤醒重试 {label} ({agent_id}) 仍失败: rc={retry_result.returncode} | stderr: {retry_err[:200]}")
                 except Exception as e2:
-                    log(f"二次唤醒 {label} ({agent_id}) 失败: {e2}")
-            else:
-                log(f"{label} ({agent_id}) 唤醒后已活跃")
-        threading.Thread(target=_verify_agent, daemon=True).start()
-        return True, f"已向 {label} 发送唤醒消息 [subagent session]"
+                    log(f"唤醒重试 {label} ({agent_id}) 异常: {e2}")
+            threading.Thread(target=_retry_wake, daemon=True).start()
+            return False, f"唤醒失败: rc={result.returncode} | {error[:100]}"
+    except subprocess.TimeoutExpired:
+        log(f"唤醒 {label} ({agent_id}) 超时(120s)")
+        return False, "命令执行超时(120s)"
     except Exception as e:
-        log(f"唤醒 {label} ({agent_id}) 失败: {e}")
+        log(f"唤醒 {label} ({agent_id}) 异常: {e}")
         return False, str(e)[:200]
 
 
 def notify_agent(agent_id, message):
-    """向指定 Agent 同步发送通知消息（确保会话创建）。返回 (success, detail)。"""
+    """向指定 Agent 同步发送通知消息（确保会话创建）。返回 (success, detail)。
+    
+    修复：增加超时到120s，记录完整输出用于诊断。
+    """
     if agent_id in ("huangshang", "皇上"):
         return False, "不通知皇上"
     label = ID_TO_LABEL.get(agent_id, agent_id)
@@ -492,32 +533,53 @@ def notify_agent(agent_id, message):
         result = subprocess.run(
             ["openclaw", "sessions", "spawn", "--agent", agent_id, "--task", message,
              "--mode", "run", "--thread", "false"],
-            capture_output=True, text=True, timeout=60
+            capture_output=True, text=True, timeout=120
         )
         success = result.returncode == 0
-        detail = (result.stdout + "\n" + result.stderr).strip()[:300]
-        log(f"通知 {label} ({'成功' if success else '失败'}): {detail[:100]}")
+        detail = (result.stdout + "\n" + result.stderr).strip()[:500]
+        if success:
+            log(f"通知 {label} 成功: {detail[:200]}")
+        else:
+            log(f"通知 {label} 失败: rc={result.returncode} | stdout: {(result.stdout or '')[:200]} | stderr: {(result.stderr or '')[:200]}")
         return success, detail
     except subprocess.TimeoutExpired:
-        log(f"通知 {label} ({agent_id}) 超时(30s)")
-        return False, "命令执行超时(30s)"
+        log(f"通知 {label} ({agent_id}) 超时(120s)")
+        return False, "命令执行超时(120s)"
     except Exception as e:
         log(f"通知 {label} ({agent_id}) 异常: {e}")
         return False, str(e)[:200]
 
 
 def is_agent_awake(agent_id):
-    """检查 Agent 是否醒着（最近 3 分钟内有文件活动）。"""
+    """检查 Agent 是否醒着。
+    
+    修复：增加多维度检测，不再仅依赖文件修改时间。
+    检测维度：
+    1. sessions 目录下最近 3 分钟内有文件活动（原逻辑）
+    2. openclaw sessions list 命令检查 agent 是否有活跃会话
+    """
     if agent_id in ("huangshang", "皇上"):
         return True
     sessions_dir = OCLAW_HOME / "agents" / agent_id / "sessions"
     if not sessions_dir.exists():
+        log(f"Agent {agent_id} 的 sessions 目录不存在: {sessions_dir}")
         return False
     cutoff = time.time() - 180  # 3 分钟
     try:
         for f in sessions_dir.iterdir():
             if f.is_file() and f.stat().st_mtime > cutoff:
                 return True
+    except Exception:
+        pass
+    # 补充检测：尝试通过 openclaw CLI 查询活跃会话
+    try:
+        check_result = subprocess.run(
+            ["openclaw", "sessions", "list", "--agent", agent_id],
+            capture_output=True, text=True, timeout=15,
+        )
+        if check_result.returncode == 0 and check_result.stdout.strip():
+            # CLI 返回了会话列表，说明 agent 有注册的会话
+            return True
     except Exception:
         pass
     return False
