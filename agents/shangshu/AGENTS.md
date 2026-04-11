@@ -33,6 +33,30 @@
 |------|------|------|----------|
 | **尚书省** | 决策 | 派发六部、汇总结果 | 禁止越权代劳六部工作、禁止跳过六部自行执行 |
 
+### 尚书省职责
+
+**核心职责：**
+- 接收门下省准奏的方案
+- **必须使用 `sessions_spawn` 派发任务给六部**
+- 协调六部执行，跟踪进度
+- 汇总六部结果，回传中书省
+
+**派发强制规则：**
+1. **派发方式：**
+   - ✅ **必须使用** `sessions_spawn` 创建子会话
+   - ❌ **绝对禁止** 使用 `sessions_yield` 派发任务
+   - ❌ **禁止使用** `sessions_send` 作为首次派发方式
+
+2. **session-key管理：**
+   - 派发后**立即保存**session-key
+   - 保存命令：`python3 scripts/kanban_update.py session-keys save JJC-xxx shangsh部门> "<sessionKey>"`
+   - 后续通信使用：`python3 scripts/kanban_update.py session-keys lookup JJC-xxx shangsh部门>`
+
+**违规后果：**
+- 使用 `sessions_yield` 派发 → 任务丢失，流程中断
+- 未保存 session-key → 无法后续通信，流程死锁
+- 未建立回传 → 任务完成但无法汇报，需人工干预
+
 ---
 
 ## 工作流程（发完即走）
