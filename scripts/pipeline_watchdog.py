@@ -651,20 +651,88 @@ def check_direct_execution(task_id, flow_log, task_state=""):
     return None
 
 
+# ── 六部 agent_id 集合（用于回滚防护和智能判断）──
+LIU_BU_AGENT_IDS = {"gongbu", "bingbu", "hubu", "libu", "xingbu", "libu_hr"}
+
+# ── FIX 6D: 智能判断 — 目标Agent是否有活跃迹象 ──
+_WAKE_COOLDOWN_SEC = 300  # 跨轮断链唤醒冷却：5分钟
+
+
+def _is_agent_actively_working(agent_id, task_data, since_time=None):
+    """判断目标Agent是否有活跃迹象（会话/日志/动作），如果有则不算断链。
+
+    检查条件（满足任一即返回True）：
+    1. 目标Agent的 sessions 目录下有3分钟内修改过的文件
+    2. progress_log 中目标Agent在最近5分钟内有进展记录
+    3. flow_log 中目标Agent在最近2分钟内有新的 flow 产出
+
+    Args:
+        agent_id: 目标Agent的agent_id
+        task_data: 完整的任务数据（包含 progress_log, flow_log, session_keys）
+        since_time: 参考时间点（datetime对象），只检查此时间之后的活跃迹象
+    """
+    if not agent_id or not task_data:
+        return False
+    now = datetime.datetime.now(_BJT)
+    ref_time = since_time or now
+    cutoff_file = time.time() - 180  # 3分钟文件活跃
+    cutoff_progress = 300  # 5分钟progress
+    cutoff_flow = 120  # 2分钟flow
+
+    # 1. 检查会话文件活跃（复用 is_agent_awake 逻辑）
+    if is_agent_awake(agent_id):
+        return True
+
+    # 2. 检查 progress_log 中该agent近期是否有进展
+    for p_entry in task_data.get("progress_log", []):
+        p_agent = normalize_name(str(p_entry.get("agent", "")).lower())
+        if p_agent != agent_id:
+            continue
+        p_at_str = p_entry.get("at", "")
+        if not p_at_str:
+            continue
+        try:
+            p_at = datetime.datetime.fromisoformat(p_at_str.replace("Z", "+00:00"))
+            if (ref_time - p_at).total_seconds() < cutoff_progress:
+                return True
+        except Exception:
+            continue
+
+    # 3. 检查 flow_log 中该agent近期是否有产出
+    for entry in task_data.get("flow_log", []):
+        entry_from = normalize_name(entry.get("from", ""))
+        if entry_from != agent_id:
+            continue
+        entry_at_str = entry.get("at", "")
+        if not entry_at_str:
+            continue
+        try:
+            entry_at = datetime.datetime.fromisoformat(entry_at_str.replace("Z", "+00:00"))
+            if (ref_time - entry_at).total_seconds() < cutoff_flow:
+                return True
+        except Exception:
+            continue
+
+    return False
+
+
 def check_broken_chain(task_id, flow_log, task_state="",
                         progress_log=None, task_updated_at="",
-                        break_timeout=None, review_grace=None):
+                        break_timeout=None, review_grace=None,
+                        task_data=None):
     """检查最后一条 flow 是否断链（目标部门无回应）。返回断链信息或 None。
 
     判断"回应"的依据（按优先级递进）：
     1. flow_log 中目标部门作为 from 出现（已流转到下一步 → 正常回应）
     2. progress_log 中目标部门有进展记录（正在工作 → 不算断链）
-    3. task.updatedAt 在最后 flow 之后被刷新（看板有活动 → 6 分钟内不断链）
+    3. task.updatedAt 在最后 flow 之后被刷新（看板有活动 → 3 分钟内不断链）
+    4. 目标Agent有活跃迹象（会话文件/日志/flow）→ 正在工作，不算断链
     以上均不满足且超过阈值 → 判定为断链，触发提醒。
 
     Args:
         progress_log: 任务的 progress_log 列表（看板进展记录）
         task_updated_at: 任务的 updatedAt 时间戳（看板最后刷新时间）
+        task_data: 完整任务数据（用于智能判断目标Agent活跃度）
     """
     if not flow_log:
         return None
@@ -672,13 +740,34 @@ def check_broken_chain(task_id, flow_log, task_state="",
     _timeout = break_timeout if break_timeout is not None else BREAK_TIMEOUT_SEC
     _grace = review_grace if review_grace is not None else REVIEW_GRACE_PERIODS
 
-    last = flow_log[-1]
+    # ── FIX 6A: 跳过「太子调度」系统flow，只检查实际部门间的最后一条 flow ──
+    # 太子调度产生的 flow_log（催办/回滚/重试等）不是真正的部门间流转，
+    # 如果最后一条是系统flow会导致误判断链（如：太子调度→中书省的催办
+    # 被当作"中书省断链"，实际中书省已在正常工作）。
+    last = None
+    for entry in reversed(flow_log):
+        from_name = normalize_name(entry.get("from", ""))
+        dept_from = ID_TO_DEPT.get(from_name, from_name) if from_name else ""
+        if dept_from != "太子调度":
+            last = entry
+            break
+    if last is None:
+        return None  # 全是系统flow，无实际部门flow可检查
+
     last_to = normalize_name(last.get("to", ""))
     last_at_str = last.get("at", "")
 
     # 不检查终点为皇上或太子的（太子以上的不由监察处理）
     if not last_to or last_to in ("huangshang", "皇上", "taizi"):
         return None
+
+    # ── FIX 6B: 太子→中书首跳超时改为120秒 ──
+    # 太子派发中书省后，中书省需要启动子代理、分析旨意、制定方案，
+    # 比其他部门间流转需要更多时间。给予120秒宽限。
+    last_from = normalize_name(last.get("from", ""))
+    dept_from = ID_TO_DEPT.get(last_from, last_from) if last_from else ""
+    if dept_from in ("太子", "太子调度") and last_to == "zhongshu":
+        _timeout = max(_timeout, 120)
 
     # ── 审议宽限期：如果任务处于审议状态，给更长的等待时间 ──
     dept_to = ID_TO_DEPT.get(last_to, last_to)
@@ -765,7 +854,15 @@ def check_broken_chain(task_id, flow_log, task_state="",
         except Exception:
             pass
 
-    # ── 三层检查均未通过，判定为断链 ──
+    # ── 第 4 层：智能判断 — 目标Agent是否有活跃迹象 ──
+    # FIX 6D: 即使前三层检查均未通过，如果目标Agent有会话文件活动、
+    # 近期 progress 记录或 flow 产出，说明该Agent正在工作中，
+    # 可能只是在处理耗时较长的任务，不应判定为断链。
+    if task_data:
+        if _is_agent_actively_working(last_to, task_data, since_time=now):
+            return None  # 目标Agent有活跃迹象，正在工作中，不算断链
+
+    # ── 四层检查均未通过，判定为断链 ──
     label_to = ID_TO_LABEL.get(last_to, last_to)
     label_from = ID_TO_LABEL.get(
         normalize_name(last.get("from", "")),
@@ -1426,6 +1523,24 @@ def _main_inner():
     new_violations = []
     woken_agents = set()  # 同一轮只唤醒一次
 
+    # ── FIX 6C: 跨轮断链唤醒去重（5分钟冷却）──
+    # 原逻辑 woken_agents 每轮重置，导致每60秒重复唤醒同一目标。
+    # 改为持久化到 pipeline_audit.json 的 last_wakes 字段，
+    # 同一 task_id:target_agent 组合5分钟内不重复唤醒。
+    last_wakes = audit.get("last_wakes", {})
+    now_dt = datetime.datetime.now(_BJT)
+    # 清理超过10分钟的旧记录，防止无限增长
+    _stale_keys = []
+    for _wk, _wt in last_wakes.items():
+        try:
+            _wd = datetime.datetime.fromisoformat(_wt.replace("Z", "+00:00"))
+            if (now_dt - _wd).total_seconds() > 600:
+                _stale_keys.append(_wk)
+        except Exception:
+            _stale_keys.append(_wk)
+    for _sk in _stale_keys:
+        del last_wakes[_sk]
+
     # ── 自适应行为：根据历史稳定性动态调整检测参数 ──
     _adaptive_enabled = _cfg.get("adaptive_enabled", True)
     _stability_score = 1.0  # 默认完全稳定
@@ -1676,6 +1791,7 @@ def _main_inner():
                 task_updated_at=_task_updated_at,
                 break_timeout=_break_timeout,
                 review_grace=_review_grace,
+                task_data=task,  # FIX 6D: 传入完整任务数据用于智能判断
             )
             if broken:
                 target_id = broken["target_agent_id"]
@@ -1693,10 +1809,25 @@ def _main_inner():
                 }
                 new_violations.append(violation)
 
+                # ── FIX 6C: 跨轮去重检查 — 5分钟内不重复唤醒 ──
+                _wake_key = f"{task_id}:{target_id}"
+                _last_wake_time = last_wakes.get(_wake_key)
+                _wake_cooled = False
+                if _last_wake_time:
+                    try:
+                        _lw_dt = datetime.datetime.fromisoformat(_last_wake_time.replace("Z", "+00:00"))
+                        if (now_dt - _lw_dt).total_seconds() < _WAKE_COOLDOWN_SEC:
+                            _wake_cooled = True
+                            log(f"跨轮去重：{task_id} → {target_label}，{(now_dt - _lw_dt).total_seconds():.0f}s前已唤醒，冷却中")
+                    except Exception:
+                        pass
+
                 # ── 介入处理：唤醒目标部门 ──
-                if target_id and target_id not in woken_agents:
+                if target_id and target_id not in woken_agents and not _wake_cooled:
                     wake_ok, wake_detail = wake_agent(target_id, f"任务 {task_id} 流程断链，{from_label}已等你 {broken['elapsed_sec'] // 60} 分钟")
                     woken_agents.add(target_id)
+                    # 记录唤醒时间（跨轮去重）
+                    last_wakes[_wake_key] = now_iso
                     # 记录唤醒动作
                     audit["notifications"].append(_make_notif(
                         notif_type="断链唤醒", to=target_label,
@@ -1706,11 +1837,26 @@ def _main_inner():
                     ))
 
                 # ── 介入处理：通知上游重新派发 ──
-                if parent_id and parent_id not in woken_agents:
+                _parent_wake_key = f"{task_id}:{parent_id}" if parent_id else None
+                _parent_wake_cooled = False
+                if _parent_wake_key:
+                    _parent_last = last_wakes.get(_parent_wake_key)
+                    if _parent_last:
+                        try:
+                            _pl_dt = datetime.datetime.fromisoformat(_parent_last.replace("Z", "+00:00"))
+                            if (now_dt - _pl_dt).total_seconds() < _WAKE_COOLDOWN_SEC:
+                                _parent_wake_cooled = True
+                        except Exception:
+                            pass
+
+                if parent_id and parent_id not in woken_agents and not _parent_wake_cooled:
                     parent_label = ID_TO_LABEL.get(parent_id, parent_id)
                     if not is_agent_awake(parent_id):
                         wake_ok, wake_detail = wake_agent(parent_id, f"任务 {task_id} 断链，需要你重新派发{target_label}")
                         woken_agents.add(parent_id)
+                        # 记录唤醒时间（跨轮去重）
+                        if _parent_wake_key:
+                            last_wakes[_parent_wake_key] = now_iso
                         # 记录唤醒动作
                         audit["notifications"].append(_make_notif(
                             notif_type="断链唤醒", to=parent_label,
@@ -1944,6 +2090,8 @@ def _main_inner():
     audit["watched_count"] = len(watched_tasks)
     audit["check_count"] = audit.get("check_count", 0) + 1
     audit["total_violations"] = audit.get("total_violations", 0) + len(new_violations)
+    # FIX 6C: 持久化跨轮唤醒去重记录
+    audit["last_wakes"] = last_wakes
 
     # 记录本轮检查历史（用于自适应行为）
     audit.setdefault("check_history", []).append({
