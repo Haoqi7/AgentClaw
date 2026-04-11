@@ -1267,36 +1267,6 @@ def cmd_state(task_id, new_state, now_text=None):
             log.warning(f'⚠️ 非法状态转换 {task_id}: {old_state[0]} → {new_state}（允许: {allowed}）')
             rejected[0] = True
             return tasks
-
-        # ═══════════════════════════════════════════════════════════════
-        # FIX 6E: 六部开始工作后禁止回滚中书
-        # 当任务处于 Doing（六部工作）且六部有实际工作迹象时，
-        # 拒绝回滚到 Zhongshu（中书省），防止太子 LLM 在六部已完成
-        # 或正在执行时错误回滚，导致流程混乱。
-        # 判断依据（满足任一即禁止回滚）：
-        # 1. output 字段非空（六部已有产出）
-        # 2. progress_log 中有六部 agent 的记录
-        # 3. flow_log 中有六部作为 from 的记录（六部已汇报）
-        # ═══════════════════════════════════════════════════════════════
-        if new_state == 'Zhongshu' and old_state[0] in ('Doing', 'Review', 'Assigned', 'Next'):
-            has_output = bool(t.get('output', '').strip())
-            has_liubu_progress = False
-            for _p in t.get('progress_log', []):
-                _p_agent = str(_p.get('agent', '')).lower()
-                if _p_agent in _LIU_BU_NAMES or _p_agent in ('gongbu', 'bingbu', 'hubu', 'libu', 'xingbu', 'libu_hr'):
-                    has_liubu_progress = True
-                    break
-            has_liubu_flow = False
-            for _e in t.get('flow_log', []):
-                _e_from = _e.get('from', '')
-                if _e_from in _LIU_BU_NAMES or _e_from in ('工部', '兵部', '户部', '礼部', '刑部', '吏部', '吏部_hr'):
-                    has_liubu_flow = True
-                    break
-            if has_output or has_liubu_progress or has_liubu_flow:
-                log.warning(f'⛔ {task_id} 回滚被拒: 六部已开始工作（output={bool(has_output)}, progress={has_liubu_progress}, flow={has_liubu_flow}），禁止回滚中书')
-                rejected[0] = True
-                return tasks
-
         t['state'] = new_state
         if new_state in STATE_ORG_MAP:
             t['org'] = STATE_ORG_MAP[new_state]
