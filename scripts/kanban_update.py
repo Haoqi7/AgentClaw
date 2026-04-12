@@ -536,9 +536,12 @@ def _start_liubu_alive_check(task_id, task):
     progress_count_escaped = str(progress_count)
     flow_count_escaped = str(flow_count)
 
+    # 【V7 修复】将等待时间从60秒缩短到45秒
+    # 根因：60秒等待太长，六部在空转浪费近1分钟。45秒足够覆盖
+    # openclaw agent 启动延迟（~15-20秒），同时不会因过快误判。
     watchdog_script = f'''#!/usr/bin/env python3
 import json, pathlib, subprocess, sys, time
-time.sleep(60)
+time.sleep(45)
 TASKS_FILE = pathlib.Path({tasks_file_escaped})
 try:
     with open(TASKS_FILE, "r", encoding="utf-8") as f:
@@ -560,9 +563,10 @@ msg = (
     "🔔 程序级兜底唤醒\\n"
     "任务ID: {task_id_escaped}\\n"
     "标题: {title_escaped}\\n"
-    "原因: 进入 Doing 状态 60 秒后六部无任何活动，"
-    "尚书省可能未正确使用 sessions_spawn 通知六部。\\n"
-    "请立即执行任务，完成后使用 kanban 流转记录回复尚书省。"
+    "原因: 进入 Doing 状态 45 秒后六部无任何活动，"
+    "尚书省可能未正确使用 sessions_spawn 通知六部（或使用了 sessions_yield）。\\n"
+    "请立即执行任务，完成后使用 kanban 流转记录回复尚书省。\\n"
+    "⚠️ 禁止使用 sessions_yield！必须用 sessions_spawn 派发！"
 )
 try:
     result = subprocess.run(
@@ -579,7 +583,7 @@ except Exception as e:
     try:
         subprocess.Popen(['python3', '-c', watchdog_script],
                          stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-        log.info(f'🛡️ 已启动六部兜底检查 | {task_id} → {agent_label} ({agent_id}) | 60秒后检查')
+        log.info(f'🛡️ 已启动六部兜底检查 | {task_id} → {agent_label} ({agent_id}) | 45秒后检查')
     except Exception as e:
         log.warning(f'🛡️ 启动六部兜底检查失败: {e}')
 
@@ -1441,7 +1445,8 @@ _VALID_TRANSITIONS = {
     'Menxia':    {'Assigned', 'Zhongshu', 'Cancelled'},   # 封驳可回中书
     'Assigned':  {'Doing', 'Next', 'Blocked', 'Cancelled', 'Zhongshu'},  # 尚书可退回中书
     'Next':      {'Assigned', 'Doing', 'Blocked', 'Cancelled', 'Zhongshu'},  # 也可退回中书
-    'Doing':     {'Review', 'Blocked', 'Cancelled', 'Zhongshu'},  # 六部可退回中书
+    # 【V7 修复】增加 Assigned 允许六部退回尚书省重派发
+    'Doing':     {'Review', 'Next', 'Blocked', 'Cancelled', 'Zhongshu', 'Assigned'},  # 六部可退回中书/汇总/重派
     'Review':    {'Done', 'Menxia', 'Doing', 'Zhongshu', 'Cancelled'},  # 可打回重审/重做/退回中书
     'Blocked':   {'Doing', 'Next', 'Assigned', 'Review', 'Cancelled', 'Zhongshu'},  # 解除后回原位或退回中书
     'Done':      set(),       # 终态
@@ -1539,6 +1544,49 @@ def cmd_state(task_id, new_state, now_text=None):
             task_title = t.get('title', '') if t else ''
             old_org_label = STATE_ORG_MAP.get(old_state[0], old_state[0] or '未知')
             new_org_label = STATE_ORG_MAP.get(new_state, new_state)
+            # ═══════════════════════════════════════════════════════════════
+            # 【V6 关键修复】Doing/Next 状态通知修复（断链点①+②根因）
+            # 
+            # 根因：_STATE_AGENT_MAP 不包含 'Doing'/'Next'，
+            # _resolve_agent_id('Doing') 返回空字符串，
+            # 导致 _notify_agent('') 直接 return，六部永远收不到通知。
+            #
+            # 修复：与 server.py dispatch_for_state() 保持一致，
+            # Doing/Next 状态从 task.org 字段解析 agent_id。
+            # 
+            # 前提：尚书省须先调 flow（设置 org='礼部'等六部名），
+            # 再调 state Doing。若 flow 在 state 之后，
+            # cmd_flow() 中的六部通知兜底会补发。
+            # ═══════════════════════════════════════════════════════════════
+            if not notify_agent_id and new_state in ('Doing', 'Next') and t:
+                notify_agent_id = _ORG_AGENT_MAP.get(t.get('org', ''), '')
+                if notify_agent_id:
+                    new_org_label = t.get('org', new_org_label)
+                    log.info(f'🔗 V6修复: {task_id} {new_state}状态从org字段解析agent={notify_agent_id} (org={t.get("org","")})')
+            # ═══════════════════════════════════════════════════════════════
+            # 【V7 关键修复】Doing 状态通知冷却降级（断裂点②加强）
+            # 
+            # 根因：_NOTIFY_COOLDOWN_SEC=90 秒的冷却期会阻止断裂点②的兜底通知。
+            # 场景：尚书省用 yield 派发 → 六部收不到 → 程序45秒后兜底唤醒 → 
+            # 但如果90秒内已经对同一Agent发过一次通知（比如初始化时），
+            # 兜底唤醒会被冷却去重拦截，六部仍然收不到消息。
+            # 
+            # 修复：Doing 状态的通知使用更短的冷却期（30秒），
+            # 确保兜底通知能突破冷却去重。同时清除该Agent的 _lastNotify
+            # 中的 done 标记，强制允许重新通知。
+            # ═══════════════════════════════════════════════════════════════
+            if new_state == 'Doing' and notify_agent_id and t:
+                # 清除该 Agent 的 lastNotify done 标记，允许重新通知
+                try:
+                    def _clear_notify_for_critical(tasks):
+                        tt = find_task(tasks, task_id)
+                        if tt and notify_agent_id in tt.get('_lastNotify', {}):
+                            tt['_lastNotify'][notify_agent_id]['done'] = False
+                            log.info(f'🔓 V7修复: {task_id} 清除 {notify_agent_id} 的通知完成标记，允许重新通知（Doing状态关键通知）')
+                        return tasks
+                    atomic_json_update(TASKS_FILE, _clear_notify_for_critical, [])
+                except Exception as e:
+                    log.warning(f'🔓 V7修复: 清除通知标记失败: {e}')
             _notify_agent(
                 agent_id=notify_agent_id,
                 task_id=task_id,
@@ -1623,6 +1671,16 @@ def cmd_flow(task_id, from_dept, to_dept, remark):
     except Exception:
         pass
     
+    # 【V7 修复】flow_log 自环检测
+    # 场景：礼部调 flow JJC-xxx 礼部 礼部 → 产生 "礼部→礼部" 的自环记录
+    # 这会导致监察系统误判为正常流转（因为 LEGAL_FLOWS 包含自环对），
+    # 同时导致流程日志混乱、无法正确追踪任务进展。
+    if from_dept and to_dept and from_dept == to_dept:
+        log.warning(f'⚠️ {task_id} 流转自环检测: {from_dept}→{to_dept}（from与to相同）')
+        print(f'[看板] ⚠️ 警告：流转记录 from={from_dept} 与 to={to_dept} 相同（自环），请检查是否正确', flush=True)
+        # 自环仅警告不阻止：某些内部处理场景可能需要自己给自己发消息
+        # 但仍记录警告以便排查
+
     def modifier(tasks):
         t = find_task(tasks, task_id)
         if not t:
@@ -1641,9 +1699,39 @@ def cmd_flow(task_id, from_dept, to_dept, remark):
     _trigger_refresh()
     log.info(f'✅ {task_id} 流转记录: {from_dept} → {to_dept}')
 
-    # ⚠️ 不再在此处调用 _notify_agent
-    # 旧逻辑：cmd_flow 和 cmd_state 双重通知 → 导致无限循环
-    # 新逻辑：通知统一由 cmd_state 触发，cmd_flow 只记录流转日志
+    # ═══════════════════════════════════════════════════════════════════════
+    # 【V6 关键修复】流转目标为六部时，触发程序级通知（断链点②兜底）
+    #
+    # 根因：尚书省可能先调 state Doing 再调 flow（SOUL.md旧顺序），
+    # 导致 state 触发通知时 org 还是'尚书省'，六部收不到通知。
+    #
+    # 兜底：当 flow 目标是六部且当前状态为 Doing/Next 时，
+    # 程序级直接唤醒目标六部 Agent。
+    #
+    # 去重保护：_notify_agent 内置冷却机制，
+    # 若 cmd_state 已成功通知过同一 agent（90秒内），此处自动跳过。
+    # ═══════════════════════════════════════════════════════════════════════
+    _LIU_BU_AGENT_SET = {'libu', 'hubu', 'bingbu', 'xingbu', 'gongbu', 'libu_hr'}
+    to_agent_id = _ORG_AGENT_MAP.get(to_dept.strip(), '')
+    if to_agent_id in _LIU_BU_AGENT_SET:
+        try:
+            _flow_tasks = load()
+            _flow_task = find_task(_flow_tasks, task_id)
+            if _flow_task and _flow_task.get('state') in ('Doing', 'Next'):
+                log.info(f'🔗 V6流转通知: {task_id} flow目标为六部({to_dept}/{to_agent_id})，状态={_flow_task.get("state")}，触发程序级唤醒')
+                _notify_agent(
+                    agent_id=to_agent_id,
+                    task_id=task_id,
+                    from_org=from_dept,
+                    to_org=to_dept,
+                    title=_flow_task.get('title', ''),
+                    remark=clean_remark or f'{from_dept}派发任务至{to_dept}',
+                )
+        except Exception as _flow_notify_err:
+            log.warning(f'🔗 V6流转通知异常: {_flow_notify_err}')
+
+    # ⚠️ 基础通知仍由 cmd_state 触发，此处仅为六部目标兜底
+    # 两个路径都有 _notify_agent 冷却去重保护，不会重复唤醒
 
 
 # ── 六部名称集合（用于 cmd_flow 校验：拒绝「六部」泛称）──
