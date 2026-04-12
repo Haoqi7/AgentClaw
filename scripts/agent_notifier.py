@@ -279,7 +279,10 @@ def notify_agent_async(agent_id, message, session_id=None, timeout=None):
     Returns:
         asyncio.Future: 可 await 的 Future，结果为 NotifyResult
     """
-    loop = asyncio.get_event_loop()
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        loop = asyncio.get_event_loop()
     return loop.run_in_executor(
         None,  # 使用默认线程池
         notify_agent_with_retry,

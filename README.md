@@ -1,245 +1,223 @@
-<h1 align="center">⚔️ 三省六部 · AgentClaw</h1>
+# AgentClaw V8 — 三省六部协作架构
 
-> 运行依赖 **OpenClaw**。请先完成 OpenClaw 安装与初始化，再继续安装/启动本项目。
+## 架构概述
+
+AgentClaw V8 是一个基于「看板即消息总线」理念的多 Agent 协作框架。所有 Agent 之间的通信通过 JSON 看板文件完成，编排引擎负责轮询看板、决策派发、唤醒对应 Agent。
+
+**核心设计原则：**
+- Agent 只做「思考 + 写看板」，程序负责「读看板 → 决策 → 唤醒」
+- 看板是唯一的信息通道，所有状态变更持久化到文件
+- 确定性派发：由程序决定通知谁、何时通知，不依赖 LLM
+- 异步主循环：asyncio + ThreadPoolExecutor，不阻塞扫描
 
 ---
 
-## 🚀 快速上手
+## 项目结构
 
-### 第一步：安装 OpenClaw（必须）
-
-三省六部基于OpenClaw 运行，请先安装：
-
-## 4 步上手
-
-> **前提条件**：需要 **Node.js >= 22+（[下载 Node.js](https://nodejs.org/)）
->
-> 检查版本：`node -v`
-
-### 第 1 步：安装
-
-**最新中文稳定版**
-```bash
-npm install -g @qingchencloud/openclaw-zh@latest
 ```
-**docker目前固定为此版本** `/openclaw-zh@2026.4.2-zh.1`
-
-### 第 2 步：初始化（推荐守护进程模式）
-
-```bash
-openclaw onboard --install-daemon
-```
-
-初始化向导会引导你完成：选择 AI 模型 → 配置 API 密钥 → 设置聊天通道
-
-### 第 3 步：启动网关
-
-```bash
-openclaw gateway
-```
-
-### 第 4 步：打开控制台
-
-```bash
-openclaw dashboard
-```
-
-浏览器会自动打开全中文的 Dashboard 控制台。完成！
-
-
-
-安装完成后初始化：
-
-```bash
-openclaw init
+990/
+├── scripts/                        # 核心程序代码
+│   ├── config.py                   # 全局配置中心（常量、路径、超时）
+│   ├── file_lock.py                # 跨平台文件锁（原子 JSON 读写）
+│   ├── utils.py                    # 公共工具函数（时间、校验）
+│   ├── kanban_commands.py          # 看板命令协议层（消息增删改查）
+│   ├── kanban_update.py            # 看板命令 CLI 入口（供 Agent 调用）
+│   ├── agent_notifier.py           # Agent 唤醒模块（openclaw 封装）
+│   ├── pipeline_orchestrator.py    # 编排引擎主循环（5秒轮询看板）
+│   ├── pipeline_watchdog.py        # 监察脚本（停滞检测、封驳循环、纠正）
+│   └── test_v8_integration.py      # 集成测试
+│
+├── agents/                         # Agent 配置文件
+│   ├── taizi/                      # 太子 — 皇上接口
+│   ├── zhongshu/                   # 中书省 — 规划决策
+│   ├── menxia/                     # 门下省 — 审议把关
+│   ├── shangshu/                   # 尚书省 — 执行调度
+│   ├── libu/                       # 礼部 — 文档撰写
+│   ├── hubu/                       # 户部 — 数据分析
+│   ├── bingbu/                     # 兵部 — 功能开发
+│   ├── xingbu/                     # 刑部 — 审查测试
+│   ├── gongbu/                     # 工部 — 部署运维
+│   ├── libu_hr/                    # 吏部 — 人事管理
+│   ├── jiancha/                    # 御史台 — 流程监察
+│   └── zaochao/                    # 钦天监 — 早朝简报
+│
+└── README.md                       # 本文件
 ```
 
 ---
 
+## 九状态机
 
-
-## 第二步：克隆并安装三省六部
-
-```bash
-git clone https://github.com/Haoqi7/AgentClaw.git
-cd AgentClaw
-chmod +x install.sh && ./install.sh
-```
-
-安装脚本会自动完成：
-- ✅ 创建 12 个 Agent Workspace（`~/.openclaw/workspace-*`）
-- ✅ 写入各省部 SOUL.md 人格文件
-- ✅ 注册 Agent 及权限矩阵到 `openclaw.json`
-- ✅ 配置旨意数据清洗规则
-- ✅ 构建 React 前端到 `dashboard/dist/`（需 Node.js 22+）
-- ✅ 初始化数据目录
-- ✅ 执行首次数据同步
-- ✅ 重启 Gateway 使配置生效
-
-## 第三步：配置消息渠道
-
-在 OpenClaw 中配置消息渠道（Feishu / Telegram / Signal），将 `taizi`（太子）Agent 设为旨意入口。太子会自动分拣闲聊与指令，指令类消息提炼标题后转发中书省。
-
-```bash
-# 查看当前渠道
-openclaw channels list
-
-# 添加飞书渠道（入口设为太子）
-openclaw channels add --type feishu --agent taizi
-```
-
-参考 OpenClaw 文档：https://docs.openclaw.ai/channels
-
-## 第四步：启动服务
-
-```bash
-# 终端 1：数据刷新循环（每 15 秒同步）
-bash scripts/run_loop.sh
-
-# 终端 2：看板服务器
-python3 dashboard/server.py
-
-# 打开浏览器
-open http://127.0.0.1:7891
-```
-
-> 💡 **提示**：`run_loop.sh` 每 15 秒自动同步数据。可用 `&` 后台运行。
-
-> 💡 **看板即开即用**：`server.py` 内嵌 `dashboard/dashboard.html`，无需额外构建。Docker 镜像包含预构建的 React 前端。
-
-## 第五步：发送第一道旨意
-
-通过消息渠道发送任务（太子会自动识别并转发到中书省）：
+任务在整个系统中经历以下状态流转：
 
 ```
-请帮我用 Python 写一个文本分类器：
-1. 使用 scikit-learn
-2. 支持多分类
-3. 输出混淆矩阵
-4. 写完整的文档
+皇上旨意 → Taizi（太子分拣）
+         → Zhongshu（中书省起草方案）
+         → Menxia（门下省审议）
+             ├── reject → Zhongshu（封驳，最多 2 轮）
+             └── approve → Assigned（准奏）
+                         → Doing（尚书省派发六部执行）
+                         │   ├── → Review（六部全部完成）
+                         │   └── → Blocked（阻塞）
+                         │                ├── → Doing（恢复）
+                         │                └── → Cancelled（取消）
+                         → Zhongshu_Final（中书省撰写回奏）
+                         → Done（太子回奏皇上）
 ```
 
-## 第六步：观察执行过程
+**合法状态转换表（config.py VALID_TRANSITIONS）：**
 
-打开看板 http://127.0.0.1:7891
+| 当前状态 | 可转换到 |
+|----------|----------|
+| (新创建) | Taizi |
+| Taizi | Zhongshu |
+| Zhongshu | Menxia, Assigned |
+| Menxia | Zhongshu（封驳）, Assigned（准奏） |
+| Assigned | Doing |
+| Doing | Review, Blocked |
+| Review | Zhongshu_Final |
+| Zhongshu_Final | Done, Zhongshu（需修改） |
+| Blocked | Doing, Cancelled |
+| Done | （终态） |
+| Cancelled | （终态） |
 
-1. **📋 旨意看板** — 观察任务在各状态之间流转
-2. **🔭 省部调度** — 查看各部门工作分布
-3. **📜 奏折阁** — 任务完成后自动归档为奏折
+---
 
-任务流转路径：
+## 9 种看板命令
+
+所有 Agent 通过以下 CLI 命令与看板通信（位置参数格式）：
+
+| 命令 | 用法 | 说明 |
+|------|------|------|
+| `approve` | `kanban_update.py approve <id> "准奏意见"` | 门下省准奏 |
+| `reject` | `kanban_update.py reject <id> "封驳意见"` | 门下省封驳 |
+| `assign` | `kanban_update.py assign <id> <dept> "任务说明"` | 尚书省派发六部 |
+| `done-v2` | `kanban_update.py done-v2 <id> "产出路径" "说明"` | 六部完成上报 |
+| `report` | `kanban_update.py report <id> "产出" "说明"` | 汇总报告 |
+| `ask` | `kanban_update.py ask <id> <目标部门> "问题"` | 请示/发消息 |
+| `answer` | `kanban_update.py answer <id> <目标部门> "回答"` | 回复请示 |
+| `escalate` | `kanban_update.py escalate <id> "原因"` | 异常上报 |
+| `redirect` | `kanban_update.py redirect <id> <目标部门> "原因"` | 监察纠正（御史台专用） |
+
+**其他管理命令：**
+
+| 命令 | 用法 | 说明 |
+|------|------|------|
+| `create` | `kanban_update.py create <id> "<标题>" <state> <org> <official> "[备注]"` | 创建任务 |
+| `progress` | `kanban_update.py progress <id> "进展" "todos"` | 实时进展上报 |
+| `todo` | `kanban_update.py todo <id> <todo_id> "<标题>" <status> --detail "<详情>"` | 子任务管理 |
+
+---
+
+## 编排引擎工作流程
+
+`pipeline_orchestrator.py` 是系统的大脑，每 5 秒轮询一次看板：
+
 ```
-收件 → 太子分拣 → 中书规划 → 门下审议 → 已派发 → 执行中 → 已完成
+主循环（每 5 秒一轮）
+  │
+  ├── 1. 扫描所有非终态任务
+  │     ├── 检测状态变化 → dispatch_map 路由派发
+  │     ├── 检查未读消息 → 9 种消息类型处理器
+  │     ├── 检查待回答问题 → 重新通知
+  │     └── 检查停滞（3分钟催办 / 6分钟上报监察）
+  │
+  ├── 2. 消息路由优先级
+  │     ① redirect（监察纠正，最高优先级）
+  │     ② escalate（异常上报）
+  │     ③ ask / answer（对话消息）
+  │     ④ approve / reject（状态转换）
+  │     ⑤ assign / done / report（任务流转）
+  │
+  └── 3. 关键保障机制
+        ├── 双重派发防护（快照同步）
+        ├── 封驳上限（2次封驳后强制准奏）
+        ├── 原子文件操作（file_lock + tmpfile rename）
+        └── 启动恢复（重启后自动补发未完成任务）
 ```
 
 ---
 
-## docker部署
-从release下载对应版本，上传到docker。
-开放port：'7891'，'18789'
-挂载 '/root/.openclaw'
-## 🎯 进阶用法
+## 封驳机制
 
-### 使用圣旨模板
+门下省对中书省方案进行审议：
 
-> 看板 → 📜 旨库 → 选择模板 → 填写参数 → 下旨
-
-9 个预设模板：周报生成 · 代码审查 · API 设计 · 竞品分析 · 数据报告 · 博客文章 · 部署方案 · 邮件文案 · 站会摘要
-
-### 切换 Agent 模型
-
-> 看板 → ⚙️ 模型配置 → 选择新模型 → 应用更改
-
-约 5 秒后 Gateway 自动重启生效。
-
-### 管理技能
-
-> 看板 → 🛠️ 技能配置 → 查看已安装技能 → 点击添加新技能
-
-### 叫停 / 取消任务
-
-> 在旨意看板或任务详情中，点击 **⏸ 叫停** 或 **🚫 取消** 按钮
-
-### 订阅天下要闻
-
-> 看板 → 📰 天下要闻 → ⚙️ 订阅管理 → 选择分类 / 添加源 / 配飞书推送
+- 每次封驳，系统递增 `reviewRound` 计数
+- **最多 2 轮封驳**，第 3 次系统自动强制准奏
+- 强制准奏时记录审计标记 `override` 到 `auditFlags`
+- 强制准奏后自动通知尚书省进入派发阶段
 
 ---
 
-## ❓ 故障排查
+## 停滞检测
 
-### 看板显示「服务器未启动」
+两级停滞检测机制（并行运作）：
+
+| 级别 | 阈值 | 动作 |
+|------|------|------|
+| 催办 | 3 分钟无活动 | 通知当前负责 Agent |
+| 上报 | 6 分钟无活动 | 向御史台发送 escalate 消息 |
+
+基于 `task.last_activity` 时间戳判断，Agent 执行 `progress` 或任何看板命令都会更新此时间戳。
+
+---
+
+## 监察系统
+
+`pipeline_watchdog.py` 由定时脚本（如 cron）每 60 秒调用一次：
+
+- **看板停滞检测**：基于 `last_activity` 时间戳
+- **封驳循环检测**：`reviewRound >= 2` 时记录违规
+- **agentLog 异常扫描**：检测 ESCALATE、ERROR、HELP 等关键词
+- **流转纠正**：通过 `redirect` 命令将错误流转重定向
+- **自动归档**：Done/Cancelled 超过 5 分钟自动归档
+
+---
+
+## 文件锁机制
+
+`file_lock.py` 提供跨平台的原子 JSON 读写：
+
+- `atomic_json_read(path, default)` — 共享锁读取
+- `atomic_json_update(path, modifier, default)` — 排他锁更新（读→改→写全程持锁）
+- `atomic_json_write(path, data)` — 排他锁写入（不读取）
+- 使用 `.lock` 文件 + `fcntl`/`msvcrt` 实现跨平台兼容
+- 写入使用 `tempfile + os.replace` 保证原子性
+
+---
+
+## 运行方式
+
 ```bash
-# 确认服务器正在运行
-python3 dashboard/server.py
-```
+# 启动编排引擎（主进程，常驻运行）
+python3 scripts/pipeline_orchestrator.py
+python3 scripts/pipeline_orchestrator.py --interval 10  # 自定义轮询间隔
 
-### Agent 报错 "No API key found for provider"
+# 单次扫描（调试用）
+python3 scripts/pipeline_orchestrator.py --once
 
-这是最常见的问题。三省六部有 11 个 Agent，每个都需要 API Key。
-
-```bash
-# 方法一：为任意 Agent 配置后重新运行 install.sh（推荐）
-openclaw agents add taizi          # 按提示输入 Anthropic API Key
-cd edict && ./install.sh            # 自动同步到所有 Agent
-
-# 方法二：手动复制 auth 文件
-MAIN_AUTH=$(find ~/.openclaw/agents -name auth-profiles.json | head -1)
-for agent in taizi zhongshu menxia shangshu hubu libu bingbu xingbu gongbu; do
-  mkdir -p ~/.openclaw/agents/$agent/agent
-  cp "$MAIN_AUTH" ~/.openclaw/agents/$agent/agent/auth-profiles.json
-done
-
-# 方法三：逐个配置
-openclaw agents add taizi
-openclaw agents add zhongshu
-# ... 其他 Agent
-```
-
-### Agent 不响应
-```bash
-# 检查 Gateway 状态
-openclaw gateway status
-
-# 必要时重启
-openclaw gateway restart
-```
-
-### 数据不更新
-```bash
-# 检查刷新循环是否运行
-ps aux | grep run_loop
-
-# 手动执行一次同步
-python3 scripts/refresh_live_data.py
-```
-
-### 心跳显示红色 / 告警
-```bash
-# 检查对应 Agent 的进程
-openclaw agent status <agent-id>
-
-# 重启指定 Agent
-openclaw agent restart <agent-id>
-```
-
-### 模型切换后不生效
-等待约 5 秒让 Gateway 重启完成。仍不生效则：
-```bash
-python3 scripts/apply_model_changes.py
-openclaw gateway restart
+# 启动监察脚本（由 cron 或 run_loop.sh 定时调用）
+python3 scripts/pipeline_watchdog.py
 ```
 
 ---
 
+## 数据文件
 
+| 文件 | 说明 |
+|------|------|
+| `data/tasks_source.json` | 看板主数据（任务列表 + 全局计数器） |
+| `data/pipeline_audit.json` | 监察审计日志 |
+| `data/audit_exclude.json` | 手动排除的任务列表 |
+| `data/watchdog_config.json` | 监察运行时配置 |
 
-### 📄 许可证
-本项目 **AgentClaw** 基于 [MIT 许可证](LICENSE) 开源，您可以自由使用、修改和分发本项目代码，需遵循许可证相关声明。
+---
 
-#### 衍生项目声明
-本项目基于以下两个开源项目衍生开发：
-1. [OpenClawChineseTranslation](https://github.com/1186258278/OpenClawChineseTranslation)
-2. [edict](https://github.com/cft0808/edict)
+## 部署说明
 
-本项目严格遵守上述上游项目的开源许可证协议，保留所有原始版权与授权声明。
+1. 将 `scripts/` 目录部署到项目的 `scripts/` 路径下
+2. 将 `agents/` 目录部署到项目的 `agents/` 路径下
+3. 确保 `data/` 目录存在且可写
+4. 确保已安装 `openclaw` CLI 工具（Agent 唤醒依赖）
+5. 启动编排引擎：`python3 scripts/pipeline_orchestrator.py`
+6. 配置定时任务调用监察脚本：`* * * * * cd /path/to/project && python3 scripts/pipeline_watchdog.py`

@@ -46,7 +46,7 @@
 
 2. **正确示例：**
    ```bash
-   python3 scripts/kanban_update.py assign JJC-xxx --dept gongbu --comment "尚书省·任务令：修复安全漏洞"
+   python3 scripts/kanban_update.py assign JJC-xxx gongbu "尚书省·任务令：修复安全漏洞"
    ```
 
 ---
@@ -84,7 +84,7 @@
 ### 第一步：对每个六部执行 assign 命令
 
 ```bash
-python3 scripts/kanban_update.py assign JJC-xxx --dept <部门agent名> --comment "尚书省·任务令：任务ID: JJC-xxx\n任务: [完整详细内容]\n输出要求: [格式/标准]"
+python3 scripts/kanban_update.py assign JJC-xxx <部门agent名> "尚书省·任务令：任务ID: JJC-xxx\n任务: [完整详细内容]\n输出要求: [格式/标准]"
 ```
 
 ### 六部对应关系

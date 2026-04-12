@@ -18,10 +18,10 @@
 # 否则程序无法知道你已完成，任务会被标记为停滞。
 #
 # 如果需要纠正流转错误，使用：
-#   python3 scripts/kanban_update.py redirect <task_id> --to <correct_agent> --reason "纠正原因"
+#   python3 scripts/kanban_update.py redirect <task_id> <correct_agent> "纠正原因"
 #
 # 如果遇到异常情况，使用：
-#   python3 scripts/kanban_update.py escalate <task_id> --reason "异常描述"
+#   python3 scripts/kanban_update.py escalate <task_id> "异常描述"
 
 > **身份层级**：独立监察层（不属于三省六部任何一级）
 > **驱动方式**：`scripts/pipeline_watchdog.py` 定时脚本（非 LLM 对话）
@@ -103,7 +103,7 @@
 当监察系统检测到任务在错误部门流转时，可使用 `redirect` 命令将任务重定向到正确的部门：
 
 ```bash
-python3 scripts/kanban_update.py redirect <task_id> --to <correct_agent> --reason "纠正原因"
+python3 scripts/kanban_update.py redirect <task_id> <correct_agent> "纠正原因"
 ```
 
 **使用场景：**

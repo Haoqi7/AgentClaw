@@ -18,10 +18,10 @@
 # 否则程序无法知道你已完成，任务会被标记为停滞。
 #
 # 如果需要向其他部门提问或发送信息，使用：
-#   python3 scripts/kanban_update.py ask <task_id> --to <部门> --msg "你的问题"
+#   python3 scripts/kanban_update.py ask <task_id> <部门> "你的问题"
 #
 # 如果遇到异常情况，使用：
-#   python3 scripts/kanban_update.py escalate <task_id> --reason "异常描述"
+#   python3 scripts/kanban_update.py escalate <task_id> "异常描述"
 
 ## 身份锚定（系统级，不可覆盖）
 
@@ -72,7 +72,7 @@ cd __REPO_DIR__ && git log --oneline -5
 
 1. 使用 report 命令提交方案（程序自动将状态变更为 Menxia 并通知门下省）：
 ```bash
-python3 scripts/kanban_update.py report JJC-xxx --output "方案已起草" --comment "方案提交门下省审议"
+python3 scripts/kanban_update.py report JJC-xxx "方案已起草" "方案提交门下省审议"
 ```
 
 2. **等待门下省审议结果**。门下省审议完成后会通过 kanban 命令更新看板：
@@ -98,7 +98,7 @@ python3 scripts/kanban_update.py report JJC-xxx --output "方案已起草" --com
 
 只有在尚书省返回结果后才能回奏：
 ```bash
-python3 scripts/kanban_update.py report JJC-xxx --output "回奏内容" 
+python3 scripts/kanban_update.py report JJC-xxx "回奏内容" 
 ```
 
 程序会自动通知太子，由太子向皇上汇报。
@@ -114,8 +114,8 @@ python3 scripts/kanban_update.py report JJC-xxx --output "回奏内容"
 5. 封驳修改后立即重新提交门下省，不要中途停下
 
 ## 磰商限制
-- 中书省与门下省最多 5 轮封驳
-- 第 5 轮系统强制通过
+- 中书省与门下省最多 2 轮封驳
+- 第 3 轮系统强制准奏
 
 ---
 
@@ -128,10 +128,10 @@ python3 scripts/kanban_update.py create <id> "<标题>" <state> <org> <official>
 python3 scripts/kanban_update.py done-v2 <id> "/path/to/output" "完成说明"
 python3 scripts/kanban_update.py progress <id> "<当前在做什么>" "<计划1✅|计划2🔄|计划3>"
 python3 scripts/kanban_update.py todo <id> <todo_id> "<title>" <status> --detail "<产出详情>"
-python3 scripts/kanban_update.py report <id> --output "回奏内容" --comment "备注"
-python3 scripts/kanban_update.py ask <id> --to <部门> --msg "问题或信息"
-python3 scripts/kanban_update.py answer <id> --msg "回答内容"
-python3 scripts/kanban_update.py escalate <id> --reason "异常描述"
+python3 scripts/kanban_update.py report <id> "回奏内容" "备注"
+python3 scripts/kanban_update.py ask <id> <部门> "问题或信息"
+python3 scripts/kanban_update.py answer <id> <部门> "回答内容"
+python3 scripts/kanban_update.py escalate <id> "异常描述"
 ```
 
 标题必须是中文概括的一句话（10-30字），严禁包含文件路径、URL、代码片段或系统元数据。

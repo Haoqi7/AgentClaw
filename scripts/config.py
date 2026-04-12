@@ -22,8 +22,7 @@ DATA_DIR = BASE_DIR / "data"
 
 # 看板主数据文件（与现有 kanban_update.py / server.py 保持一致）
 KANBAN_PATH = DATA_DIR / "tasks_source.json"
-# 流程日志（保留独立文件，方便日志分析）
-FLOW_LOG_PATH = DATA_DIR / "flow_log.json"
+# FLOW_LOG_PATH 已移除（V8 流程日志统一写入 tasks_source.json 的 flow_log 字段）
 
 # ==================== 端口配置 ====================
 
@@ -46,7 +45,7 @@ DOING_PROGRESS_TIMEOUT = 45       # Doing 状态六部无活动阈值（秒）
 
 # ==================== 封驳配置 ====================
 
-MAX_REJECT_COUNT = 5              # 门下省最大封驳次数（超过则强制准奏）
+MAX_REJECT_COUNT = 2              # 门下省最大封驳次数（第3次系统强制准奏）
 
 # ==================== 通知冷却配置（兼容旧逻辑） ====================
 
@@ -129,7 +128,7 @@ VALID_TRANSITIONS = {
 }
 
 # 终态集合
-TERMINAL_STATES = {"Done", "Cancelled", "archived"}
+TERMINAL_STATES = {"Done", "Cancelled"}
 
 # ==================== 外部命令 ====================
 
