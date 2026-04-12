@@ -185,7 +185,7 @@ class Orchestrator:
     # ─────────────────────────────────────
     # 消息路由（section 9.2-9.3）
     # ─────────────────────────────────────
-    async def _route_message(self, task_id, current_state, message):
+    async def _route_message(self, task_id, current_state, message, kanban=None):
         """根据消息类型和当前状态执行路由逻辑。
 
         优先级（section 9.3）:
@@ -194,6 +194,9 @@ class Orchestrator:
             3. ask / answer（对话消息）
             4. approve / reject（状态转换）
             5. assign / done / report（任务流转）
+        
+        Args:
+            kanban: 看板数据对象（可选，用于就地修改避免重新加载）
         """
         msg_type = message["type"]
         from_agent = message["from_agent"]
@@ -223,7 +226,7 @@ class Orchestrator:
 
         # 4. answer（回复）
         elif msg_type == "answer":
-            await self._handle_answer(task_id, message)
+            routed = await self._handle_answer(task_id, message, kanban)
             routed = True
 
         # 5. approve（准奏）
@@ -429,20 +432,31 @@ class Orchestrator:
         await notify_agent_async(
             msg["to_agent"], f"[请示] {msg['content']}", session)
 
-    async def _handle_answer(self, task_id, msg):
+    async def _handle_answer(self, task_id, msg, kanban=None):
         """处理回复（answer命令）。
 
         任何状态下均可触发。
         动作: 记录 flow_log，标记问题已回答，通知提问者
+
+        Args:
+            kanban: 看板数据对象（可选，就地修改避免竞态条件）
         """
         log_flow(task_id, msg["from_agent"], msg["to_agent"],
                  f"回复: {msg['content']}")
-        # 标记问题已回答
+        # 标记问题已回答（优先使用传入的 kanban 避免竞态）
         question_id = msg.get("structured", {}).get("question_id")
-        if question_id:
-            kanban = self._load_kanban()
+        if question_id and kanban:
             mark_question_answered(kanban, task_id, question_id)
-            self._save_kanban(kanban)
+        elif question_id:
+            # 降级：无 kanban 参数时使用原子更新
+            from file_lock import atomic_json_update as _atomic_update
+            def _mark_ans(data):
+                mark_question_answered(data, task_id, question_id)
+                return data
+            try:
+                _atomic_update(KANBAN_PATH, _mark_ans, {"tasks": [], "global_counters": {}})
+            except Exception as e:
+                logger.warning(f"[Orchestrator] 标记问题已回答失败: {e}")
         session = f"{task_id}-{msg['to_agent']}"
         await notify_agent_async(
             msg["to_agent"], f"[回复] {msg['content']}", session)
@@ -513,6 +527,12 @@ class Orchestrator:
             prev = self.last_snapshot.get(task_id)
             if prev and prev != state:
                 self._stale_warned.discard(task_id)
+                self._stale_escalated.discard(task_id)
+
+        # 任务恢复活跃后也清除停滞记录（last_activity 近期有更新）
+        if elapsed < STALE_WARNING_TIMEOUT:
+            self._stale_warned.discard(task_id)
+            if elapsed < STALE_ESCALATE_TIMEOUT:
                 self._stale_escalated.discard(task_id)
 
     # ─────────────────────────────────────
@@ -636,16 +656,21 @@ class Orchestrator:
         return task.get("reviewRound", task.get("reject_count", 0))
 
     def _increment_reject_count(self, task_id):
-        """递增封驳计数。
+        """递增封驳计数（原子操作）。
 
-        原子操作：同时更新 reviewRound 和 reject_count。
+        使用 file_lock.atomic_json_update 确保读-改-写全程持锁，
+        避免并发场景下计数丢失。
         """
-        kanban = self._load_kanban()
-        task = self._find_task(kanban, task_id)
-        if task:
-            task["reviewRound"] = task.get("reviewRound", 0) + 1
-            task["reject_count"] = task.get("reject_count", 0) + 1
-            self._save_kanban(kanban)
+        from file_lock import atomic_json_update as _atomic_update
+
+        def modifier(data):
+            task = find_task(data, task_id)
+            if task:
+                task["reviewRound"] = task.get("reviewRound", 0) + 1
+                task["reject_count"] = task.get("reject_count", 0) + 1
+            return data
+
+        _atomic_update(KANBAN_PATH, modifier, {"tasks": [], "global_counters": {}})
 
     def _all_ministries_done(self, task_id):
         """检查所有涉及的六部是否都已完成。

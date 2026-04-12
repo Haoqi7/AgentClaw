@@ -69,9 +69,13 @@ def _load_kanban():
 
     优先使用 file_lock.atomic_json_read（跨平台安全），
     降级使用 Linux fcntl 锁。
+    兼容新旧两种文件格式。
     """
     if _USE_FILE_LOCK:
-        return atomic_json_read(KANBAN_PATH, {"tasks": [], "global_counters": {}})
+        data = atomic_json_read(KANBAN_PATH, {"tasks": [], "global_counters": {}})
+        if isinstance(data, list):
+            return {"tasks": data, "global_counters": {}}
+        return data
 
     # 降级实现：Linux fcntl
     if not KANBAN_PATH.exists():
@@ -84,6 +88,9 @@ def _load_kanban():
         except Exception:
             data = {"tasks": [], "global_counters": {}}
         fcntl.flock(f.fileno(), fcntl.LOCK_UN)
+    # 兼容旧格式
+    if isinstance(data, list):
+        return {"tasks": data, "global_counters": {}}
     return data
 
 
@@ -182,12 +189,15 @@ def add_message(task_id, msg_type, from_agent, to_agent, content, structured=Non
         structured = {}
 
     # 原子读取 -> 修改 -> 写回
+    _created_msg_id = [None]  # 闭包捕获 msg_id
+
     def _modifier(data):
         task = find_task(data, task_id)
         if not task:
             raise ValueError(f"任务不存在: {task_id}")
 
         msg_id = _next_message_id(data)
+        _created_msg_id[0] = msg_id
         now = _now_iso()
 
         message = {
@@ -205,7 +215,6 @@ def add_message(task_id, msg_type, from_agent, to_agent, content, structured=Non
 
         task.setdefault("kanban_messages", []).append(message)
         task["last_activity"] = now
-        data.setdefault("global_counters", {})["message_id"] = int(msg_id.split("-")[1])
 
         logger.info(f"[kanban] 消息已写入: {msg_id} | {msg_type} | "
                      f"{from_agent} -> {to_agent} | task={task_id}")
@@ -213,11 +222,8 @@ def add_message(task_id, msg_type, from_agent, to_agent, content, structured=Non
 
     atomic_json_update(KANBAN_PATH, _modifier, {"tasks": [], "global_counters": {}})
 
-    # 返回消息ID（从计数器推算）
-    kanban = _load_kanban()
-    msg_counter = kanban.get("global_counters", {}).get("message_id", 0)
-    msg_id = f"msg-{msg_counter:04d}"
-    return msg_id
+    # 直接返回闭包中捕获的 msg_id，无需重新读取文件
+    return _created_msg_id[0]
 
 
 def get_unread_messages(kanban_data, task_id):

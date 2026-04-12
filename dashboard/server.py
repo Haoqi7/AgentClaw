@@ -353,13 +353,29 @@ def get_task_data_dir():
 
 
 def load_tasks():
+    """安全读取任务文件（兼容新旧两种格式）。
+
+    新格式: {"tasks": [...], "global_counters": {...}}
+    旧格式: [...]
+    始终返回任务列表。
+    """
     task_data_dir = get_task_data_dir()
-    return atomic_json_read(task_data_dir / 'tasks_source.json', [])
+    data = atomic_json_read(task_data_dir / 'tasks_source.json', {"tasks": [], "global_counters": {}})
+    if isinstance(data, list):
+        return data  # 兼容旧格式
+    return data.get("tasks", [])
 
 
 def save_tasks(tasks):
+    """写入任务文件（保留字典格式和 global_counters 元数据）。"""
     task_data_dir = get_task_data_dir()
-    atomic_json_write(task_data_dir / 'tasks_source.json', tasks)
+    tf = task_data_dir / 'tasks_source.json'
+    # 读取现有数据以保留 global_counters 等元数据
+    data = atomic_json_read(tf, {"tasks": [], "global_counters": {}})
+    if isinstance(data, list):
+        data = {"tasks": data, "global_counters": {}}
+    data["tasks"] = tasks
+    atomic_json_write(tf, data)
     # Trigger refresh (异步，不阻塞，避免僵尸进程)
     script = task_data_dir.parent / 'scripts' / 'refresh_live_data.py'
     if not script.exists():

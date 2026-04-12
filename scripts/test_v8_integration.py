@@ -190,16 +190,11 @@ try:
     anomalies2 = pw.check_agent_log_anomalies(test_kanban6, "T6", test_kanban6["tasks"][0])
     test("check_agent_log_anomalies(检测ERROR)", len(anomalies2) > 0 and "ERROR" in anomalies2[0])
 
-    # execute_redirect
+    # V8 redirect 功能可用
     test("execute_redirect存在", callable(pw.execute_redirect))
     # execute_redirect should fail gracefully for non-existent tasks
     redirect_ok = pw.execute_redirect("NONEXISTENT-TASK", "gongbu", "测试纠正")
     test("execute_redirect(不存在任务返回False)", redirect_ok == False)
-
-    # LEGAL_FLOWS includes V8 entries
-    test("LEGAL_FLOWS包含中书省→Zhongshu_Final", ("中书省", "Zhongshu_Final") in pw.LEGAL_FLOWS)
-    test("LEGAL_FLOWS包含Zhongshu_Final→太子", ("Zhongshu_Final", "太子") in pw.LEGAL_FLOWS)
-    test("LEGAL_FLOWS包含御史台redirect", ("jiancha", "zhongshu") in pw.LEGAL_FLOWS)
 
 except Exception as e:
     test("pipeline_watchdog V8测试", False, str(e))

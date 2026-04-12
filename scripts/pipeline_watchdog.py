@@ -264,8 +264,16 @@ except ImportError:
 
 
 def load_tasks():
-    """安全读取 tasks_source.json（带文件锁）"""
-    return atomic_json_read(TASKS_FILE, [])
+    """安全读取 tasks_source.json（带文件锁，兼容新旧两种格式）。
+
+    新格式: {"tasks": [...], "global_counters": {...}}
+    旧格式: [...]
+    始终返回任务列表。
+    """
+    data = atomic_json_read(TASKS_FILE, {"tasks": [], "global_counters": {}})
+    if isinstance(data, list):
+        return data  # 兼容旧格式（纯列表）
+    return data.get("tasks", [])
 
 
 def load_audit():
@@ -289,8 +297,16 @@ def load_exclude_list():
 
 
 def save_tasks(tasks):
-    """写入任务文件（带文件锁 + 原子写入）"""
-    atomic_json_write(TASKS_FILE, tasks)
+    """写入任务文件（带文件锁 + 原子写入，保留字典格式和 global_counters）。
+
+    如果文件当前为旧列表格式，自动升级为字典格式。
+    """
+    # 读取现有数据以保留 global_counters 等元数据
+    data = atomic_json_read(TASKS_FILE, {"tasks": [], "global_counters": {}})
+    if isinstance(data, list):
+        data = {"tasks": data, "global_counters": {}}
+    data["tasks"] = tasks
+    atomic_json_write(TASKS_FILE, data)
 
 
 # ═══════════════════════════════════════════════════════════════════

@@ -376,7 +376,15 @@ def cmd_redirect(task_id, to_agent, reason):
 
 
 def load():
-    return atomic_json_read(TASKS_FILE, [])
+    """读取看板数据，返回任务列表（兼容新旧两种文件格式）。
+
+    新格式: {"tasks": [...], "global_counters": {...}}
+    旧格式: [...]
+    """
+    data = atomic_json_read(TASKS_FILE, {"tasks": [], "global_counters": {}})
+    if isinstance(data, list):
+        return data  # 兼容旧格式（纯列表）
+    return data.get("tasks", [])
 
 
 def _trigger_refresh():
@@ -505,12 +513,16 @@ def cmd_create(task_id, title, state, org, official, remark=None, current_sessio
     actual_org = STATE_ORG_MAP.get(state, org)
     clean_remark = _sanitize_remark(remark) if remark else f"下旨：{title}"
     
-    def modifier(tasks):
+    def modifier(data):
+        # 兼容新旧格式：如果是旧列表格式，包装为字典
+        if isinstance(data, list):
+            data = {"tasks": data, "global_counters": {}}
+        tasks = data.get("tasks", [])
         existing = next((t for t in tasks if t.get('id') == task_id), None)
         if existing:
             if existing.get('state') in ('Done', 'Cancelled'):
                 log.warning(f'⚠️ 任务 {task_id} 已完结 (state={existing["state"]})，不可覆盖')
-                return tasks
+                return data
             if existing.get('state') not in (None, '', 'Inbox', 'Pending'):
                 log.warning(f'任务 {task_id} 已存在 (state={existing["state"]})，将被覆盖')
         tasks = [t for t in tasks if t.get('id') != task_id]
@@ -531,13 +543,14 @@ def cmd_create(task_id, title, state, org, official, remark=None, current_sessio
             "flow_log": init_flow,
             "updatedAt": now_iso()
         }
-        # 🔑 保存皇上的 chat_id（用于太子回奏）
+        # 保存皇上的 chat_id（用于太子回奏）
         if huangshang_chat_id:
             task_obj['huangshang_chat_id'] = huangshang_chat_id
         tasks.insert(0, task_obj)
-        return tasks
+        data["tasks"] = tasks
+        return data
     
-    atomic_json_update(TASKS_FILE, modifier, [])
+    atomic_json_update(TASKS_FILE, modifier, {"tasks": [], "global_counters": {}})
     _trigger_refresh()
 
     log.info(f'✅ 创建 {task_id} | {title[:30]} | state={state}')
@@ -595,11 +608,14 @@ def cmd_progress(task_id, now_text, todos_pipe='', tokens=0, cost=0.0, elapsed=0
     done_cnt = [0]
     total_cnt = [0]
     
-    def modifier(tasks):
+    def modifier(data):
+        if isinstance(data, list):
+            data = {"tasks": data, "global_counters": {}}
+        tasks = data.get("tasks", [])
         t = find_task(tasks, task_id)
         if not t:
             log.error(f'任务 {task_id} 不存在')
-            return tasks
+            return data
         t['now'] = clean
         if parsed_todos is not None:
             t['todos'] = parsed_todos
@@ -627,9 +643,10 @@ def cmd_progress(task_id, now_text, todos_pipe='', tokens=0, cost=0.0, elapsed=0
         t['updatedAt'] = at
         done_cnt[0] = sum(1 for td in t.get('todos', []) if td.get('status') == 'completed')
         total_cnt[0] = len(t.get('todos', []))
-        return tasks
+        data["tasks"] = tasks
+        return data
     
-    atomic_json_update(TASKS_FILE, modifier, [])
+    atomic_json_update(TASKS_FILE, modifier, {"tasks": [], "global_counters": {}})
     _trigger_refresh()
     res_info = ''
     if tokens or cost or elapsed:
@@ -648,11 +665,14 @@ def cmd_todo(task_id, todo_id, title, status='not-started', detail=''):
         status = 'not-started'
     result_info = [0, 0]
     
-    def modifier(tasks):
+    def modifier(data):
+        if isinstance(data, list):
+            data = {"tasks": data, "global_counters": {}}
+        tasks = data.get("tasks", [])
         t = find_task(tasks, task_id)
         if not t:
             log.error(f'任务 {task_id} 不存在')
-            return tasks
+            return data
         if 'todos' not in t:
             t['todos'] = []
         existing = next((td for td in t['todos'] if str(td.get('id')) == str(todo_id)), None)
@@ -670,9 +690,10 @@ def cmd_todo(task_id, todo_id, title, status='not-started', detail=''):
         t['updatedAt'] = now_iso()
         result_info[0] = sum(1 for td in t['todos'] if td.get('status') == 'completed')
         result_info[1] = len(t['todos'])
-        return tasks
+        data["tasks"] = tasks
+        return data
     
-    atomic_json_update(TASKS_FILE, modifier, [])
+    atomic_json_update(TASKS_FILE, modifier, {"tasks": [], "global_counters": {}})
     _trigger_refresh()
     log.info(f'✅ {task_id} todo [{result_info[0]}/{result_info[1]}]: {todo_id} → {status}')
 
