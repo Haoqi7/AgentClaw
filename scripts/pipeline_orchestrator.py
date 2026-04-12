@@ -38,7 +38,7 @@ if str(_SCRIPTS_DIR) not in sys.path:
     sys.path.insert(0, str(_SCRIPTS_DIR))
 
 from config import (
-    KANBAN_PATH, FLOW_LOG_PATH, POLL_INTERVAL, DEFAULT_AGENT_TIMEOUT,
+    KANBAN_PATH, POLL_INTERVAL, DEFAULT_AGENT_TIMEOUT,
     MAX_NOTIFY_RETRIES, NOTIFY_RETRY_DELAY, STALE_WARNING_TIMEOUT,
     STALE_ESCALATE_TIMEOUT, DOING_PROGRESS_TIMEOUT, MAX_REJECT_COUNT,
     MAX_CONCURRENT_DISPATCH, ALL_AGENTS, MINISTRY_AGENTS, STATE_AGENT_MAP,
@@ -49,6 +49,7 @@ from kanban_commands import (
     add_message, get_unread_messages, mark_message_read,
     get_pending_questions, mark_question_answered,
     get_task_state, update_task_state, log_flow, find_task,
+    update_task_fields, mark_messages_read_atomic,
 )
 
 logger = logging.getLogger("orchestrator")
@@ -119,10 +120,17 @@ class Orchestrator:
             # 2. 检查未读消息
             unread = get_unread_messages(kanban, task_id)
             if unread:
+                msg_ids = [m["id"] for m in unread]
                 for msg in unread:
                     await self._route_message(task_id, current_state, msg)
-                    mark_message_read(kanban, msg["id"])
-                self._save_kanban(kanban)
+                # 原子标记已读（避免内存修改后 _save_kanban 覆盖 update_task_state 的状态变更）
+                mark_messages_read_atomic(task_id, msg_ids)
+                # 同步快照：消息处理器可能已通过 update_task_state 改变了任务状态，
+                # 立即更新快照以防止下一轮轮询时重复派发（双重派发防护）
+                reloaded = self._load_kanban()
+                reloaded_task = find_task(reloaded, task_id)
+                if reloaded_task:
+                    self.last_snapshot[task_id] = reloaded_task.get("state", current_state)
 
             # 3. 检查待回答问题
             questions = get_pending_questions(kanban, task_id)
@@ -169,16 +177,24 @@ class Orchestrator:
             ("Zhongshu_Final", "Done"): ("taizi", "中书省回奏完成，请回奏皇上"),
             ("Zhongshu_Final", "Zhongshu"): ("zhongshu", "回奏需要修改，请重新撰写"),
             ("Blocked", "Doing"):       (task.get("current_handler", "shangshu"), "任务已恢复，请继续执行"),
+            ("Doing", "Blocked"):       ("shangshu", "任务被阻塞，请评估是否恢复或取消"),
+            ("Blocked", "Cancelled"):   None,  # 终态，仅记录日志不派发
         }
 
         key = (prev_state, new_state)
         if key in dispatch_map:
             target_agent, message = dispatch_map[key]
-            session = f"{task_id}-{target_agent}"
-            await notify_agent_async(target_agent, message, session)
-            log_flow(task_id, prev_state, new_state,
-                     f"状态变化，派发到{target_agent}")
-            logger.info(f"[Orchestrator] 派发: {task_id} {prev_state}->{new_state} -> {target_agent}")
+            if target_agent is None:
+                # 终态转换（如 Blocked→Cancelled），仅记录日志
+                log_flow(task_id, prev_state, new_state,
+                         f"状态变为终态{new_state}")
+                logger.info(f"[Orchestrator] 终态转换: {task_id} {prev_state}->{new_state}")
+            else:
+                session = f"{task_id}-{target_agent}"
+                await notify_agent_async(target_agent, message, session)
+                log_flow(task_id, prev_state, new_state,
+                         f"状态变化，派发到{target_agent}")
+                logger.info(f"[Orchestrator] 派发: {task_id} {prev_state}->{new_state} -> {target_agent}")
         else:
             logger.warning(f"[Orchestrator] 未注册的状态变化: {task_id} {prev_state}->{new_state}")
 
@@ -226,7 +242,7 @@ class Orchestrator:
 
         # 4. answer（回复）
         elif msg_type == "answer":
-            routed = await self._handle_answer(task_id, message, kanban)
+            await self._handle_answer(task_id, message, kanban)
             routed = True
 
         # 5. approve（准奏）
@@ -300,7 +316,7 @@ class Orchestrator:
         """处理尚书省派发。
 
         条件: 当前状态 == Assigned 且来自 shangshu
-        动作: 状态 -> Doing，设置 org，通知目标六部
+        动作: 状态 -> Doing，设置 org + ministries_involved + current_handler + doing_since，通知目标六部
         """
         if state != "Assigned" or msg["from_agent"] != "shangshu":
             return False
@@ -308,7 +324,16 @@ class Orchestrator:
         if not dept or dept not in MINISTRY_AGENTS:
             logger.warning(f"[Orchestrator] 派发目标无效: {dept}")
             return False
-        update_task_state(task_id, "Doing")
+        # 原子更新：同时设置状态、当前处理者、涉及的六部、Doing起始时间
+        doing_since = datetime.now(CST).isoformat()
+        update_task_fields(
+            task_id,
+            state="Doing",
+            current_handler=dept,
+            org=dept,
+            ministries_involved=[dept],
+            doing_since=doing_since,
+        )
         log_flow(task_id, "shangshu", dept, f"尚书省派发任务给{dept}")
         session = f"{task_id}-{dept}"
         await notify_agent_async(
@@ -325,7 +350,7 @@ class Orchestrator:
             return False
         log_flow(task_id, msg["from_agent"], "shangshu",
                  f"{msg['from_agent']}完成任务")
-        if self._all_ministries_done(task_id):
+        if self._all_ministries_done(task_id, fallback_agent=msg["from_agent"]):
             update_task_state(task_id, "Review")
             log_flow(task_id, "system", "shangshu",
                      "六部全部完成，通知尚书省审查")
@@ -460,6 +485,7 @@ class Orchestrator:
         session = f"{task_id}-{msg['to_agent']}"
         await notify_agent_async(
             msg["to_agent"], f"[回复] {msg['content']}", session)
+        return True
 
     async def _handle_pending_question(self, task_id, question):
         """处理待回答的问题。
@@ -672,22 +698,41 @@ class Orchestrator:
 
         _atomic_update(KANBAN_PATH, modifier, {"tasks": [], "global_counters": {}})
 
-    def _all_ministries_done(self, task_id):
+    def _all_ministries_done(self, task_id, fallback_agent=None):
         """检查所有涉及的六部是否都已完成。
 
         从 task.ministries_involved 获取涉及的六部列表，
-        检查看板消息中是否每个六部都有 done 类型的消息。
+        只计算 doing_since 时间之后的 done 消息，
+        避免历史轮次的 done 消息导致误判。
+
+        Args:
+            fallback_agent: 向后兼容参数，旧任务未设置 ministries_involved 时
+                使用当前 done 消息的发送者作为唯一判断依据
         """
         kanban = self._load_kanban()
         task = self._find_task(kanban, task_id)
         if not task:
             return False
-        involved = task.get("ministries_involved", MINISTRY_AGENTS)
+        involved = task.get("ministries_involved", [])
+
+        # 向后兼容：旧任务未设置 ministries_involved 时，
+        # 使用当前 done 消息的发送者作为唯一需要完成的六部
+        if not involved and fallback_agent:
+            involved = [fallback_agent]
+        elif not involved:
+            involved = MINISTRY_AGENTS  # 最终兜底
+
         messages = task.get("kanban_messages", [])
+        doing_since = task.get("doing_since", "")
         done_agents = set()
         for msg in messages:
             if (msg.get("type") == "done"
                     and msg.get("from_agent") in involved):
+                # 如果有 doing_since 时间戳，只计算此时间之后的 done 消息
+                if doing_since:
+                    msg_time = msg.get("timestamp", "")
+                    if msg_time and msg_time < doing_since:
+                        continue
                 done_agents.add(msg["from_agent"])
         return all(m in done_agents for m in involved)
 

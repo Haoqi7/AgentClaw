@@ -501,3 +501,65 @@ def record_dispatch_status(task_id, agent_id, status):
         return data
 
     atomic_json_update(KANBAN_PATH, _modifier, {"tasks": [], "global_counters": {}})
+
+
+# ====================================================================
+# 批量字段更新接口
+# ====================================================================
+
+def update_task_fields(task_id, **fields):
+    """原子更新任务的多个字段。
+
+    在一个原子操作中更新任务的状态、部门、活跃时间等多个字段，
+    避免多次文件读写导致的竞态条件。
+
+    Args:
+        task_id: 任务ID
+        **fields: 要更新的字段键值对（如 state="Doing", current_handler="libu"）
+
+    Raises:
+        ValueError: 任务不存在
+    """
+    def _modifier(data):
+        task = find_task(data, task_id)
+        if not task:
+            raise ValueError(f"任务不存在: {task_id}")
+        now = _now_iso()
+        for key, value in fields.items():
+            task[key] = value
+        task["last_activity"] = now
+        task["updatedAt"] = now
+        logger.info(f"[kanban] 批量字段更新: {task_id} | fields={list(fields.keys())}")
+        return data
+
+    atomic_json_update(KANBAN_PATH, _modifier, {"tasks": [], "global_counters": {}})
+
+
+def mark_messages_read_atomic(task_id, msg_ids):
+    """原子标记多条消息为已读。
+
+    使用 atomic_json_update 确保标记已读操作与状态变更不冲突，
+    避免内存中修改后写回文件覆盖 update_task_state 所做的状态变更。
+
+    Args:
+        task_id: 任务ID
+        msg_ids: 要标记为已读的消息ID列表
+    """
+    if not msg_ids:
+        return
+    msg_id_set = set(msg_ids)
+
+    def _modifier(data):
+        task = find_task(data, task_id)
+        if not task:
+            return data
+        count = 0
+        for msg in task.get("kanban_messages", []):
+            if msg.get("id") in msg_id_set and not msg.get("read", False):
+                msg["read"] = True
+                count += 1
+        if count:
+            logger.info(f"[kanban] 批量标记已读: {task_id} | {count}条消息")
+        return data
+
+    atomic_json_update(KANBAN_PATH, _modifier, {"tasks": [], "global_counters": {}})
