@@ -57,6 +57,8 @@ SCAN_COUNTER=0
 GATEWAY_CHECK_COUNTER=0
 SCRIPT_TIMEOUT=30  # 单个脚本最大执行时间(秒)
 DASHBOARD_PORT="${EDICT_DASHBOARD_PORT:-7891}"  # 看板端口，可通过环境变量覆盖
+DASHBOARD_CHECK_INTERVAL=60        # 看板健康检查间隔(秒)
+DASHBOARD_CHECK_COUNTER=0
 
 echo "🏛️  三省六部数据刷新循环启动 (PID=$$)"
 echo "   脚本目录: $SCRIPT_DIR"
@@ -66,7 +68,8 @@ echo "   监察间隔: ${WATCHDOG_INTERVAL}s"
 echo "   脚本超时: ${SCRIPT_TIMEOUT}s"
 echo "   日志: $LOG"
 echo "   PID文件: $PIDFILE"
-echo "   按 Ctrl+C 停止"
+echo "   Dashboard 端口: ${DASHBOARD_PORT}"
+echo "   Dashboard 健康检查间隔: ${DASHBOARD_CHECK_INTERVAL}s"
 
 # ── 安全执行（带超时保护）──
 safe_run() {
@@ -109,6 +112,23 @@ while true; do
   if (( WATCHDOG_COUNTER >= WATCHDOG_INTERVAL )); then
     WATCHDOG_COUNTER=0
     safe_run "$SCRIPT_DIR/pipeline_watchdog.py"
+  fi
+
+  # Problem 4: Dashboard 健康检查（看板服务器自身）
+  DASHBOARD_CHECK_COUNTER=$((DASHBOARD_CHECK_COUNTER + INTERVAL))
+  if (( DASHBOARD_CHECK_COUNTER >= DASHBOARD_CHECK_INTERVAL )); then
+    DASHBOARD_CHECK_COUNTER=0
+    if ! (echo > /dev/tcp/127.0.0.1/${DASHBOARD_PORT}) 2>/dev/null; then
+      echo "$(date '+%H:%M:%S') [loop] ⚠️ Dashboard (port ${DASHBOARD_PORT}) 无响应，尝试重启..." >> "$LOG"
+      # 重启 dashboard server（后台启动）
+      nohup python3 "${SCRIPT_DIR}/../dashboard/server.py" --port "${DASHBOARD_PORT}" > /dev/null 2>&1 &
+      sleep 3
+      if (echo > /dev/tcp/127.0.0.1/${DASHBOARD_PORT}) 2>/dev/null; then
+        echo "$(date '+%H:%M:%S') [loop] ✅ Dashboard 重启成功" >> "$LOG"
+      else
+        echo "$(date '+%H:%M:%S') [loop] ❌ Dashboard 重启失败，等待下次检查" >> "$LOG"
+      fi
+    fi
   fi
 
   # Issue #4: Gateway 健康检查与自动恢复

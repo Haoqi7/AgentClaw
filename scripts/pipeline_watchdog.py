@@ -960,6 +960,7 @@ def check_session_violation(task_id, flow_log, session_keys, task_state=""):
 # 格式：(from_agent_id, to_agent_id) → 是否合法
 _CHILD_AGENT_ALLOWED_PAIRS = {
     # 上行：上级调用下级
+    ("huangshang", "taizi"),
     ("taizi", "zhongshu"),
     ("zhongshu", "menxia"),
     ("zhongshu", "shangshu"),
@@ -973,12 +974,15 @@ _CHILD_AGENT_ALLOWED_PAIRS = {
     ("zhongshu", "taizi"),
     ("menxia", "zhongshu"),
     ("shangshu", "zhongshu"),
+    ("shangshu", "taizi"),
     ("gongbu", "shangshu"),
     ("bingbu", "shangshu"),
     ("hubu", "shangshu"),
     ("libu", "shangshu"),
     ("xingbu", "shangshu"),
     ("libu_hr", "shangshu"),
+    # 太子→皇上汇报（下行链路最终环节）
+    ("taizi", "huangshang"),
     # 自身内部消息
     ("taizi", "taizi"),
     ("zhongshu", "zhongshu"),
@@ -1455,7 +1459,6 @@ def _main_inner():
         audit = load_audit()
         audit.setdefault("notifications", [])
         audit["notifications"].append(_arch_notif)
-        audit["notifications"] = audit["notifications"][-_max_notifs:]
         save_audit(audit)
 
     # 过滤需要检查的任务：
@@ -1573,11 +1576,11 @@ def _main_inner():
         v_key = (v.get("task_id", ""), v.get("type", ""), v.get("flow_index", -1), v.get("detail", ""))
         existing_violation_keys.add(v_key)
 
-    # ── Fix #2: 清理已解决任务的陈旧违规 ──
-    # 如果违规对应的任务已完成(Done)/已取消(Cancelled)且已归档，
-    # 或任务已不存在于活跃列表中，则将其从 violations 中移除，
-    # 防止陈旧违规永久堆积。
-    _active_task_ids = {t.get('id', '') for t in tasks if t.get('state', '') not in ('Done', 'Cancelled')}
+    # ── Fix #2: 仅清理已归档（archived=True）任务的违规 ──
+    # 违规记录仅在任务被归档时转移到 archived_violations，
+    # 而非在任务 Done/Cancelled 时就转移（用户要求：记录不应被清除，除非任务被删除/归档）。
+    # 后续的归档步骤（archived_task_ids）会处理 archived=True 的任务。
+    _active_task_ids = {t.get('id', '') for t in tasks if not t.get('archived')}
     _stale_violations = []
     for _v in audit.get("violations", []):
         _v_task = _v.get("task_id", "")
@@ -1585,14 +1588,14 @@ def _main_inner():
             _stale_violations.append(_v)
     if _stale_violations:
         _stale_count = len(_stale_violations)
-        # 只保留仍属于活跃任务的违规
+        # 只保留仍属于非归档任务的违规
         audit["violations"] = [v for v in audit.get("violations", []) if v.get("task_id", "") in _active_task_ids or not v.get("task_id")]
         # 将清理的违规归档
         audit.setdefault("archived_violations", [])
         audit["archived_violations"].extend(_stale_violations)
         # 限制归档大小
         audit["archived_violations"] = audit["archived_violations"][-_max_arch_violations:]
-        log(f"已清理 {_stale_count} 条已解决任务的陈旧违规")
+        log(f"已清理 {_stale_count} 条已归档任务的陈旧违规")
 
     # ── Fix #2 原因A: 自动修复活跃任务的过时违规 ──
     # 对于仍在活跃的任务，如果 flow_log 已经包含了之前报缺失的步骤，
@@ -2062,8 +2065,9 @@ def _main_inner():
                 audit["archived_notifications"] = audit["archived_notifications"][-_max_arch_notifs:]
             audit["notifications"] = active_notifs
 
-    # 只保留最近 N 条记录（使用配置值）
-    audit["violations"] = audit["violations"][-_max_violations:]
+    # 不再对活跃任务的违规记录做硬限制裁剪
+    # 违规记录仅在任务被归档时转移到 archived_violations
+    # _max_violations 仅用于控制 archived_violations 的大小上限
     audit["last_check"] = now_iso
     audit["watched_tasks"] = watched_tasks
     audit["watched_count"] = len(watched_tasks)
@@ -2078,14 +2082,14 @@ def _main_inner():
         "stability": round(_stability_score, 2),
     })
     audit["check_history"] = audit["check_history"][-100:]  # 保留最近100轮
-    audit["notifications"] = audit["notifications"][-_max_notifs:]
+    # 不再对活跃任务的通知记录做硬限制裁剪
+    # 通知记录仅在任务被归档时转移到 archived_notifications
 
     # 记录本轮巡检摘要
     audit["notifications"].append(_make_notif(
         notif_type="巡检", to="系统",
         detail=f"检查完成，{len(active)} 个检查任务，{len(watched_tasks)} 个活跃，发现 {len(new_violations)} 项问题",
     ))
-    audit["notifications"] = audit["notifications"][-_max_notifs:]
 
     save_audit(audit)
 

@@ -13,6 +13,8 @@ Endpoints:
 """
 import json, pathlib, subprocess, sys, threading, argparse, datetime, logging, re, os, socket
 from http.server import BaseHTTPRequestHandler, HTTPServer
+from socketserver import ThreadingMixIn
+import signal, time as _time
 from urllib.parse import urlparse, quote as _url_quote
 from urllib.request import Request, urlopen
 
@@ -1238,6 +1240,7 @@ _STATE_AGENT_MAP = {
     'Review': 'shangshu',
     'Next': None,          # 待执行，从 org 推断
     'Pending': 'zhongshu', # 待处理，默认中书省
+    'Done': 'taizi',       # 完成时通知太子回奏皇上（与 kanban_update.py V4 一致）
 }
 _ORG_AGENT_MAP = {
     '礼部': 'libu', '户部': 'hubu', '兵部': 'bingbu',
@@ -2886,6 +2889,9 @@ def handle_advance_state(task_id, comment=''):
 
 
 class Handler(BaseHTTPRequestHandler):
+    # Problem 4: 连接超时，避免死连接占用线程
+    timeout = 30
+
     def log_message(self, fmt, *args):
         # 只记录 4xx/5xx 错误请求
         if args and len(args) >= 1:
@@ -2894,18 +2900,23 @@ class Handler(BaseHTTPRequestHandler):
                 log.warning(f'{self.client_address[0]} {fmt % args}')
 
     def handle_error(self):
-        pass  # 静默处理连接错误，避免 BrokenPipe 崩溃
+        log.warning(f'连接错误: {self.client_address} - {sys.exc_info()[1]}')
 
     def handle(self):
         try:
             super().handle()
-        except (BrokenPipeError, ConnectionResetError):
-            pass  # 客户端断开连接，忽略
+        except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError, TimeoutError):
+            pass  # 客户端断开连接或超时，忽略
+        except Exception as e:
+            log.warning(f'请求处理异常: {e}')
 
     def do_OPTIONS(self):
-        self.send_response(200)
-        cors_headers(self)
-        self.end_headers()
+        try:
+            self.send_response(200)
+            cors_headers(self)
+            self.end_headers()
+        except (BrokenPipeError, ConnectionResetError):
+            pass
 
     def send_json(self, data, code=200):
         try:
@@ -2916,7 +2927,7 @@ class Handler(BaseHTTPRequestHandler):
             cors_headers(self)
             self.end_headers()
             self.wfile.write(body)
-        except (BrokenPipeError, ConnectionResetError):
+        except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError, TimeoutError):
             pass
 
     def send_file(self, path: pathlib.Path, mime='text/html; charset=utf-8'):
@@ -2931,7 +2942,7 @@ class Handler(BaseHTTPRequestHandler):
             cors_headers(self)
             self.end_headers()
             self.wfile.write(body)
-        except (BrokenPipeError, ConnectionResetError):
+        except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError, TimeoutError):
             pass
 
     def _serve_static(self, rel_path):
@@ -2975,6 +2986,8 @@ class Handler(BaseHTTPRequestHandler):
             audit = atomic_json_read(DATA / 'pipeline_audit.json', {
                 'last_check': '', 'violations': [], 'watched_tasks': [],
                 'watched_count': 0, 'check_count': 0, 'total_violations': 0,
+                'notifications': [], 'archived_violations': [],
+                'archived_notifications': [],
             })
             # 过滤已取消监察任务的违规、通知和正在监察列表
             try:
@@ -2996,8 +3009,11 @@ class Handler(BaseHTTPRequestHandler):
                 audit['violations'] = [v for v in audit.get('violations', []) if v.get('task_id') not in filter_ids]
                 audit['notifications'] = [
                     n for n in audit.get('notifications', [])
-                    if n.get('task_id', '') not in filter_ids
-                    and not any(tid in filter_ids for tid in (n.get('task_ids') or []))
+                    # 保留：无 task_id 的系统通知，或 task_id 不在过滤列表中的通知
+                    if (not n.get('task_id') or n.get('task_id', '') not in filter_ids)
+                    # 如果有 task_ids 列表，至少有一个不在过滤列表中才保留
+                    and (not n.get('task_ids')
+                         or any(tid not in filter_ids for tid in n.get('task_ids', [])))
                 ]
                 # 同时过滤 watched_tasks，确保停止监察后立即从列表中移除
                 audit['watched_tasks'] = [
@@ -3727,19 +3743,47 @@ def main():
         f'http://127.0.0.1:{args.port}', f'http://localhost:{args.port}',
     }
 
-    server = HTTPServer(('0.0.0.0', args.port), Handler)
-    log.info(f'三省六部看板启动 → http://{args.host}:{args.port}')
+    # Problem 4: 使用 ThreadingMixIn 支持并发连接，避免单线程阻塞
+    class ThreadedHTTPServer(ThreadingMixIn, HTTPServer):
+        allow_reuse_address = True
+        allow_reuse_port = False  # 避免多实例冲突
+        daemon_threads = True
+        # socket 超时：清理僵死连接
+        timeout = 30
+
+    server = ThreadedHTTPServer(('0.0.0.0', args.port), Handler)
+    log.info(f'三省六部看板启动 → http://{args.host}:{args.port} (线程模式)')
     print(f'   按 Ctrl+C 停止')
+
+    # Problem 4: 定期清理僵死连接线程
+    def _cleanup_dead_threads():
+        while True:
+            _time.sleep(60)
+            # ThreadingMixIn 自动管理线程，这里只做日志
+            active = threading.active_count()
+            if active > 20:
+                log.info(f'活跃线程数: {active}')
+
+    threading.Thread(target=_cleanup_dead_threads, daemon=True).start()
 
     migrate_notification_config()
 
     # 启动恢复：重新派发上次被 kill 中断的 queued 任务
     threading.Timer(3.0, _startup_recover_queued_dispatches).start()
 
+    # Problem 4: 优雅关闭
+    def _graceful_shutdown(signum, frame):
+        log.info('收到关闭信号，正在优雅关闭服务器...')
+        server.shutdown()
+        log.info('服务器已关闭')
+    signal.signal(signal.SIGTERM, _graceful_shutdown)
+
     try:
         server.serve_forever()
     except KeyboardInterrupt:
         print('\n已停止')
+    finally:
+        server.server_close()
 
 
 if __name__ == '__main__':

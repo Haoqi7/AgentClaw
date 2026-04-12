@@ -1,20 +1,95 @@
 /**
  * API 层 — 对接 dashboard/server.py
  * 生产环境从同源 (port 7891) 请求，开发环境可通过 VITE_API_URL 指定
+ *
+ * Problem 4 修复：自动重试、超时保护、连接状态追踪
  */
 
 const API_BASE = import.meta.env.VITE_API_URL || '';
 
+// ── 连接状态追踪 ──
+export type ConnectionStatus = 'connected' | 'degraded' | 'disconnected';
+
+let _connStatus: ConnectionStatus = 'connected';
+let _consecutiveFailures = 0;
+const _connListeners = new Set<(s: ConnectionStatus) => void>();
+
+export function getConnectionStatus(): ConnectionStatus { return _connStatus; }
+export function onConnectionStatusChange(fn: (s: ConnectionStatus) => void): () => void {
+  _connListeners.add(fn);
+  return () => _connListeners.delete(fn);
+}
+
+function _setConnStatus(s: ConnectionStatus) {
+  if (_connStatus === s) return;
+  _connStatus = s;
+  _connListeners.forEach(fn => { try { fn(s); } catch {} });
+}
+
+function _recordSuccess() {
+  _consecutiveFailures = 0;
+  _setConnStatus('connected');
+}
+
+function _recordFailure() {
+  _consecutiveFailures++;
+  if (_consecutiveFailures >= 3) _setConnStatus('disconnected');
+  else if (_consecutiveFailures >= 1) _setConnStatus('degraded');
+}
+
+// ── 重试配置 ──
+const MAX_RETRIES = 3;
+const RETRY_BASE_DELAY_MS = 1000;
+const FETCH_TIMEOUT_MS = 10_000;
+
+async function sleep(ms: number) { return new Promise(r => setTimeout(r, ms)); }
+
+/** 判断错误是否为可重试的瞬时错误 */
+function _isTransient(err: unknown): boolean {
+  if (err instanceof DOMException && err.name === 'AbortError') return false; // 超时不重试
+  if (err instanceof TypeError) return true;  // 网络错误 (fetch 本身失败)
+  const msg = err instanceof Error ? err.message : String(err);
+  // 5xx / 502 / 503 / 504 可重试
+  if (/^(500|502|503|504)$/.test(msg)) return true;
+  if (/HTTP 50[0-9]/.test(msg)) return true;
+  return false;
+}
+
+/** 带超时 + 重试的 fetch 包装 */
+async function fetchWithRetry(url: string, init?: RequestInit): Promise<Response> {
+  let lastErr: unknown;
+  for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS);
+    try {
+      const res = await fetch(url, { ...init, signal: controller.signal });
+      clearTimeout(timer);
+      _recordSuccess();
+      return res;
+    } catch (err) {
+      clearTimeout(timer);
+      lastErr = err;
+      _recordFailure();
+      if (attempt < MAX_RETRIES && _isTransient(err)) {
+        await sleep(RETRY_BASE_DELAY_MS * Math.pow(2, attempt));
+        continue;
+      }
+      throw err;
+    }
+  }
+  throw lastErr;
+}
+
 // ── 通用请求 ──
 
 async function fetchJ<T>(url: string): Promise<T> {
-  const res = await fetch(url, { cache: 'no-store' });
+  const res = await fetchWithRetry(url, { cache: 'no-store' });
   if (!res.ok) throw new Error(String(res.status));
   return res.json();
 }
 
 async function postJ<T>(url: string, data: unknown): Promise<T> {
-  const res = await fetch(url, {
+  const res = await fetchWithRetry(url, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(data),

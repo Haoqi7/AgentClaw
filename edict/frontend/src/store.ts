@@ -15,6 +15,9 @@ import {
   type SubConfig,
   type ChangeLogEntry,
   type PipelineAuditData,
+  getConnectionStatus,
+  onConnectionStatusChange,
+  type ConnectionStatus,
 } from './api';
 
 // ── Pipeline Definition (PIPE) ──
@@ -271,6 +274,8 @@ interface AppStore {
   selectedOfficial: string | null;
   modalTaskId: string | null;
   countdown: number;
+  pollInterval: number;
+  connectionStatus: ConnectionStatus;
 
   // Toast
   toasts: { id: number; msg: string; type: 'ok' | 'err' }[];
@@ -284,6 +289,8 @@ interface AppStore {
   setModalTaskId: (id: string | null) => void;
   setCountdown: (n: number) => void;
   toast: (msg: string, type?: 'ok' | 'err') => void;
+  setPollInterval: (s: number) => void;
+  setConnectionStatus: (s: ConnectionStatus) => void;
 
   // Data fetching
   loadLive: () => Promise<void>;
@@ -315,6 +322,8 @@ export const useStore = create<AppStore>((set, get) => ({
   selectedOfficial: null,
   modalTaskId: null,
   countdown: 5,
+  pollInterval: 5,
+  connectionStatus: getConnectionStatus(),
 
   toasts: [],
 
@@ -333,6 +342,8 @@ export const useStore = create<AppStore>((set, get) => ({
   setSelectedOfficial: (id) => set({ selectedOfficial: id }),
   setModalTaskId: (id) => set({ modalTaskId: id }),
   setCountdown: (n) => set({ countdown: n }),
+  setPollInterval: (s) => set({ pollInterval: s }),
+  setConnectionStatus: (s) => set({ connectionStatus: s }),
 
   toast: (msg, type = 'ok') => {
     const id = ++_toastId;
@@ -380,7 +391,7 @@ export const useStore = create<AppStore>((set, get) => ({
       const data = await api.agentsStatus();
       set({ agentsStatusData: data });
     } catch {
-      set({ agentsStatusData: null });
+      // Keep last known good data instead of clearing
     }
   },
 
@@ -413,35 +424,88 @@ export const useStore = create<AppStore>((set, get) => ({
 
   loadAll: async () => {
     const s = get();
-    await s.loadLive();
+    try {
+      await s.loadLive();
+    } catch {
+      // keep existing data on failure
+    }
     const tab = s.activeTab;
-    if (['models', 'skills'].includes(tab)) await s.loadAgentConfig();
+    if (['models', 'skills'].includes(tab)) {
+      try { await s.loadAgentConfig(); } catch { /* keep existing */ }
+    }
+    if (tab === 'audit') {
+      try { await s.loadAudit(); } catch { /* keep existing */ }
+    }
   },
 }));
 
-// ── Countdown & Polling ──
+// ── Countdown & Adaptive Polling ──
+
+const BASE_POLL_INTERVAL = 5;
+const MAX_POLL_INTERVAL = 30;
+const BACKOFF_STEP = 5;
 
 let _cdTimer: ReturnType<typeof setInterval> | null = null;
+let _pollFailCount = 0;
+let _pollSuccessCount = 0;
+
+/** Adapt poll interval based on connection health */
+function _adaptInterval() {
+  const s = useStore.getState();
+  const current = s.pollInterval;
+  if (_pollFailCount > 0) {
+    // Back off on failure
+    const next = Math.min(current + BACKOFF_STEP, MAX_POLL_INTERVAL);
+    if (next !== current) s.setPollInterval(next);
+  } else if (_pollSuccessCount >= 3 && current > BASE_POLL_INTERVAL) {
+    // Recover gradually after 3 consecutive successes
+    const next = Math.max(current - BACKOFF_STEP, BASE_POLL_INTERVAL);
+    if (next !== current) s.setPollInterval(next);
+  }
+}
 
 export function startPolling() {
   if (_cdTimer) return;
-  useStore.getState().loadAll();
+  const s = useStore.getState();
+  s.loadAll();
+  // Sync connection status from api.ts
+  const unsub = onConnectionStatusChange((status) => {
+    useStore.getState().setConnectionStatus(status);
+  });
+  s.setConnectionStatus(getConnectionStatus());
+
   _cdTimer = setInterval(() => {
     const s = useStore.getState();
     const cd = s.countdown - 1;
     if (cd <= 0) {
-      s.setCountdown(5);
-      s.loadAll();
+      const interval = s.pollInterval;
+      s.setCountdown(interval);
+      s.loadAll().then(() => {
+        // Success resets failure counter
+        if (s.connectionStatus === 'connected') {
+          _pollSuccessCount++;
+          _pollFailCount = 0;
+        }
+        _adaptInterval();
+      }).catch(() => {
+        _pollFailCount++;
+        _pollSuccessCount = 0;
+        _adaptInterval();
+      });
     } else {
       s.setCountdown(cd);
     }
   }, 1000);
+  // Store unsub so we can clean up (not critical but good practice)
+  (startPolling as unknown as { _unsub?: () => void })._unsub = unsub;
 }
 
 export function stopPolling() {
   if (_cdTimer) {
     clearInterval(_cdTimer);
     _cdTimer = null;
+    const unsub = (startPolling as unknown as { _unsub?: () => void })._unsub;
+    if (unsub) unsub();
   }
 }
 
