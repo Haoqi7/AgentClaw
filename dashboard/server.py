@@ -2662,6 +2662,8 @@ _STATE_FLOW = {
     'Next':     ('Doing', '尚书省', '六部', '待执行任务开始执行'),
     'Doing':    ('Review', '六部', '尚书省', '各部完成，进入汇总'),
     'Review':   ('Done', '尚书省', '太子', '全流程完成，回奏太子转报皇上'),
+    # 【V7 修复】Blocked 状态的手动推进路径
+    'Blocked':  ('Doing', '太子', '解除阻塞，恢复执行'),
 }
 _STATE_LABELS = {
     'Pending': '待处理', 'Taizi': '太子', 'Zhongshu': '中书省', 'Menxia': '门下省',
