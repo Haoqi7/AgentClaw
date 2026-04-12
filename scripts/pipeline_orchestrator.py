@@ -11,7 +11,7 @@ pipeline_orchestrator.py — AgentClaw 看板编排引擎
     - 异步主循环：asyncio + ThreadPoolExecutor，不阻塞扫描
     - 启动恢复：重启后自动恢复未完成的任务
     - 停滞检测：3分钟催办、6分钟上报监察
-    - 封驳上限：超过5次自动强制准奏
+    - 封驳上限：超过2次自动强制准奏（第3次系统强制准奏）
 
 用法:
     python3 pipeline_orchestrator.py
@@ -292,7 +292,7 @@ class Orchestrator:
         """处理门下省封驳（含封驳上限检查）。
 
         条件: 当前状态 == Menxia 且来自 menxia
-        动作: reviewRound < 5 -> 状态回 Zhongshu；>= 5 -> 强制准奏
+        动作: reviewRound < MAX_REJECT_COUNT -> 状态回 Zhongshu；>= MAX_REJECT_COUNT -> 强制准奏
         """
         if state != "Menxia" or msg["from_agent"] != "menxia":
             return False
