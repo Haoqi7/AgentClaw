@@ -119,5 +119,11 @@ if [ -f /app/AgentClaw/scripts/run_loop.sh ]; then
   bash /app/AgentClaw/scripts/run_loop.sh &
 fi
 
+# 编排引擎（V8 核心：看板轮询 + Agent 派发）
+log "starting pipeline orchestrator..."
+python3 /app/AgentClaw/scripts/pipeline_orchestrator.py &
+ORCH_PID=$!
+log "pipeline orchestrator started (PID=$ORCH_PID)"
+
 # 前台启动 dashboard（容器主进程）
 exec python3 /app/AgentClaw/dashboard/server.py
