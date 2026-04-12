@@ -106,6 +106,7 @@ _cfg = {
         "session_violation": True,
         "direct_execution": True,
         "extreme_stall": True,
+        "liubu_evidence": True,  # 六部执行证据验证（假派发真越权检测）
     },
     "max_notifications": 200,
     "max_violations": 200,
@@ -691,15 +692,21 @@ def check_skip_steps(task_id, flow_log):
 def check_direct_execution(task_id, flow_log, task_state=""):
     """检查三省（中书/门下/尚书）是否直接执行了六部的工作。
     
-    检测逻辑：
-    1. 任务已完成（Done）但 flow_log 中没有任何六部参与
-    2. 或者：三省的 flow_log remark 中包含执行产出类关键词但没有六部参与
+    检测逻辑（增强版 — 五维证据验证）：
+    1. 任务已完成（Done）但 flow_log 中没有任何六部实际执行证据
+    2. 六部实际执行证据 = 六部作为 from 出现在 flow_log 中（不是只作为 to）
+    3. 或者：三省的 flow_log remark 中包含执行产出类关键词但没有六部参与
+    
+    注意：旧版只检查六部是否出现在 flow_log 的任何位置（包括作为 to），
+    这会被尚书省写一条假 flow 骗过。新版要求六部必须作为 from 出现
+    （证明六部主动发出了回复），才算有执行证据。
     
     返回违规描述或 None。
     """
     # 只检查已到达尚书省及之后阶段的任务
     has_shangshu = False
-    has_liubu = False
+    has_liubu_as_target = False  # 六部是否作为 to 出现（被派发）
+    has_liubu_response = False   # 六部是否作为 from 出现（实际回复了）
     depts_involved = set()
     
     for entry in flow_log:
@@ -715,24 +722,200 @@ def check_direct_execution(task_id, flow_log, task_state=""):
             dept_t = ID_TO_DEPT.get(t, t)
             if dept_t == "尚书省" or f == "shangshu":
                 has_shangshu = True
-            if dept_t in LIU_BU_DEPTS or f in LIU_BU_DEPTS:
-                has_liubu = True
+            # 六部作为 to（被派发目标）
+            if dept_t in LIU_BU_DEPTS or t in LIU_BU_AGENT_IDS:
+                has_liubu_as_target = True
+        # 六部作为 from（实际发出了回复 — 真正的执行证据）
+        if f:
+            dept_f = ID_TO_DEPT.get(f, f)
+            if dept_f in LIU_BU_DEPTS or f in LIU_BU_AGENT_IDS:
+                has_liubu_response = True
     
-    # 如果任务已完成且没有六部参与，但有尚书省参与
-    if task_state == "Done" and has_shangshu and not has_liubu:
-        return (
-            "直接执行越权：任务已完成，但整个流程中没有任何六部参与执行。"
-            "中书省、门下省、尚书省只能规划/审议/派发，具体执行必须由六部完成。"
-        )
+    # 如果任务已完成，有尚书省参与，且六部没有任何实际回复
+    # 即使六部作为 to 出现（被派发），但没有 as from 回复 → 尚书省代劳了
+    if task_state == "Done" and has_shangshu and not has_liubu_response:
+        if has_liubu_as_target:
+            # 六部被派发了但没有回复 → 假派发
+            return (
+                "直接执行越权：任务已完成，flow_log 中尚书省声称派发了六部，"
+                "但六部没有任何回复记录。尚书省可能写了假派发 flow 后自行代劳。"
+                "具体执行必须由六部完成，六部必须有 flow 回复、session 或进展记录。"
+            )
+        else:
+            # 六部根本没有被派发
+            return (
+                "直接执行越权：任务已完成，但整个流程中没有任何六部参与执行。"
+                "中书省、门下省、尚书省只能规划/审议/派发，具体执行必须由六部完成。"
+            )
     
-    # 如果尚书省参与了但没有六部，且任务已推进到较后阶段
-    if has_shangshu and not has_liubu and task_state not in ("", "Pending", "Taizi", "Zhongshu"):
+    # 如果尚书省参与了但没有六部实际回复，且任务已推进到较后阶段
+    if has_shangshu and not has_liubu_response and task_state not in ("", "Pending", "Taizi", "Zhongshu"):
         return (
-            "疑似直接执行越权：流程已到达尚书省，但尚未派发任何六部执行。"
+            "疑似直接执行越权：流程已到达尚书省，但六部没有任何执行回复记录。"
             "尚书省收到门下省准奏方案后，必须派发给六部执行，不可自行代劳。"
         )
     
     return None
+
+
+# ═══════════════════════════════════════════════════════════════════
+#  六部执行证据验证（假派发真越权检测）
+# ═══════════════════════════════════════════════════════════════════
+# 问题场景：
+#   15:44:19 尚书省→礼部   派发：撰写正式内部公告
+#   15:45:18 尚书省→中书省  尚书省回奏（仅59秒后，礼部完全没有执行痕迹）
+#
+# 根因：现有 check_direct_execution 只检查六部是否出现在 flow_log 的任何位置
+# （包括作为 to 被派发），不检查六部是否实际执行了工作。尚书省写一条
+# "尚书省→礼部"的 flow 就能骗过检查，然后自己代劳六部任务。
+#
+# 本检测用五维证据验证六部是否真正执行了工作：
+#   1. flow_log 中六部作为 from 出现（六部主动发出了回复）
+#   2. session_keys 中有该六部 agent 的 session key（说明真正建立了会话）
+#   3. progress_log 中有六部的进展记录
+#   4. 任务的 org 字段已切换到六部名称（程序级状态 Doing 被触发）
+#   5. activeAgent 字段指向六部 agent_id（程序级活跃标记）
+#
+# 以上五项全部为空 → 判定为"假派发真越权"。
+
+# 六部 agent_id 集合（与 LIU_BU_DEPTS 对应）
+LIU_BU_AGENT_IDS = {"gongbu", "bingbu", "hubu", "libu", "xingbu", "libu_hr"}
+
+def check_liubu_execution_evidence(task_id, flow_log, session_keys=None,
+                                     progress_log=None, task_state="",
+                                     task_org="", task_active_agent=""):
+    """检查尚书省→六部派发后，六部是否有实际执行证据（五维验证）。
+
+    检测逻辑：
+    1. 在 flow_log 中找到所有 尚书省→六部 的派发记录
+    2. 对每条派发记录，检查五维证据中是否至少有一项证明六部执行了工作
+    3. 如果尚书省已经推进到回奏环节（尚书省→中书省），但六部零证据 → 假派发越权
+
+    Args:
+        flow_log: 任务的 flow_log 列表
+        session_keys: 任务的 session_keys 字典
+        progress_log: 任务的 progress_log 列表
+        task_state: 当前任务状态
+        task_org: 当前任务 org 字段（如 "礼部"）
+        task_active_agent: 当前任务 activeAgent 字段
+
+    Returns:
+        list: 违规描述列表（每项代表一个被跳过的六部），空列表表示正常
+    """
+    violations = []
+    if not flow_log:
+        return violations
+
+    # 已归档/终态不检测（这些任务的六部执行已结束，证据可能被清理）
+    # 但最近完成的任务仍需检测（防止速通逃逸）
+    if task_state in ("Cancelled",):
+        return violations
+
+    # ── Step 1: 找所有 尚书省→六部 的派发记录 ──
+    dispatch_records = []  # [(flow_index, target_agent_id, target_label, dispatch_time_str)]
+    for i, entry in enumerate(flow_log):
+        f = normalize_name(entry.get("from", ""))
+        t = normalize_name(entry.get("to", ""))
+        if f == "shangshu" and t in LIU_BU_AGENT_IDS:
+            t_label = ID_TO_DEPT.get(t, t)
+            dispatch_records.append((i, t, t_label, entry.get("at", "")))
+
+    if not dispatch_records:
+        return violations  # 没有派发给六部的记录
+
+    # ── Step 2: 检查尚书省是否已经推进到回奏环节 ──
+    # 如果尚书省还没有回奏（尚书省→中书省），可能六部还在执行中，暂不判定
+    shangshu_returned = False
+    shangshu_return_idx = -1
+    for i, entry in enumerate(flow_log):
+        f = normalize_name(entry.get("from", ""))
+        t = normalize_name(entry.get("to", ""))
+        if f == "shangshu" and t == "zhongshu":
+            shangshu_returned = True
+            shangshu_return_idx = i
+            break
+
+    if not shangshu_returned:
+        # 尚书省还没回奏，但任务已经 Done（可能是自动补全），也需检测
+        if task_state != "Done":
+            return violations  # 六部可能还在执行中，暂不判定
+
+    # ── Step 3: 对每个被派发的六部进行五维证据验证 ──
+    for dispatch_idx, target_agent, target_label, dispatch_time in dispatch_records:
+        evidence_found = []
+        evidence_labels = []
+
+        # 维度 1: flow_log 中六部作为 from 出现（在派发之后）
+        for j, entry in enumerate(flow_log):
+            if j <= dispatch_idx:
+                continue
+            f = normalize_name(entry.get("from", ""))
+            if f == target_agent:
+                evidence_found.append("flow_reply")
+                evidence_labels.append(f"flow_log 中有 {target_label}→尚书省 的回复记录")
+                break
+
+        # 维度 2: session_keys 中有该六部 agent 的 session key
+        if not evidence_found and session_keys:
+            for pair_key, key_entry in session_keys.items():
+                agents = [a.strip().lower() for a in key_entry.get("agents", [])]
+                if target_agent in agents:
+                    evidence_found.append("session_key")
+                    evidence_labels.append(f"session_keys 中有 {target_label} 的会话密钥")
+                    break
+
+        # 维度 3: progress_log 中有六部的进展记录
+        if not evidence_found and progress_log:
+            for p in progress_log:
+                # progress_log 条目可能有 from、dept、agent 等字段
+                p_from = (p.get("from", "") or "").strip().lower()
+                p_dept = (p.get("dept", "") or "").strip().lower()
+                p_agent = (p.get("agent", "") or "").strip().lower()
+                if any(x == target_agent for x in [p_from, p_dept, p_agent]):
+                    evidence_found.append("progress_log")
+                    evidence_labels.append(f"progress_log 中有 {target_label} 的进展记录")
+                    break
+
+        # 维度 4: 任务的 org 字段已切换到六部名称（程序级状态 Doing 被触发过）
+        if not evidence_found and task_org:
+            org_agent = _ORG_TO_AGENT_ID.get(task_org.strip(), "")
+            if org_agent == target_agent:
+                evidence_found.append("task_org")
+                evidence_labels.append(f"任务 org 字段为 {target_label}（程序级 Doing 状态已触发）")
+
+        # 维度 5: activeAgent 字段指向六部 agent_id
+        if not evidence_found and task_active_agent:
+            if task_active_agent.strip().lower() == target_agent:
+                evidence_found.append("active_agent")
+                evidence_labels.append(f"任务 activeAgent 字段指向 {target_label}")
+
+        # ── Step 4: 五维全部为空 → 假派发真越权 ──
+        if not evidence_found:
+            violations.append({
+                "target_agent": target_agent,
+                "target_label": target_label,
+                "dispatch_time": dispatch_time,
+                "dispatch_idx": dispatch_idx,
+                "detail": (
+                    f"假派发越权：尚书省声称已于 {dispatch_time} 派发至{target_label}，"
+                    f"但{target_label}没有任何执行证据。"
+                    f"五维验证全部为空："
+                    f"无flow_log回复、无session_key、无进展记录、"
+                    f"任务org未指向{target_label}、activeAgent未指向{target_label}。"
+                    f"尚书省已回奏中书省（跳过了六部直接代劳），属于严重越权行为。"
+                ),
+            })
+
+    return violations
+
+
+# ── 部门中文名 → agent_id 映射（用于 check_liubu_execution_evidence 维度4）──
+_ORG_TO_AGENT_ID = {}
+for _aid, _dept in ID_TO_DEPT.items():
+    if _aid in LIU_BU_AGENT_IDS or _dept in LIU_BU_DEPTS:
+        _ORG_TO_AGENT_ID[_dept] = _aid
+        # 也添加 agent_id → agent_id（self-mapping，用于 org 字段可能是 agent_id 的情况）
+        _ORG_TO_AGENT_ID[_aid] = _aid
 
 
 def check_broken_chain(task_id, flow_log, task_state="",
@@ -1732,6 +1915,82 @@ def _main_inner():
                     }
                     new_violations.append(violation)
 
+        # ── 检查 2.6：六部执行证据验证（假派发真越权检测 — 五维验证）──
+        # 核心场景：尚书省写了一条"尚书省→六部"的 flow_log 就回奏了，
+        # 但六部完全没有执行痕迹（无回复、无 session、无进展）。
+        # 比现有 check_direct_execution 严格得多：后者只检查六部是否出现在 flow_log 中。
+        if _enabled.get("liubu_evidence", True):
+            _liubu_session_keys = task.get('session_keys', {})
+            _liubu_progress_log = task.get('progress_log', [])
+            _liubu_task_org = task.get('org', '')
+            _liubu_task_active_agent = task.get('activeAgent', '')
+            liubu_violations = check_liubu_execution_evidence(
+                task_id, flow_log,
+                session_keys=_liubu_session_keys,
+                progress_log=_liubu_progress_log,
+                task_state=task_state,
+                task_org=_liubu_task_org,
+                task_active_agent=_liubu_task_active_agent,
+            )
+            for lv in liubu_violations:
+                v_key = (task_id, "假派发越权", lv["dispatch_idx"], lv["detail"])
+                if v_key not in existing_violation_keys:
+                    violation = {
+                        "task_id": task_id,
+                        "title": title,
+                        "type": "假派发越权",
+                        "detail": lv["detail"],
+                        "flow_index": lv["dispatch_idx"],
+                        "detected_at": now_iso,
+                        "target_agent": lv.get("target_agent", ""),
+                        "target_label": lv.get("target_label", ""),
+                    }
+                    new_violations.append(violation)
+
+                    # ── 介入处理：通知尚书省必须重新用 sessions_spawn 派发 ──
+                    target_label = lv.get("target_label", "六部")
+                    target_agent_id = lv.get("target_agent", "")
+                    re_dispatch_detail = (
+                        f"任务 {task_id} 检测到假派发越权："
+                        f"尚书省声称已派发至{target_label}，但{target_label}无任何执行证据。"
+                        f"五维验证全部为空（无flow回复、无session_key、无进展记录、"
+                        f"org未指向{target_label}、activeAgent未指向{target_label}）。"
+                        f"必须立即使用 sessions_spawn 重新派发给{target_label}，禁止自行代劳。"
+                        f"⚠️ 禁止使用 sessions_yield，必须使用 sessions_spawn！"
+                    )
+                    # 查找尚书省的 session_key 进行精准通知
+                    _ss_session_key = _find_task_session_key_for_agent(task, "shangshu")
+                    if _ss_session_key:
+                        try:
+                            subprocess.Popen(
+                                ["openclaw", "sessions", "send", "--session-key", _ss_session_key,
+                                 "-m", f"🛡️ 监察介入 — 假派发越权\n\n{re_dispatch_detail}"],
+                                stdout=subprocess.DEVNULL,
+                                stderr=subprocess.DEVNULL,
+                            )
+                            log(f"已通知尚书省假派发越权 | {task_id} → {target_label} [复用 session]")
+                        except Exception as e:
+                            log(f"通知尚书省假派发越权失败: {e}")
+                    else:
+                        try:
+                            subprocess.Popen(
+                                ["openclaw", "agent", "--agent", "shangshu",
+                                 "--task", f"🛡️ 监察介入 — 假派发越权\n\n{re_dispatch_detail}",
+                                 "--mode", "run", "--thread", "false"],
+                                stdout=subprocess.DEVNULL,
+                                stderr=subprocess.DEVNULL,
+                            )
+                            log(f"已通知尚书省假派发越权 | {task_id} → {target_label} [新 subagent]")
+                        except Exception as e:
+                            log(f"通知尚书省假派发越权失败: {e}")
+
+                    # 记录介入通知
+                    audit["notifications"].append(_make_notif(
+                        notif_type="假派发越权介入", to="尚书省",
+                        detail=f"检测到{target_label}无执行证据，已通知尚书省重新派发",
+                        task_id=task_id,
+                    ))
+
         # ── 检查 2.7：极端停滞检测 ──
         if _enabled.get("extreme_stall", True):
             updated_at_str = task.get("updatedAt", "")
@@ -1929,8 +2188,8 @@ def _main_inner():
                         task_id=task_id,
                     ))
 
-    # ── 严重违规通知太子（越权 + 直接执行越权 + 流程跳步）──
-    serious = [v for v in new_violations if v["type"] in ("越权调用", "直接执行越权")]
+    # ── 严重违规通知太子（越权 + 直接执行越权 + 假派发越权 + 流程跳步）──
+    serious = [v for v in new_violations if v["type"] in ("越权调用", "直接执行越权", "假派发越权")]
     skip_violations = [v for v in new_violations if v["type"] == "流程跳步"]
 
     # ── 自适应降噪：高稳定性时跳过轻微违规的通知 ──

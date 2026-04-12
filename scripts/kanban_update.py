@@ -1710,6 +1710,39 @@ def cmd_done(task_id, output_path='', summary=''):
     _trigger_refresh()
     log.info(f'✅ {task_id} 已完成')
 
+    # ═══════════════════════════════════════════════════════════════════════
+    # 🔧 FIX: Done 后程序级通知太子（修复中书省回奏太子传递错会话的根因）
+    #
+    # 旧代码：cmd_done 只写 state='Done'，不通知任何人。
+    # 中书省 LLM 只能手动 sessions_send 给太子，但没有正确的 session_key，
+    # 导致太子收到消息的位置不对（或根本收不到）。
+    #
+    # 修复：Done 后由程序统一通知太子，走 _notify_agent 标准路径：
+    #   1. lookup 太子的 session_key（任务创建时自动保存）
+    #   2. 有 key → sessions_send 精准投递到太子正确会话
+    #   3. 无 key → openclaw agent 唤醒（降级到 main session）
+    # 中书省不再需要手动通知太子。
+    # ═══════════════════════════════════════════════════════════════════════
+    try:
+        tasks = load()
+        t = find_task(tasks, task_id)
+        if t and t.get('state') == 'Done':
+            task_title = t.get('title', '')
+            task_output = t.get('output', '')
+            _notify_agent(
+                agent_id='taizi',
+                task_id=task_id,
+                from_org='中书省',
+                to_org='太子',
+                title=task_title,
+                remark=f"任务已完成，请回奏皇上。产出路径：{task_output}" if task_output else "任务已完成，请回奏皇上",
+            )
+            # 触发状态钩子（通知太子 + 其他注册钩子）
+            _fire_state_hooks(task_id, old_state[0] if old_state[0] else 'Review', 'Done', t)
+            log.info(f'📨 Done 通知已发送给太子 | {task_id}')
+    except Exception as _e:
+        log.warning(f'⚠️ Done 通知太子失败（不影响任务完成）: {_e}')
+
 
 def cmd_block(task_id, reason):
     """标记阻塞（原子操作）"""
