@@ -326,12 +326,20 @@ class Orchestrator:
             return False
         # 原子更新：同时设置状态、当前处理者、涉及的六部、Doing起始时间
         doing_since = datetime.now(CST).isoformat()
+        # 追加而非覆盖 ministries_involved
+        kanban = self._load_kanban()
+        task = self._find_task(kanban, task_id)
+        existing_involved = []
+        if task:
+            existing_involved = task.get("ministries_involved", [])
+        if dept not in existing_involved:
+            existing_involved.append(dept)
         update_task_fields(
             task_id,
             state="Doing",
             current_handler=dept,
             org=dept,
-            ministries_involved=[dept],
+            ministries_involved=existing_involved,
             doing_since=doing_since,
         )
         log_flow(task_id, "shangshu", dept, f"尚书省派发任务给{dept}")
@@ -649,7 +657,7 @@ class Orchestrator:
         """
         templates = {
             "Taizi": ("皇上颁布旨意，需要你分拣。任务ID: {id}，"
-                       "完成后执行 approve 或 reject。"),
+                       "完成后使用 create 建立任务，或使用 report 转交中书省。"),
             "Zhongshu": ("请起草执行方案。任务ID: {id}，完成后执行 "
                           "approve 提交门下省审议。"),
             "Menxia": ("请审议方案。任务ID: {id}，执行 approve（准奏）"

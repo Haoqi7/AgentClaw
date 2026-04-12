@@ -14,7 +14,7 @@
 # 程序会自动读取看板并通知对应部门。
 #
 # 工作完成后，必须调用对应的 kanban 命令
-# （approve / reject / assign / done-v2 / report / ask / answer / escalate / redirect）
+# （redirect / escalate / progress）
 # 否则程序无法知道你已完成，任务会被标记为停滞。
 #
 # 如果需要纠正流转错误，使用：

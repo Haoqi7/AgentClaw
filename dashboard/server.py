@@ -2154,7 +2154,7 @@ class Handler(BaseHTTPRequestHandler):
                         self.send_json({'ok': False, 'error': f'{channel_cls.label} Webhook URL 无效'}, 400)
                         return
             cfg_path = DATA / 'morning_brief_config.json'
-            cfg_path.write_text(json.dumps(body, ensure_ascii=False, indent=2))
+            atomic_json_write(cfg_path, body)
             self.send_json({'ok': True, 'message': '订阅配置已保存'})
             return
 
@@ -2449,7 +2449,7 @@ class Handler(BaseHTTPRequestHandler):
                 excluded.add(task_id)
                 msg = f'{task_id} 已停止监察'
             data['excluded_tasks'] = sorted(excluded)
-            exclude_file.write_text(json.dumps(data, ensure_ascii=False, indent=2))
+            atomic_json_write(exclude_file, data)
 
             # 即时清理 pipeline_audit.json 中的 watched_tasks/violations/notifications
             try:

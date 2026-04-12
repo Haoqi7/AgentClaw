@@ -20,6 +20,7 @@ AGENT_META = {
     "gongbu": {"name": "工部", "role": "工程与技术实施", "icon": "🔧"},
     "xingbu": {"name": "刑部", "role": "规范与质量审查", "icon": "⚖️"},
     "bingbu": {"name": "兵部", "role": "安全与应急响应", "icon": "🛡️"},
+    "libu_hr": {"name": "吏部", "role": "人事与团队管理", "icon": "👔"},
 }
 
 

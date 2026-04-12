@@ -243,7 +243,7 @@ def cmd_done_v2(task_id, output='', comment=''):
         log.error(f'[done-v2] 失败: {e}')
 
 
-def cmd_report(task_id, output='', comment=''):
+def cmd_report(task_id, output='', comment='', action=None):
     """V8 命令：尚书省/中书省汇总报告。
 
     用法: kanban_update.py report JJC-xxx "/path/to/summary" "汇总完成"
@@ -263,27 +263,35 @@ def cmd_report(task_id, output='', comment=''):
             agent_id = 'unknown'
 
         # 根据 Agent 确定目标和 action
+        action_val = None
         if agent_id == 'shangshu':
             to_agent = 'zhongshu'
-            action = ''
+            action_val = ''
         elif agent_id == 'zhongshu':
-            # 中书省根据 action 决定目标
-            to_agent = 'menxia'  # 默认提交审议
-            action = 'draft_proposal'
+            # 中书省：根据 action 参数决定目标
+            if action == 'report_to_taizi':
+                to_agent = 'taizi'
+                action_val = 'report_to_taizi'
+            elif action == 'forward_to_shangshu':
+                to_agent = 'shangshu'
+                action_val = 'forward_to_shangshu'
+            else:
+                to_agent = 'menxia'
+                action_val = 'draft_proposal'
         elif agent_id == 'taizi':
             to_agent = 'zhongshu'
-            action = 'forward_edict'
+            action_val = 'forward_edict'
         else:
             to_agent = 'shangshu'
-            action = ''
+            action_val = ''
 
         structured = {'output': output}
-        if action:
-            structured['action'] = action
+        if action_val:
+            structured['action'] = action_val
 
         msg_id = _add_msg(task_id, 'report', agent_id, to_agent, comment or '汇总报告', structured)
         print(f'[report] 已写入报告消息: {msg_id} | task={task_id} | from={agent_id} -> {to_agent}', flush=True)
-        log.info(f'[report] 汇总: {task_id} | from={agent_id} -> {to_agent} | action={action or "default"} | msg={msg_id}')
+        log.info(f'[report] 汇总: {task_id} | from={agent_id} -> {to_agent} | action={action_val or "default"} | msg={msg_id}')
         _trigger_refresh()
     except Exception as e:
         print(f'[report] 失败: {e}', flush=True)
@@ -796,9 +804,21 @@ if __name__ == '__main__':
                      args[2] if len(args) > 2 else '',
                      args[3] if len(args) > 3 else '')
     elif cmd == 'report':
-        cmd_report(args[1],
-                   args[2] if len(args) > 2 else '',
-                   args[3] if len(args) > 3 else '')
+        # 支持 --action 可选参数
+        report_pos = []
+        report_action = None
+        ri = 1
+        while ri < len(args):
+            if args[ri] == '--action' and ri + 1 < len(args):
+                report_action = args[ri + 1]; ri += 2
+            else:
+                report_pos.append(args[ri]); ri += 1
+        cmd_report(
+            report_pos[0] if len(report_pos) > 0 else '',
+            report_pos[1] if len(report_pos) > 1 else '',
+            report_pos[2] if len(report_pos) > 2 else '',
+            action=report_action,
+        )
     elif cmd == 'ask':
         cmd_ask(args[1], args[2], args[3] if len(args) > 3 else '')
     elif cmd == 'answer':
