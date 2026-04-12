@@ -1,0 +1,18 @@
+{
+  "tasks": [
+    {
+      "id": "JJC-TEST-001",
+      "title": "V8 测试任务",
+      "state": "Zhongshu",
+      "flow_log": [],
+      "kanban_messages": [],
+      "pendingQuestions": [],
+      "agentLog": [],
+      "auditFlags": []
+    }
+  ],
+  "global_counters": {
+    "message_id": 0,
+    "flow_id": 0
+  }
+}
