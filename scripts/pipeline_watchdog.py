@@ -303,11 +303,14 @@ LEGAL_FLOWS = {
 }
 
 # 部门 → 直接上级（断链时需要通知上级）
+# 【V7 修复】尚书省的上级是中书省（不是太子！），旧代码重复定义导致覆盖
+# 根因：Python dict 同一个 key 出现两次时，后者覆盖前者。
+# 旧代码先写 "尚书省":"中书省" 再写 "尚书省":"太子" → 实际存储的是 "太子"。
+# 后果：断链时监察通知太子而非中书省 → 中书省不知道要催尚书省 → 恢复链断裂。
 PARENT_MAP = {
     "中书省": "太子",
     "门下省": "中书省",
-    "尚书省": "中书省",
-    "尚书省": "太子",
+    "尚书省": "中书省",     # 尚书省的直接上级是中书省（V7 修复：去重）
     "工部":   "尚书省",
     "兵部":   "尚书省",
     "户部":   "尚书省",
@@ -752,7 +755,10 @@ def check_direct_execution(task_id, flow_log, task_state=""):
             )
     
     # 如果尚书省参与了但没有六部实际回复，且任务已推进到较后阶段
-    if has_shangshu and not has_liubu_response and task_state not in ("", "Pending", "Taizi", "Zhongshu"):
+    # 【V6 修复】仅对 Done 状态严格判定，非Done状态增加检查
+    # 根因：Doing/Review 阶段六部可能正在执行，尚书省已派发但六部回复还没写入，
+    # 旧代码对非Done状态也报"疑似越权"，导致误报。
+    if has_shangshu and not has_liubu_response and task_state not in ("", "Pending", "Taizi", "Zhongshu", "Assigned", "Doing", "Next"):
         return (
             "疑似直接执行越权：流程已到达尚书省，但六部没有任何执行回复记录。"
             "尚书省收到门下省准奏方案后，必须派发给六部执行，不可自行代劳。"
@@ -847,6 +853,20 @@ def check_liubu_execution_evidence(task_id, flow_log, session_keys=None,
     for dispatch_idx, target_agent, target_label, dispatch_time in dispatch_records:
         evidence_found = []
         evidence_labels = []
+
+        # 【V6 修复】时间宽限期：派发后 210 秒内不判违规
+        # 根因：openclaw agent 启动 + Gateway连接 + Agent上下文加载 + LLM推理
+        # 整个链路需要 2-3 分钟。旧代码不考虑时间，派发后立即检测导致误报。
+        _LIUBU_EVIDENCE_GRACE_SEC = 210  # 3.5分钟宽限期
+        if dispatch_time:
+            try:
+                _dt = datetime.datetime.fromisoformat(dispatch_time.replace("Z", "+00:00"))
+                _elapsed = (datetime.datetime.now(_BJT) - _dt).total_seconds()
+                if _elapsed < _LIUBU_EVIDENCE_GRACE_SEC:
+                    # 派发时间太短，六部可能还在启动中，暂不判定
+                    continue
+            except Exception:
+                pass
 
         # 维度 1: flow_log 中六部作为 from 出现（在派发之后）
         for j, entry in enumerate(flow_log):
