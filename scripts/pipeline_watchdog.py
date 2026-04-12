@@ -55,7 +55,10 @@ WATCHDOG_CONFIG_FILE = DATA_DIR / "watchdog_config.json"
 OCLAW_HOME = pathlib.Path.home() / ".openclaw"
 
 # ── 超时阈值（秒）─────────────────────────────────────────────────
-BREAK_TIMEOUT_SEC = 90   # 1.5 分钟无回应判定为断链
+# 【V5 修复】BREAK_TIMEOUT 从 90s → 210s（3.5 分钟）
+# 根因：openclaw agent 启动 + Gateway 连接 + Agent 上下文加载 + LLM 推理
+# 整个链路实测需要 2-3 分钟。旧值 90s 导致监察在 Agent 还没收到消息时就误报越权。
+BREAK_TIMEOUT_SEC = 210  # 3.5 分钟无回应判定为断链（覆盖 sessions_spawn 投递延迟）
 RECENT_DONE_MINUTES = 10  # 最近 N 分钟内完成的任务也需检查（防止速通逃逸）
 AUTO_ARCHIVE_MINUTES = 5  # Done 超过 N 分钟自动归档
 
@@ -72,16 +75,16 @@ EXTREME_STALL_THRESHOLD = 20 * 60  # 20分钟无任何更新视为极端停滞
 # 多任务并行时，中书省等关键节点需要处理多个任务，断链超时应适当放宽
 # 避免因 Agent 正在处理其他任务而误判为断链
 MULTITASK_BREAK_TIMEOUT = {     # 断链超时（秒）— 按活跃任务数阶梯递增
-    1: 90,    # 单任务：90s（默认，不变）
-    2: 120,   # 双任务：120s（+30s）
-    3: 150,   # 三任务：150s（+60s）
-    4: 180,   # 四任务：180s（+90s）
+    1: 210,   # 单任务：210s（3.5分钟，覆盖 spawn 延迟）
+    2: 270,   # 双任务：270s（+60s）
+    3: 330,   # 三任务：330s（+120s）
+    4: 390,   # 四任务：390s（+180s，上限）
 }
 MULTITASK_ACTIVITY_GRACE = {   # 看板活动宽限期（秒）— 第3层断链检测
-    1: 180,   # 单任务：180s（3分钟）
-    2: 240,   # 双任务：240s（4分钟）
-    3: 300,   # 三任务：300s（5分钟）
-    4: 360,   # 四任务：360s（6分钟，上限）
+    1: 300,   # 单任务：300s（5分钟，给 Agent 充足响应时间）
+    2: 360,   # 双任务：360s（6分钟）
+    3: 420,   # 三任务：420s（7分钟）
+    4: 480,   # 四任务：480s（8分钟，上限）
 }
 MULTITASK_REVIEW_GRACE_SCALE = {  # 审议宽限期乘数
     1: 1.0,

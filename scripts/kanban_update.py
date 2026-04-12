@@ -504,6 +504,86 @@ def _trigger_refresh():
         pass
 
 
+def _start_liubu_alive_check(task_id, task):
+    """【V5 修复】程序级兜底：进入 Doing 状态后 60 秒检查六部是否被唤醒。
+
+    根因：尚书省→六部 的通知完全依赖尚书省 LLM 层 sessions_spawn。
+    如果尚书省用了 sessions_yield（不触发目标Agent推理），
+    或者 LLM 推理失败，六部永远不会收到消息。
+    pipeline_watchdog 的断链检测需要 3.5 分钟才能触发，太慢了。
+
+    此函数作为最后一道防线：
+    1. 后台等待 60 秒
+    2. 检查六部是否有任何活动迹象（progress_log 新增、flow_log 回复）
+    3. 如果六部零活动 → 程序级 openclaw agent 直接唤醒六部
+    4. 同时通知尚书省"六部未响应，已程序级兜底唤醒"
+    """
+    org = task.get('org', '')
+    agent_id = _ORG_AGENT_MAP.get(org, '')
+    if not agent_id or agent_id not in ('libu', 'hubu', 'bingbu', 'xingbu', 'gongbu', 'libu_hr'):
+        return  # 只对六部生效
+
+    agent_label = _AGENT_LABELS.get(agent_id, agent_id)
+    title = task.get('title', '')
+    progress_count = len(task.get('progress_log', []))
+    flow_count = len(task.get('flow_log', []))
+
+    tasks_file_escaped = json.dumps(str(TASKS_FILE))
+    task_id_escaped = json.dumps(task_id)
+    title_escaped = json.dumps(title)
+    agent_id_escaped = json.dumps(agent_id)
+    agent_label_escaped = json.dumps(agent_label)
+    progress_count_escaped = str(progress_count)
+    flow_count_escaped = str(flow_count)
+
+    watchdog_script = f'''#!/usr/bin/env python3
+import json, pathlib, subprocess, sys, time
+time.sleep(60)
+TASKS_FILE = pathlib.Path({tasks_file_escaped})
+try:
+    with open(TASKS_FILE, "r", encoding="utf-8") as f:
+        tasks = json.load(f)
+except Exception:
+    sys.exit(0)
+task = next((t for t in tasks if t.get("id") == {task_id_escaped}), None)
+if not task or task.get("state") != "Doing":
+    sys.exit(0)
+new_progress = len(task.get("progress_log", []))
+new_flow = len(task.get("flow_log", []))
+# 六部有新增进展或回复 → 正常
+if new_progress > {progress_count_escaped} or new_flow > {flow_count_escaped}:
+    sys.exit(0)
+# 六部零活动 → 程序级兜底唤醒
+agent_id = {agent_id_escaped}
+agent_label = {agent_label_escaped}
+msg = (
+    "🔔 程序级兜底唤醒\\n"
+    "任务ID: {task_id_escaped}\\n"
+    "标题: {title_escaped}\\n"
+    "原因: 进入 Doing 状态 60 秒后六部无任何活动，"
+    "尚书省可能未正确使用 sessions_spawn 通知六部。\\n"
+    "请立即执行任务，完成后使用 kanban 流转记录回复尚书省。"
+)
+try:
+    result = subprocess.run(
+        ["openclaw", "agent", "--agent", agent_id, "-m", msg, "--timeout", "120"],
+        capture_output=True, text=True, timeout=130,
+    )
+    if result.returncode == 0:
+        print(f"[兜底唤醒] 已程序级唤醒 {{agent_label}} ({{agent_id}}) | 任务 {{task_id}}")
+    else:
+        print(f"[兜底唤醒] 唤醒 {{agent_label}} 失败: rc={{result.returncode}}")
+except Exception as e:
+    print(f"[兜底唤醒] 唤醒 {{agent_label}} 异常: {{e}}")
+'''
+    try:
+        subprocess.Popen(['python3', '-c', watchdog_script],
+                         stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        log.info(f'🛡️ 已启动六部兜底检查 | {task_id} → {agent_label} ({agent_id}) | 60秒后检查')
+    except Exception as e:
+        log.warning(f'🛡️ 启动六部兜底检查失败: {e}')
+
+
 def _resolve_agent_id(target):
     """根据目标名称（部门中文名或状态英文名）解析 agent_id。
 
@@ -723,6 +803,31 @@ def _notify_agent(agent_id, task_id, from_org, to_org, title='', remark='', curr
         f"  · 流转路径：{from_org} → {to_org}",
         f"  · 说明：{remark}",
     ]
+    # 【V5 修复】通知中附带产出路径和进展摘要，解决门下省二次审核收不到文档内容的问题
+    try:
+        tasks = load()
+        t = find_task(tasks, task_id)
+        if t:
+            _output = (t.get('output', '') or '').strip()
+            if _output:
+                parts.append(f"  · 产出路径：{_output}")
+            # 附带最近一条进展（让接收方快速了解上下文）
+            _progress = t.get('progress_log', [])
+            if _progress:
+                _last_p = _progress[-1] if _progress else {}
+                _last_text = (_last_p.get('text', '') or _last_p.get('now', '') or '').strip()
+                if _last_text:
+                    parts.append(f"  · 最新进展：{_last_text[:100]}")
+            # 附带六部执行摘要（flow_log 中六部的最近回复）
+            _flow = t.get('flow_log', [])
+            _liubu_agent_ids = ('libu', 'hubu', 'bingbu', 'xingbu', 'gongbu', 'libu_hr')
+            _liubu_replies = [e for e in _flow if (e.get('from', '') or '').strip().lower() in _liubu_agent_ids]
+            if _liubu_replies:
+                _last_reply = _liubu_replies[-1]
+                parts.append(f"  · 六部最新回复：{_last_reply.get('to', '')}←{_last_reply.get('from', '')} - {(_last_reply.get('remark', '') or '')[:80]}")
+    except Exception:
+        pass
+
     if action_items:
         parts.append(f"")
         parts.append(f"🚀 你需要做的：")
@@ -1457,6 +1562,13 @@ def cmd_state(task_id, new_state, now_text=None):
         # ⏰ 进入 Doing 状态 → 启动12分钟停滞看门狗
         if new_state == 'Doing' and t:
             _start_doing_stall_watchdog(task_id, t)
+
+        # 【V5 修复】程序级兜底：Doing 状态时，延迟检查六部是否被唤醒
+        # 根因：尚书省→六部 完全依赖 LLM 层 sessions_spawn，如果尚书省用了
+        # sessions_yield 或 LLM 推理失败，六部永远不会收到消息。
+        # 此处作为最后一道防线：60秒后检查六部是否有活动，若无则程序级唤醒。
+        if new_state == 'Doing' and t:
+            _start_liubu_alive_check(task_id, t)
 
 
 def cmd_flow(task_id, from_dept, to_dept, remark):
