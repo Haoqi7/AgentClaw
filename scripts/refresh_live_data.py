@@ -23,9 +23,16 @@ def main():
     officials_data = read_json(DATA / 'officials_stats.json', {})
     officials = officials_data.get('officials', []) if isinstance(officials_data, dict) else officials_data
     # 任务源优先：tasks_source.json（可对接外部系统同步写入）
-    tasks = atomic_json_read(DATA / 'tasks_source.json', [])
-    if not tasks:
-        tasks = read_json(DATA / 'tasks.json', [])
+    raw_tasks = atomic_json_read(DATA / 'tasks_source.json', [])
+    if not raw_tasks:
+        raw_tasks = read_json(DATA / 'tasks.json', [])
+    # 兼容新旧两种格式：新格式 {"tasks": [...]} / 旧格式 [...]
+    if isinstance(raw_tasks, dict):
+        tasks = raw_tasks.get("tasks", [])
+    elif isinstance(raw_tasks, list):
+        tasks = raw_tasks
+    else:
+        tasks = []
 
     sync_status = read_json(DATA / 'sync_status.json', {})
 
@@ -37,6 +44,8 @@ def main():
 
     now_ts = datetime.datetime.now(datetime.timezone.utc)
     for t in tasks:
+        if not isinstance(t, dict):
+            continue  # 跳过非字典项（防御性编程）
         t['org'] = t.get('org') or org_map.get(t.get('official', ''), '')
         t['outputMeta'] = output_meta(t.get('output', ''))
 

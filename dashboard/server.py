@@ -2095,6 +2095,13 @@ class Handler(BaseHTTPRequestHandler):
             self.send_json(data if data else {'ok': False, 'error': 'session not found'}, 200 if data else 404)
         elif p == '/api/court-discuss/fate':
             self.send_json({'ok': True, 'event': cd_fate()})
+        elif p.startswith('/api/scheduler-state/'):
+            # 前端兼容：返回空状态（V8 中 scheduler 功能已由 pipeline_orchestrator 接管）
+            task_id = p.replace('/api/scheduler-state/', '')
+            if not task_id:
+                self.send_json({'ok': False, 'error': 'task_id required'}, 400)
+            else:
+                self.send_json({'ok': True, 'taskId': task_id, 'state': None, 'reason': 'V8 scheduler handled by pipeline_orchestrator'})
         elif self._serve_static(p):
             pass  # 已由 _serve_static 处理 (JS/CSS/图片等)
         else:
@@ -2612,6 +2619,35 @@ class Handler(BaseHTTPRequestHandler):
                 return cfg
             atomic_json_update(DATA / 'agent_config.json', _set_channel, {})
             self.send_json({'ok': True, 'message': f'派发渠道已切换为 {channel}'})
+
+        # ── Agent 唤醒 ──
+        elif p == '/api/agent-wake':
+            agent_id = body.get('agentId', '').strip()
+            if not agent_id:
+                self.send_json({'ok': False, 'error': 'agentId required'}, 400)
+                return
+            try:
+                from agent_notifier import notify_agent_with_retry
+                result = notify_agent_with_retry(agent_id, f'[手动唤醒] 请检查待处理任务', session_id=f'manual-{agent_id}-{int(_time.time())}')
+                if result.success:
+                    self.send_json({'ok': True, 'message': f'Agent {agent_id} 唤醒成功'})
+                else:
+                    self.send_json({'ok': False, 'error': f'唤醒失败: {result.stderr[:200]}'}, 500)
+            except Exception as e:
+                self.send_json({'ok': False, 'error': str(e)}, 500)
+
+        # ── Scheduler 兼容端点（V8 中由 pipeline_orchestrator 接管）──
+        elif p == '/api/scheduler-scan':
+            self.send_json({'ok': True, 'message': 'V8 中由 pipeline_orchestrator 自动处理停滞检测', 'count': 0})
+
+        elif p == '/api/scheduler-retry':
+            self.send_json({'ok': True, 'message': 'V8 中由 pipeline_orchestrator 自动重试'})
+
+        elif p == '/api/scheduler-escalate':
+            self.send_json({'ok': True, 'message': 'V8 中由 pipeline_orchestrator 自动上报监察'})
+
+        elif p == '/api/scheduler-rollback':
+            self.send_json({'ok': True, 'message': 'V8 中由 pipeline_orchestrator 自动回滚'})
 
         # ── 朝堂议政 POST ──
         elif p == '/api/court-discuss/start':

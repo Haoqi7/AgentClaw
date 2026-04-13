@@ -139,9 +139,9 @@ def notify_agent(agent_id, message, session_id=None, timeout=None):
         "--timeout", str(timeout),
     ]
 
-    # Session 隔离：通过 --session 参数实现
+    # Session 隔离：通过 --session-id 参数实现
     if session_id:
-        cmd.extend(["--session", session_id])
+        cmd.extend(["--session-id", session_id])
 
     logger.info(f"[notify] 唤醒 Agent: {agent_id} | Session: {session_id} | "
                 f"消息: {message[:80]}...")
