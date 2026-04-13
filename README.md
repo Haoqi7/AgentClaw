@@ -265,13 +265,35 @@ python3 dashboard/server.py
 
 ---
 
+
 ## 🐳 Docker 部署
 
-从 Release 下载对应版本，上传到服务器后：
+本项目已发布至 Docker Hub，无需手动构建：
+
+```bash
+docker pull haoqi7/openclaw:latest
+```
+
+### 方式一：Docker Compose（推荐）
+
+从 [Release](https://github.com/Haoqi7/AgentClaw/releases) 下载 `docker-compose.yml`，或直接创建：
 
 ```bash
 docker compose -f docker/docker-compose.yml up -d
 ```
+
+### 方式二：Docker 直接运行
+
+```bash
+docker run -d \
+  --name agentclaw \
+  -p 7891:7891 \
+  -p 18789:18789 \
+  -v /root/.openclaw:/root/.openclaw \
+ haoqi7/openclaw:latest
+```
+
+### 配置说明
 
 | 配置项 | 值 |
 |:---|:---|
@@ -280,9 +302,14 @@ docker compose -f docker/docker-compose.yml up -d
 | 健康检查 | 每 15 秒双端点检测，自动恢复 |
 | 重启策略 | `unless-stopped` |
 
-支持环境变量：
-- `EDICT_EXTERNAL_URL` — 外部访问地址
-- `EDICT_CORS_ORIGINS` — 跨域白名单
+### 环境变量（可选）
+
+| 变量 | 说明 |
+|:---|:---|
+| `EDICT_EXTERNAL_URL` | 外部访问地址（如 `https://your-domain.com`）|
+| `EDICT_CORS_ORIGINS` | 跨域白名单（逗号分隔）|
+
+
 
 ---
 
