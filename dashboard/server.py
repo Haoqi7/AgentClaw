@@ -1264,9 +1264,9 @@ _SUPERVISION_CONFIG = {
     'Zhongshu':  {'remind_sec': 600, 'timeout_sec': 900, 'label': '中书省', 'parent_agent': 'taizi'},
     'Menxia':    {'remind_sec': 600, 'timeout_sec': 900, 'label': '门下省', 'parent_agent': 'zhongshu'},
     'Assigned':  {'remind_sec': 600, 'timeout_sec': 900, 'label': '尚书省', 'parent_agent': 'zhongshu'},
-    # 六部/Next：5分钟催办，30分钟超时上报太子（原 timeout_sec=0 不会上报）
-    'Doing':     {'remind_sec': 300, 'timeout_sec': 1800, 'label': '六部',   'parent_agent': 'shangshu'},
-    'Next':      {'remind_sec': 300, 'timeout_sec': 1800, 'label': '六部',   'parent_agent': 'shangshu'},
+    # 六部/Next：3分钟催办，15分钟超时上报太子（原 timeout_sec=0 不会上报）
+    'Doing':     {'remind_sec': 180, 'timeout_sec': 900, 'label': '六部',   'parent_agent': 'shangshu'},
+    'Next':      {'remind_sec': 180, 'timeout_sec': 900, 'label': '六部',   'parent_agent': 'shangshu'},
     'Taizi':     {'remind_sec': 600, 'timeout_sec': 900, 'label': '太子',   'parent_agent': 'taizi'},
     'Pending':   {'remind_sec': 600, 'timeout_sec': 900, 'label': '中书省', 'parent_agent': 'taizi'},
     'Review':    {'remind_sec': 300, 'timeout_sec': 600,  'label': '汇总审查', 'parent_agent': 'shangshu'},
