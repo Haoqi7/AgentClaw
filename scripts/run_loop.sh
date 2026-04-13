@@ -52,7 +52,7 @@ rotate_log() {
 SCAN_INTERVAL="${2:-60}"  # 巡检间隔(秒), 默认 60（缩短确保停滞检测及时）
 WATCHDOG_INTERVAL=60        # 监察脚本间隔(秒), 默认 60 (1分钟)
 GATEWAY_CHECK_INTERVAL=120  # Issue #4: Gateway 健康检查间隔(秒), 默认 120 (2分钟)
-WATCHDOG_COUNTER=0
+WATCHDOG_COUNTER=30
 SCAN_COUNTER=0
 GATEWAY_CHECK_COUNTER=0
 SCRIPT_TIMEOUT=30  # 单个脚本最大执行时间(秒)
@@ -110,7 +110,7 @@ while true; do
   # 定期监察：流程完整性检查 + 断链唤醒
   WATCHDOG_COUNTER=$((WATCHDOG_COUNTER + INTERVAL))
   if (( WATCHDOG_COUNTER >= WATCHDOG_INTERVAL )); then
-    WATCHDOG_COUNTER=0
+    WATCHDOG_COUNTER=30
     safe_run "$SCRIPT_DIR/pipeline_watchdog.py"
   fi
 
