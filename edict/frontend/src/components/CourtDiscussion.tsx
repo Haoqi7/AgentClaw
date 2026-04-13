@@ -82,15 +82,84 @@ export default function CourtDiscussion() {
   const toast = useStore((s) => s.toast);
   const liveStatus = useStore((s) => s.liveStatus);
 
+  // ── 推进讨论（定义在最前面，这样其他地方都能用）──
+  const handleAdvance = useCallback(async (userMsg?: string, decree?: string) => {
+    if (!session || loading) return;
+    setLoading(true);
+
+    try {
+      const res = await api.courtDiscussAdvance(session.session_id, userMsg, decree);
+      if (!res.ok) throw new Error(res.error || '推进失败');
+
+      // 更新 session messages（追加新消息）
+      setSession((prev) => {
+        if (!prev) return prev;
+        const newMsgs: CourtMessage[] = [];
+
+        if (userMsg) {
+          newMsgs.push({ type: 'emperor', content: userMsg, timestamp: Date.now() / 1000 });
+        }
+        if (decree) {
+          newMsgs.push({ type: 'decree', content: decree, timestamp: Date.now() / 1000 });
+        }
+
+        const aiMsgs = (res.new_messages || []).map((m: Record<string, string>) => ({
+          type: 'official',
+          official_id: m.official_id,
+          official_name: m.name,
+          content: m.content,
+          emotion: m.emotion,
+          action: m.action,
+          timestamp: Date.now() / 1000,
+        }));
+
+        if (res.scene_note) {
+          newMsgs.push({ type: 'scene_note', content: res.scene_note, timestamp: Date.now() / 1000 });
+        }
+
+        return {
+          ...prev,
+          round: res.round ?? prev.round + 1,
+          messages: [...prev.messages, ...newMsgs, ...aiMsgs],
+        };
+      });
+
+      // 动画：依次高亮说话的官员
+      const aiMsgs = res.new_messages || [];
+      if (aiMsgs.length > 0) {
+        const emotionMap: Record<string, string> = {};
+        let idx = 0;
+        const cycle = () => {
+          if (idx < aiMsgs.length) {
+            setSpeakingId(aiMsgs[idx].official_id);
+            emotionMap[aiMsgs[idx].official_id] = aiMsgs[idx].emotion || 'neutral';
+            idx++;
+            setTimeout(cycle, 1200);
+          } else {
+            setSpeakingId(null);
+          }
+        };
+        cycle();
+        setEmotions((prev) => ({ ...prev, ...emotionMap }));
+      }
+    } catch (e: unknown) {
+      console.error('CourtDiscussion handleAdvance error:', e);
+      toast('推进讨论失败: ' + ((e as Error).message || '未知错误'), 'err');
+    } finally {
+      setLoading(false);
+    }
+  }, [session, loading, toast]);
+
+  // 引用 handleAdvance（用于自动推进）
+  const handleAdvanceRef = useRef(handleAdvance);
+  handleAdvanceRef.current = handleAdvance;
+
   // 自动滚到底部
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [session?.messages?.length]);
 
   // 自动推进
-  const handleAdvanceRef = useRef(handleAdvance);
-  handleAdvanceRef.current = handleAdvance;
-
   useEffect(() => {
     autoPlayRef.current = autoPlay;
   }, [autoPlay]);
@@ -180,74 +249,6 @@ export default function CourtDiscussion() {
       setLoading(false);
     }
   };
-
-  // ── 推进讨论 ──
-  const handleAdvance = useCallback(async (userMsg?: string, decree?: string) => {
-    if (!session || loading) return;
-    setLoading(true);
-
-    try {
-      const res = await api.courtDiscussAdvance(session.session_id, userMsg, decree);
-      if (!res.ok) throw new Error(res.error || '推进失败');
-
-      // 更新 session messages（追加新消息）
-      setSession((prev) => {
-        if (!prev) return prev;
-        const newMsgs: CourtMessage[] = [];
-
-        if (userMsg) {
-          newMsgs.push({ type: 'emperor', content: userMsg, timestamp: Date.now() / 1000 });
-        }
-        if (decree) {
-          newMsgs.push({ type: 'decree', content: decree, timestamp: Date.now() / 1000 });
-        }
-
-        const aiMsgs = (res.new_messages || []).map((m: Record<string, string>) => ({
-          type: 'official',
-          official_id: m.official_id,
-          official_name: m.name,
-          content: m.content,
-          emotion: m.emotion,
-          action: m.action,
-          timestamp: Date.now() / 1000,
-        }));
-
-        if (res.scene_note) {
-          newMsgs.push({ type: 'scene_note', content: res.scene_note, timestamp: Date.now() / 1000 });
-        }
-
-        return {
-          ...prev,
-          round: res.round ?? prev.round + 1,
-          messages: [...prev.messages, ...newMsgs, ...aiMsgs],
-        };
-      });
-
-      // 动画：依次高亮说话的官员
-      const aiMsgs = res.new_messages || [];
-      if (aiMsgs.length > 0) {
-        const emotionMap: Record<string, string> = {};
-        let idx = 0;
-        const cycle = () => {
-          if (idx < aiMsgs.length) {
-            setSpeakingId(aiMsgs[idx].official_id);
-            emotionMap[aiMsgs[idx].official_id] = aiMsgs[idx].emotion || 'neutral';
-            idx++;
-            setTimeout(cycle, 1200);
-          } else {
-            setSpeakingId(null);
-          }
-        };
-        cycle();
-        setEmotions((prev) => ({ ...prev, ...emotionMap }));
-      }
-    } catch (e: unknown) {
-      console.error('CourtDiscussion handleAdvance error:', e);
-      toast('推进讨论失败: ' + ((e as Error).message || '未知错误'), 'err');
-    } finally {
-      setLoading(false);
-    }
-  }, [session, loading]);
 
   // ── 皇帝发言 ──
   const handleEmperor = () => {
