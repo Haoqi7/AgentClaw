@@ -17,7 +17,6 @@ import json
 import logging
 import os
 import time
-import threading
 import uuid
 
 logger = logging.getLogger('court_discuss')
@@ -112,23 +111,9 @@ FATE_EVENTS = [
 
 _sessions: dict[str, dict] = {}
 
-_SESSION_TTL_SECONDS = 48 * 3600  # 48小时过期
-_session_lock = threading.Lock()
-
-def _cleanup_expired_sessions():
-    """清理过期会话（超过48小时）"""
-    now = time.time()
-    expired = [sid for sid, s in _sessions.items()
-               if now - s.get('created_at', 0) > _SESSION_TTL_SECONDS]
-    for sid in expired:
-        _sessions.pop(sid, None)
-    if expired:
-        logger.info(f'[court_discuss] 已清理 {len(expired)} 个过期会话')
-
 
 def create_session(topic: str, official_ids: list[str], task_id: str = '') -> dict:
     """创建新的朝堂议政会话。"""
-    _cleanup_expired_sessions()
     session_id = str(uuid.uuid4())[:12]
 
     officials = []

@@ -3,13 +3,6 @@
 三省六部 · 看板本地 API 服务器
 Port: 7891 (可通过 --port 修改)
 
-  Agent 派发/通知/调度逻辑已迁移到:
-    · scripts/pipeline_orchestrator.py  (编排引擎主循环)
-    · scripts/agent_notifier.py         (Agent 通知模块)
-    · scripts/kanban_commands.py        (看板命令协议)
-  本文件: HTTP 服务器、API 路由、任务 CRUD、静态文件服务
-  V8 stubs (dispatch_for_state, scheduler, wake_agent) 已清理
-
 Endpoints:
   GET  /                       → dashboard.html
   GET  /api/live-status        → data/live_status.json
@@ -30,7 +23,6 @@ scripts_dir = str(pathlib.Path(__file__).parent.parent / 'scripts')
 sys.path.insert(0, scripts_dir)
 from file_lock import atomic_json_read, atomic_json_write, atomic_json_update
 from utils import validate_url, read_json, now_iso
-from config import STATE_AGENT_MAP as _V8_STATE_AGENT_MAP, ORG_AGENT_MAP as _V8_ORG_AGENT_MAP
 from court_discuss import (
     create_session as cd_create, advance_discussion as cd_advance,
     get_session as cd_get, conclude_session as cd_conclude,
@@ -309,24 +301,14 @@ def _iter_task_data_dirs():
 
 
 def _task_source_score(task_file: pathlib.Path):
-    """给任务源打分：优先非 demo 任务，其次任务数，再按文件更新时间。
-    兼容新旧格式：新格式 {"tasks":[...], ...} 字典，旧格式 [...] 列表。
-    """
+    """给任务源打分：优先非 demo 任务，其次任务数，再按文件更新时间。"""
     try:
-        raw = atomic_json_read(task_file, [])
+        tasks = atomic_json_read(task_file, [])
     except Exception:
-        raw = []
-    # 兼容新旧格式
-    if isinstance(raw, dict):
-        tasks = raw.get("tasks", [])
-    elif isinstance(raw, list):
-        tasks = raw
-    else:
         tasks = []
-    # 确保任务是列表且每个元素是字典
     if not isinstance(tasks, list):
         tasks = []
-    non_demo = sum(1 for t in tasks if isinstance(t, dict) and str(t.get('id', '')) and not str(t.get('id', '')).startswith('JJC-DEMO'))
+    non_demo = sum(1 for t in tasks if str((t or {}).get('id', '')) and not str((t or {}).get('id', '')).startswith('JJC-DEMO'))
     try:
         mtime = task_file.stat().st_mtime
     except Exception:
@@ -363,29 +345,13 @@ def get_task_data_dir():
 
 
 def load_tasks():
-    """安全读取任务文件（兼容新旧两种格式）。
-
-    新格式: {"tasks": [...], "global_counters": {...}}
-    旧格式: [...]
-    始终返回任务列表。
-    """
     task_data_dir = get_task_data_dir()
-    data = atomic_json_read(task_data_dir / 'tasks_source.json', {"tasks": [], "global_counters": {}})
-    if isinstance(data, list):
-        return data  # 兼容旧格式
-    return data.get("tasks", [])
+    return atomic_json_read(task_data_dir / 'tasks_source.json', [])
 
 
 def save_tasks(tasks):
-    """写入任务文件（保留字典格式和 global_counters 元数据）。"""
     task_data_dir = get_task_data_dir()
-    tf = task_data_dir / 'tasks_source.json'
-    # 读取现有数据以保留 global_counters 等元数据
-    data = atomic_json_read(tf, {"tasks": [], "global_counters": {}})
-    if isinstance(data, list):
-        data = {"tasks": data, "global_counters": {}}
-    data["tasks"] = tasks
-    atomic_json_write(tf, data)
+    atomic_json_write(task_data_dir / 'tasks_source.json', tasks)
     # Trigger refresh (异步，不阻塞，避免僵尸进程)
     script = task_data_dir.parent / 'scripts' / 'refresh_live_data.py'
     if not script.exists():
@@ -407,6 +373,8 @@ def handle_task_action(task_id, action, reason):
         return {'ok': False, 'error': f'任务 {task_id} 不存在'}
 
     old_state = task.get('state', '')
+    _ensure_scheduler(task)
+    _scheduler_snapshot(task, f'task-action-before-{action}')
 
     if action == 'stop':
         task['state'] = 'Blocked'
@@ -431,11 +399,20 @@ def handle_task_action(task_id, action, reason):
         'to': task.get('org', ''),
         'remark': f'{"⏸️ 叫停" if action == "stop" else "🚫 取消" if action == "cancel" else "▶️ 恢复"}：{reason}'
     })
+    # Issue #3: 标记为太子手动操作，监察跳过此类任务
+    _ensure_scheduler(task)
+    task['_scheduler']['_taiziManual'] = True
+
+    if action == 'resume':
+        _scheduler_mark_progress(task, f'恢复到 {task.get("state", "Doing")}')
+    else:
+        _scheduler_add_flow(task, f'皇上{action}：{reason or "无"}')
 
     task['updatedAt'] = now_iso()
 
     save_tasks(tasks)
-    # pipeline_orchestrator 会自动检测状态变化并派发 Agent
+    if action == 'resume' and task.get('state') not in _TERMINAL_STATES:
+        dispatch_for_state(task_id, task, task.get('state'), trigger='resume')
     label = {'stop': '已叫停', 'cancel': '已取消', 'resume': '已恢复'}[action]
     return {'ok': True, 'message': f'{task_id} {label}'}
 
@@ -929,9 +906,15 @@ def handle_create_task(title, org='中书省', official='中书令', priority='n
     if target_dept:
         new_task['targetDept'] = target_dept
 
+    _ensure_scheduler(new_task)
+    _scheduler_snapshot(new_task, 'create-task-initial')
+    _scheduler_mark_progress(new_task, '任务创建')
+
     tasks.insert(0, new_task)
     save_tasks(tasks)
     log.info(f'创建任务: {task_id} | {title[:40]}')
+
+    dispatch_for_state(task_id, new_task, 'Taizi', trigger='imperial-edict')
 
     return {'ok': True, 'taskId': task_id, 'message': f'旨意 {task_id} 已下达，正在派发给太子'}
 
@@ -944,6 +927,9 @@ def handle_review_action(task_id, action, comment=''):
         return {'ok': False, 'error': f'任务 {task_id} 不存在'}
     if task.get('state') not in ('Review', 'Menxia'):
         return {'ok': False, 'error': f'任务 {task_id} 当前状态为 {task.get("state")}，无法御批'}
+
+    _ensure_scheduler(task)
+    _scheduler_snapshot(task, f'review-before-{action}')
 
     if action == 'approve':
         if task['state'] == 'Menxia':
@@ -972,13 +958,20 @@ def handle_review_action(task_id, action, comment=''):
         'to': to_dept,
         'remark': remark
     })
+    _scheduler_mark_progress(task, f'审议动作 {action} -> {task.get("state")}')
+    # Issue #3: 标记为太子手动操作（用户从看板点击审议），监察跳过此类任务
+    task['_scheduler']['_taiziManual'] = True
     task['updatedAt'] = now_iso()
     save_tasks(tasks)
 
-    # pipeline_orchestrator 会自动检测状态变化并派发 Agent
+    # 🚀 审批后自动派发对应 Agent
     new_state = task['state']
+    if new_state not in ('Done',):
+        dispatch_for_state(task_id, task, new_state)
+
     label = '已准奏' if action == 'approve' else '已封驳'
-    return {'ok': True, 'message': f'{task_id} {label}'}
+    dispatched = ' (已自动派发 Agent)' if new_state != 'Done' else ''
+    return {'ok': True, 'message': f'{task_id} {label}{dispatched}'}
 
 
 # ══ Agent 在线状态检测 ══
@@ -1197,11 +1190,217 @@ def get_agents_status():
     }
 
 
+def wake_agent(agent_id, message=''):
+    """唤醒指定 Agent，发送一条心跳/唤醒消息。"""
+    if not _SAFE_NAME_RE.match(agent_id):
+        return {'ok': False, 'error': f'agent_id 非法: {agent_id}'}
+    if not _check_agent_workspace(agent_id):
+        return {'ok': False, 'error': f'{agent_id} 工作空间不存在，请先配置'}
+    if not _check_gateway_alive():
+        return {'ok': False, 'error': 'Gateway 未启动，请先运行 openclaw gateway start'}
+
+    # agent_id 直接作为 runtime_id（openclaw agents list 中的注册名）
+    runtime_id = agent_id
+    msg = message or f'🔔 系统心跳检测 — 请回复 OK 确认在线。当前时间: {now_iso()}'
+
+    def do_wake():
+        try:
+            cmd = ['openclaw', 'agent', '--agent', runtime_id, '-m', msg, '--timeout', '120']
+            log.info(f'🔔 唤醒 {agent_id}...')
+            # 带重试（最多2次）
+            for attempt in range(1, 3):
+                result = subprocess.run(cmd, capture_output=True, text=True, timeout=130)
+                if result.returncode == 0:
+                    log.info(f'✅ {agent_id} 已唤醒')
+                    return
+                err_msg = result.stderr[:200] if result.stderr else result.stdout[:200]
+                log.warning(f'⚠️ {agent_id} 唤醒失败(第{attempt}次): {err_msg}')
+                if attempt < 2:
+                    import time
+                    time.sleep(5)
+            log.error(f'❌ {agent_id} 唤醒最终失败')
+        except subprocess.TimeoutExpired:
+            log.error(f'❌ {agent_id} 唤醒超时(130s)')
+        except Exception as e:
+            log.warning(f'⚠️ {agent_id} 唤醒异常: {e}')
+    threading.Thread(target=do_wake, daemon=True).start()
+
+    return {'ok': True, 'message': f'{agent_id} 唤醒指令已发出，约10-30秒后生效'}
+
+
 # ══ Agent 实时活动读取 ══
 
-# 状态 → agent_id / org → agent_id 映射已迁移到 config.py (V8)
+# 状态 → agent_id 映射
+_STATE_AGENT_MAP = {
+    'Taizi': 'taizi',
+    'Zhongshu': 'zhongshu',
+    'Menxia': 'menxia',
+    'Assigned': 'shangshu',
+    'Doing': None,         # 六部，需从 org 推断
+    'Review': 'shangshu',
+    'Next': None,          # 待执行，从 org 推断
+    'Pending': 'zhongshu', # 待处理，默认中书省
+    'Done': 'taizi',       # 完成时通知太子回奏皇上（与 kanban_update.py V4 一致）
+}
+_ORG_AGENT_MAP = {
+    '礼部': 'libu', '户部': 'hubu', '兵部': 'bingbu',
+    '刑部': 'xingbu', '工部': 'gongbu', '吏部': 'libu_hr',
+    '中书省': 'zhongshu', '门下省': 'menxia', '尚书省': 'shangshu',
+    '执行中': None,  # Fix #3: fallback — 无法确定具体部门时不自动派发
+}
 
 _TERMINAL_STATES = {'Done', 'Cancelled'}
+
+# Issue #6#6: 并发派发上限（防止短时间内大量派发压垮 Gateway）
+_MAX_CONCURRENT_DISPATCHES = 3
+_dispatch_semaphore = threading.Semaphore(_MAX_CONCURRENT_DISPATCHES)
+
+# 分级超时监督配置
+_SUPERVISION_CONFIG = {
+    # 三省：10分钟催办，15分钟超时上报太子
+    'Zhongshu':  {'remind_sec': 600, 'timeout_sec': 900, 'label': '中书省', 'parent_agent': 'taizi'},
+    'Menxia':    {'remind_sec': 600, 'timeout_sec': 900, 'label': '门下省', 'parent_agent': 'zhongshu'},
+    'Assigned':  {'remind_sec': 600, 'timeout_sec': 900, 'label': '尚书省', 'parent_agent': 'zhongshu'},
+    # 六部/Next：5分钟催办，30分钟超时上报太子（原 timeout_sec=0 不会上报）
+    'Doing':     {'remind_sec': 300, 'timeout_sec': 1800, 'label': '六部',   'parent_agent': 'shangshu'},
+    'Next':      {'remind_sec': 300, 'timeout_sec': 1800, 'label': '六部',   'parent_agent': 'shangshu'},
+    'Taizi':     {'remind_sec': 600, 'timeout_sec': 900, 'label': '太子',   'parent_agent': 'taizi'},
+    'Pending':   {'remind_sec': 600, 'timeout_sec': 900, 'label': '中书省', 'parent_agent': 'taizi'},
+    'Review':    {'remind_sec': 300, 'timeout_sec': 600,  'label': '汇总审查', 'parent_agent': 'shangshu'},
+}
+
+# 长期停滞二次通知间隔（秒）：超过 timeout_sec 后，每 N 秒重复通知太子
+_PERIODIC_RENOTIFY_SEC = 1800  # 30 分钟
+
+# ═══════════════════════════════════════════════════════════════════════
+# 🎯 针对性催办消息模板（每个部门独立定制）
+#
+# 和 SOUL.md 一样可以随时修改每个部门的催办内容。
+# 每个部门收到催办时，会看到与其职责相关的专属催办消息。
+# ═══════════════════════════════════════════════════════════════════════
+_AGENT_REMIND_TEMPLATES = {
+    # 三省催办模板（由上级部门发出）
+    'zhongshu': (
+        '⏰ 中书省催办通知\n'
+        '任务ID: {task_id}\n'
+        '任务标题: {task_title}\n'
+        '已等待: {stalled_min} 分钟（超过10分钟阈值）\n\n'
+        '中书省作为方案起草部门，请立即：\n'
+        '1. 确认是否已收到太子转交的旨意\n'
+        '2. 如已收到，说明当前进展（分析/起草/提交门下审议/等门下回复/转尚书）\n'
+        '3. 如未收到，说明情况以便太子协调\n\n'
+        '⚠️ 看板已有此任务，请勿重复创建。'
+    ),
+    'menxia': (
+        '⏰ 门下省催办通知\n'
+        '任务ID: {task_id}\n'
+        '任务标题: {task_title}\n'
+        '已等待: {stalled_min} 分钟（超过10分钟阈值）\n\n'
+        '中书省提醒：请立即确认是否已收到审议请求。\n'
+        '如已收到，请说明审议进展：\n'
+        '  · 正在进行四维审核（可行性/完整性/风险/资源）\n'
+        '  · 已出具结论（准奏/封驳）\n'
+        '如未收到，请回复以便中书省重新发送方案。\n\n'
+        '⚠️ 看板已有此任务，请勿重复创建。'
+    ),
+    'shangshu': (
+        '⏰ 尚书省催办通知\n'
+        '任务ID: {task_id}\n'
+        '任务标题: {task_title}\n'
+        '已等待: {stalled_min} 分钟（超过10分钟阈值）\n\n'
+        '中书省提醒：门下省已准奏，请尚书省立即：\n'
+        '1. 确认是否已收到执行请求\n'
+        '2. 说明当前进展（分析方案/确定派发/已派发六部/汇总结果中）\n'
+        '3. 如未收到，说明情况以便中书省重新发送\n\n'
+        '⚠️ 看板已有此任务，请勿重复创建。'
+    ),
+    # 六部催办模板（由尚书省发出）
+    'libu': (
+        '⏰ 礼部催办通知\n'
+        '任务ID: {task_id}\n'
+        '任务标题: {task_title}\n'
+        '已等待: {stalled_min} 分钟\n\n'
+        '尚书省提醒礼部：请立即确认是否已收到任务。\n'
+        '如已收到，请说明文档/UI撰写进展。\n'
+        '如未收到，请回复以便尚书省重新派发。\n\n'
+        '⚠️ 看板已有此任务，请勿重复创建。'
+    ),
+    'hubu': (
+        '⏰ 户部催办通知\n'
+        '任务ID: {task_id}\n'
+        '任务标题: {task_title}\n'
+        '已等待: {stalled_min} 分钟\n\n'
+        '尚书省提醒户部：请立即确认是否已收到任务。\n'
+        '如已收到，请说明数据分析/统计工作进展。\n'
+        '如未收到，请回复以便尚书省重新派发。\n\n'
+        '⚠️ 看板已有此任务，请勿重复创建。'
+    ),
+    'bingbu': (
+        '⏰ 兵部催办通知\n'
+        '任务ID: {task_id}\n'
+        '任务标题: {task_title}\n'
+        '已等待: {stalled_min} 分钟\n\n'
+        '尚书省提醒兵部：请立即确认是否已收到任务。\n'
+        '如已收到，请说明开发/编码工作进展。\n'
+        '如未收到，请回复以便尚书省重新派发。\n\n'
+        '⚠️ 看板已有此任务，请勿重复创建。'
+    ),
+    'xingbu': (
+        '⏰ 刑部催办通知\n'
+        '任务ID: {task_id}\n'
+        '任务标题: {task_title}\n'
+        '已等待: {stalled_min} 分钟\n\n'
+        '尚书省提醒刑部：请立即确认是否已收到任务。\n'
+        '如已收到，请说明审查/测试工作进展。\n'
+        '如未收到，请回复以便尚书省重新派发。\n\n'
+        '⚠️ 看板已有此任务，请勿重复创建。'
+    ),
+    'gongbu': (
+        '⏰ 工部催办通知\n'
+        '任务ID: {task_id}\n'
+        '任务标题: {task_title}\n'
+        '已等待: {stalled_min} 分钟\n\n'
+        '尚书省提醒工部：请立即确认是否已收到任务。\n'
+        '如已收到，请说明部署/运维工作进展。\n'
+        '如未收到，请回复以便尚书省重新派发。\n\n'
+        '⚠️ 看板已有此任务，请勿重复创建。'
+    ),
+    'libu_hr': (
+        '⏰ 吏部催办通知\n'
+        '任务ID: {task_id}\n'
+        '任务标题: {task_title}\n'
+        '已等待: {stalled_min} 分钟\n\n'
+        '尚书省提醒吏部：请立即确认是否已收到任务。\n'
+        '如已收到，请说明Agent管理/培训工作进展。\n'
+        '如未收到，请回复以便尚书省重新派发。\n\n'
+        '⚠️ 看板已有此任务，请勿重复创建。'
+    ),
+}
+
+# 默认催办模板
+_DEFAULT_REMIND_TEMPLATE = (
+    '⏰ 催办通知\n'
+    '任务ID: {task_id}\n'
+    '任务标题: {task_title}\n'
+    '已等待: {stalled_min} 分钟\n\n'
+    '请立即确认是否已收到该任务。如未收到，请说明情况。\n\n'
+    '⚠️ 看板已有此任务，请勿重复创建。'
+)
+
+# 超时上报太子的针对性模板
+_TIMEOUT_REPORT_TEMPLATE = (
+    '🚨 超时上报\n'
+    '任务ID: {task_id}\n'
+    '任务标题: {task_title}\n'
+    '停滞部门: {state_label}\n'
+    '负责催办的上级: {parent_agent_label}\n'
+    '已超时: {stalled_min} 分钟（超过15分钟阈值）\n\n'
+    '太子请介入协调：\n'
+    '1. 检查 {state_label} 当前状态\n'
+    '2. 联系 {parent_agent_label} 了解催办结果\n'
+    '3. 必要时直接唤醒停滞部门或调整流程\n\n'
+    '⚠️ 看板已有此任务，请勿重复创建。'
+)
 
 
 def _parse_iso(ts):
@@ -1211,6 +1410,575 @@ def _parse_iso(ts):
         return datetime.datetime.fromisoformat(ts.replace('Z', '+00:00'))
     except Exception:
         return None
+
+
+def _ensure_scheduler(task):
+    sched = task.setdefault('_scheduler', {})
+    if not isinstance(sched, dict):
+        sched = {}
+        task['_scheduler'] = sched
+    sched.setdefault('enabled', True)
+    sched.setdefault('stallThresholdSec', 600)
+    sched.setdefault('maxRetry', 2)
+    sched.setdefault('retryCount', 0)
+    sched.setdefault('escalationLevel', 0)
+    sched.setdefault('autoRollback', True)
+    if not sched.get('lastProgressAt'):
+        sched['lastProgressAt'] = task.get('updatedAt') or now_iso()
+    if 'stallSince' not in sched:
+        sched['stallSince'] = None
+    if 'lastDispatchStatus' not in sched:
+        sched['lastDispatchStatus'] = 'idle'
+    if 'remindedAt' not in sched:
+        sched['remindedAt'] = None
+    if 'timeoutReportedAt' not in sched:
+        sched['timeoutReportedAt'] = None
+    if 'snapshot' not in sched:
+        sched['snapshot'] = {
+            'state': task.get('state', ''),
+            'org': task.get('org', ''),
+            'now': task.get('now', ''),
+            'savedAt': now_iso(),
+            'note': 'init',
+        }
+    return sched
+
+
+def _scheduler_add_flow(task, remark, to=''):
+    task.setdefault('flow_log', []).append({
+        'at': now_iso(),
+        'from': '太子调度',
+        'to': to or task.get('org', ''),
+        'remark': f'🧭 {remark}'
+    })
+
+
+def _scheduler_snapshot(task, note=''):
+    sched = _ensure_scheduler(task)
+    sched['snapshot'] = {
+        'state': task.get('state', ''),
+        'org': task.get('org', ''),
+        'now': task.get('now', ''),
+        'savedAt': now_iso(),
+        'note': note or 'snapshot',
+    }
+
+
+def _scheduler_mark_progress(task, note=''):
+    sched = _ensure_scheduler(task)
+    sched['lastProgressAt'] = now_iso()
+    sched['stallSince'] = None
+    sched['retryCount'] = 0
+    sched['escalationLevel'] = 0
+    sched['lastEscalatedAt'] = None
+    if note:
+        _scheduler_add_flow(task, f'进展确认：{note}')
+
+
+def _update_task_scheduler(task_id, updater):
+    tasks = load_tasks()
+    task = next((t for t in tasks if t.get('id') == task_id), None)
+    if not task:
+        return False
+    sched = _ensure_scheduler(task)
+    updater(task, sched)
+    task['updatedAt'] = now_iso()
+    save_tasks(tasks)
+    return True
+
+
+def get_scheduler_state(task_id):
+    tasks = load_tasks()
+    task = next((t for t in tasks if t.get('id') == task_id), None)
+    if not task:
+        return {'ok': False, 'error': f'任务 {task_id} 不存在'}
+    sched = _ensure_scheduler(task)
+    last_progress = _parse_iso(sched.get('lastProgressAt') or task.get('updatedAt'))
+    now_dt = datetime.datetime.now(datetime.timezone.utc)
+    stalled_sec = 0
+    if last_progress:
+        stalled_sec = max(0, int((now_dt - last_progress).total_seconds()))
+    return {
+        'ok': True,
+        'taskId': task_id,
+        'state': task.get('state', ''),
+        'org': task.get('org', ''),
+        'scheduler': sched,
+        'stalledSec': stalled_sec,
+        'checkedAt': now_iso(),
+    }
+
+
+def handle_scheduler_retry(task_id, reason=''):
+    tasks = load_tasks()
+    task = next((t for t in tasks if t.get('id') == task_id), None)
+    if not task:
+        return {'ok': False, 'error': f'任务 {task_id} 不存在'}
+    state = task.get('state', '')
+    if state in _TERMINAL_STATES or state == 'Blocked':
+        return {'ok': False, 'error': f'任务 {task_id} 当前状态 {state} 不支持重试'}
+
+    sched = _ensure_scheduler(task)
+    sched['retryCount'] = int(sched.get('retryCount') or 0) + 1
+    sched['lastRetryAt'] = now_iso()
+    sched['lastDispatchTrigger'] = 'taizi-retry'
+    _scheduler_add_flow(task, f'触发重试第{sched["retryCount"]}次：{reason or "超时未推进"}')
+    task['updatedAt'] = now_iso()
+    save_tasks(tasks)
+
+    dispatch_for_state(task_id, task, state, trigger='taizi-retry')
+    return {'ok': True, 'message': f'{task_id} 已触发重试派发', 'retryCount': sched['retryCount']}
+
+
+def handle_scheduler_escalate(task_id, reason=''):
+    tasks = load_tasks()
+    task = next((t for t in tasks if t.get('id') == task_id), None)
+    if not task:
+        return {'ok': False, 'error': f'任务 {task_id} 不存在'}
+    state = task.get('state', '')
+    if state in _TERMINAL_STATES:
+        return {'ok': False, 'error': f'任务 {task_id} 已结束，无需升级'}
+
+    sched = _ensure_scheduler(task)
+    current_level = int(sched.get('escalationLevel') or 0)
+    next_level = min(current_level + 1, 2)
+    target = 'menxia' if next_level == 1 else 'shangshu'
+    target_label = '门下省' if next_level == 1 else '尚书省'
+
+    sched['escalationLevel'] = next_level
+    sched['lastEscalatedAt'] = now_iso()
+    _scheduler_add_flow(task, f'升级到{target_label}协调：{reason or "任务停滞"}', to=target_label)
+    task['updatedAt'] = now_iso()
+    save_tasks(tasks)
+
+    msg = (
+        f'🧭 太子调度升级通知\n'
+        f'任务ID: {task_id}\n'
+        f'当前状态: {state}\n'
+        f'停滞处理: 请你介入协调推进\n'
+        f'原因: {reason or "任务超过阈值未推进"}\n'
+        f'⚠️ 看板已有任务，请勿重复创建。'
+    )
+    wake_agent(target, msg)
+
+    return {'ok': True, 'message': f'{task_id} 已升级至{target_label}', 'escalationLevel': next_level}
+
+
+def handle_scheduler_rollback(task_id, reason=''):
+    tasks = load_tasks()
+    task = next((t for t in tasks if t.get('id') == task_id), None)
+    if not task:
+        return {'ok': False, 'error': f'任务 {task_id} 不存在'}
+    sched = _ensure_scheduler(task)
+    snapshot = sched.get('snapshot') or {}
+    snap_state = snapshot.get('state')
+    if not snap_state:
+        return {'ok': False, 'error': f'任务 {task_id} 无可用回滚快照'}
+
+    old_state = task.get('state', '')
+    task['state'] = snap_state
+    task['org'] = snapshot.get('org', task.get('org', ''))
+    task['now'] = f'↩️ 太子调度自动回滚：{reason or "恢复到上个稳定节点"}'
+    task['block'] = '无'
+    sched['retryCount'] = 0
+    sched['escalationLevel'] = 0
+    sched['stallSince'] = None
+    sched['lastProgressAt'] = now_iso()
+    _scheduler_add_flow(task, f'执行回滚：{old_state} → {snap_state}，原因：{reason or "停滞恢复"}')
+    task['updatedAt'] = now_iso()
+    save_tasks(tasks)
+
+    if snap_state not in _TERMINAL_STATES:
+        dispatch_for_state(task_id, task, snap_state, trigger='taizi-rollback')
+
+    return {'ok': True, 'message': f'{task_id} 已回滚到 {snap_state}'}
+
+
+def handle_scheduler_scan(threshold_sec=600):
+    """增强版调度扫描：集成分级超时监督（三省15min + 六部5min催办）。
+
+    规则：
+    - 三省（中书/门下/尚书）：10分钟催办（上级催），15分钟超时上报太子
+    - 六部（Doing/Next）：5分钟催办（尚书催），催办后仍无响应则检查原因修复汇报
+    - 催办由直接上级部门执行，太子总揽全局兜底
+    """
+    threshold_sec = max(60, int(threshold_sec or 600))
+    tasks = load_tasks()
+    now_dt = datetime.datetime.now(datetime.timezone.utc)
+    pending_retries = []
+    pending_escalates = []
+    pending_rollbacks = []
+    # 新增：分级催办和超时上报
+    pending_reminds = []
+    pending_timeouts = []
+    actions = []
+    changed = False
+
+    for task in tasks:
+        task_id = task.get('id', '')
+        state = task.get('state', '')
+        if not task_id or state in _TERMINAL_STATES or task.get('archived'):
+            continue
+        if state == 'Blocked':
+            continue
+
+        sched = _ensure_scheduler(task)
+        last_progress = _parse_iso(sched.get('lastProgressAt') or task.get('updatedAt'))
+        if not last_progress:
+            continue
+        stalled_sec = max(0, int((now_dt - last_progress).total_seconds()))
+
+        # ── 分级超时监督逻辑 ──
+        sup_cfg = _SUPERVISION_CONFIG.get(state)
+        if sup_cfg and stalled_sec > 0:
+            remind_sec = sup_cfg['remind_sec']
+            timeout_sec = sup_cfg['timeout_sec']
+            parent_agent = sup_cfg['parent_agent']
+            state_label = sup_cfg['label']
+
+            # 确定催办者（parent_agent）
+            # 三省催办规则：中书催门下/尚书，尚书催六部
+            remind_agent = parent_agent
+
+            # ① 催办阶段
+            if stalled_sec >= remind_sec:
+                reminded = sched.get('remindedAt')
+                if not reminded:
+                    sched['remindedAt'] = now_iso()
+                    sched['stallSince'] = now_iso()
+                    _scheduler_add_flow(task, f'{state_label}停滞{stalled_sec}秒，{remind_agent}发送催办')
+                    pending_reminds.append((task_id, state, remind_agent, state_label, stalled_sec, remind_sec))
+                    actions.append({'taskId': task_id, 'action': 'remind', 'by': remind_agent, 'stalledSec': stalled_sec})
+                    changed = True
+
+            # ② 超时上报阶段（仅对有 timeout_sec > 0 的状态生效，即三省）
+            if timeout_sec > 0 and stalled_sec >= timeout_sec:
+                reported = sched.get('timeoutReportedAt')
+                if not reported:
+                    sched['timeoutReportedAt'] = now_iso()
+                    _scheduler_add_flow(task, f'{state_label}超时{stalled_sec}秒，上报太子协调')
+                    pending_timeouts.append((task_id, state, state_label, stalled_sec, parent_agent))
+                    actions.append({'taskId': task_id, 'action': 'timeout_report', 'stalledSec': stalled_sec})
+                    changed = True
+
+        # ── 原有逻辑：停滞检测阈值 ──
+        task_threshold = int(sched.get('stallThresholdSec') or threshold_sec)
+        if stalled_sec < task_threshold:
+            # 即使未达到停滞阈值，也要保存催办/超时标记
+            if changed:
+                pass  # 后面统一保存
+            continue
+
+        if not sched.get('stallSince'):
+            sched['stallSince'] = now_iso()
+            changed = True
+
+        retry_count = int(sched.get('retryCount') or 0)
+        max_retry = max(0, int(sched.get('maxRetry') or 1))
+        level = int(sched.get('escalationLevel') or 0)
+
+        if retry_count < max_retry:
+            sched['retryCount'] = retry_count + 1
+            sched['lastRetryAt'] = now_iso()
+            sched['lastDispatchTrigger'] = 'taizi-scan-retry'
+            _scheduler_add_flow(task, f'停滞{stalled_sec}秒，触发自动重试第{sched["retryCount"]}次')
+            pending_retries.append((task_id, state))
+            actions.append({'taskId': task_id, 'action': 'retry', 'stalledSec': stalled_sec})
+            changed = True
+            continue
+
+        if level < 2:
+            next_level = level + 1
+            target = 'menxia' if next_level == 1 else 'shangshu'
+            target_label = '门下省' if next_level == 1 else '尚书省'
+            sched['escalationLevel'] = next_level
+            sched['lastEscalatedAt'] = now_iso()
+            _scheduler_add_flow(task, f'停滞{stalled_sec}秒，升级至{target_label}协调', to=target_label)
+            pending_escalates.append((task_id, state, target, target_label, stalled_sec))
+            actions.append({'taskId': task_id, 'action': 'escalate', 'to': target_label, 'stalledSec': stalled_sec})
+            changed = True
+            continue
+
+        if sched.get('autoRollback', True) and not sched.get('_taiziManual'):
+            snapshot = sched.get('snapshot') or {}
+            snap_state = snapshot.get('state')
+            if snap_state and snap_state != state:
+                # ── BUG FIX #4: 回滚前检查六部是否已在执行 ──
+                # 原代码直接回滚 Doing→Zhongshu 并重新派发，导致六部收到重复派发。
+                # 修复：检查 flow_log 中是否有尚书省→六部的派发记录，
+                # 且该记录之后没有六部→尚书省的完成记录，说明六部正在执行中。
+                _LIU_BU_AGENT_SET = {'gongbu', 'bingbu', 'hubu', 'libu', 'xingbu', 'libu_hr'}
+                flow_log_entries = task.get('flow_log', [])
+
+                # 遍历 flow_log 统计六部派发和完成
+                _dispatched_to_liubu = False
+                _liubu_reported_back = False
+                _last_dispatch_dept = ''
+                for _fl_entry in flow_log_entries:
+                    _fl_from_raw = (_fl_entry.get('from', '') or '').strip()
+                    _fl_to_raw = (_fl_entry.get('to', '') or '').strip()
+                    _fl_from_id = _ORG_AGENT_MAP.get(_fl_from_raw, _fl_from_raw.lower())
+                    _fl_to_id = _ORG_AGENT_MAP.get(_fl_to_raw, _fl_to_raw.lower())
+                    if _fl_from_id and _fl_from_id == 'shangshu' and _fl_to_id in _LIU_BU_AGENT_SET:
+                        _dispatched_to_liubu = True
+                        _last_dispatch_dept = _fl_to_id
+                    if _fl_to_id and _fl_to_id == 'shangshu' and _fl_from_id in _LIU_BU_AGENT_SET:
+                        _liubu_reported_back = True
+
+                if _dispatched_to_liubu and not _liubu_reported_back:
+                    # 六部已被派发但尚未回报，不应回滚，改为催办六部
+                    log(f'⚠️ {task_id} 回滚跳过：{_last_dispatch_dept}已在执行中，改为催办')
+                    _scheduler_add_flow(task, f'回滚跳过：{_last_dispatch_dept}已在执行，改为催办')
+                    # 重置停滞计数器，避免重复触发
+                    sched['retryCount'] = 0
+                    sched['escalationLevel'] = 0
+                    sched['stallSince'] = None
+                    sched['lastProgressAt'] = now_iso()
+                    # 催办正在执行的六部
+                    if _last_dispatch_dept:
+                        msg = (
+                            f'⏰ 太子调度催办通知\n'
+                            f'任务ID: {task_id}\n'
+                            f'任务标题: {task.get("title", "")}\n'
+                            f'已停滞: {stalled_sec} 秒\n'
+                            f'系统检测到你已收到尚书省的派发并正在执行。\n'
+                            f'请尽快完成并上报尚书省。\n'
+                            f'⚠️ 看板已有此任务，请勿重复创建。'
+                        )
+                        wake_agent(_last_dispatch_dept, msg)
+                    changed = True
+                    continue
+
+                old_state = state
+                task['state'] = snap_state
+                task['org'] = snapshot.get('org', task.get('org', ''))
+                task['now'] = '↩️ 太子调度自动回滚到稳定节点'
+                task['block'] = '无'
+                sched['retryCount'] = 0
+                sched['escalationLevel'] = 0
+                sched['stallSince'] = None
+                sched['lastProgressAt'] = now_iso()
+                _scheduler_add_flow(task, f'连续停滞，自动回滚：{old_state} → {snap_state}')
+                pending_rollbacks.append((task_id, snap_state))
+                actions.append({'taskId': task_id, 'action': 'rollback', 'toState': snap_state})
+                changed = True
+        elif sched.get('_taiziManual'):
+            # 太子手动推进的任务不自动回退，但重置标记以允许下次监控
+            sched['_taiziManual'] = False
+
+    if changed:
+        save_tasks(tasks)
+
+    for task_id, state in pending_retries:
+        retry_task = next((t for t in tasks if t.get('id') == task_id), None)
+        if retry_task:
+            dispatch_for_state(task_id, retry_task, state, trigger='taizi-scan-retry')
+
+    for task_id, state, target, target_label, stalled_sec in pending_escalates:
+        msg = (
+            f'🧭 太子调度升级通知\n'
+            f'任务ID: {task_id}\n'
+            f'当前状态: {state}\n'
+            f'已停滞: {stalled_sec} 秒\n'
+            f'请立即介入协调推进\n'
+            f'⚠️ 看板已有任务，请勿重复创建。'
+        )
+        wake_agent(target, msg)
+
+    # ── 长期停滞严重警告：停滞超过 2 小时且未升级 ──
+    CRITICAL_STALL_SEC = 7200  # 2 小时
+    for task in tasks:
+        task_id = task.get('id', '')
+        state = task.get('state', '')
+        if not task_id or state in _TERMINAL_STATES or task.get('archived'):
+            continue
+        sched = _ensure_scheduler(task)
+        last_progress = _parse_iso(sched.get('lastProgressAt') or task.get('updatedAt'))
+        if not last_progress:
+            continue
+        stalled_sec = max(0, int((now_dt - last_progress).total_seconds()))
+        if stalled_sec < CRITICAL_STALL_SEC:
+            continue
+        # 检查是否已发送过严重停滞通知（防止重复通知）
+        last_critical = sched.get('lastCriticalNotifyAt')
+        if last_critical:
+            last_critical_dt = _parse_iso(last_critical)
+            if last_critical_dt and (now_dt - last_critical_dt).total_seconds() < _PERIODIC_RENOTIFY_SEC:
+                continue
+        sched['lastCriticalNotifyAt'] = now_iso()
+        sched['escalationLevel'] = 2  # 强制升级到最高
+        task_title = task.get('title', '(无标题)')
+        state_label = _SUPERVISION_CONFIG.get(state, {}).get('label', state)
+        _scheduler_add_flow(task, f'严重停滞{stalled_sec // 60}分钟，强制升级通知太子', to=state_label)
+        changed = True
+        critical_msg = (
+            f'🚨 严重停滞警告\n'
+            f'任务ID: {task_id}\n'
+            f'任务标题: {task_title}\n'
+            f'停滞部门: {state_label}\n'
+            f'已停滞: {stalled_sec // 60} 分钟（超过2小时阈值）\n\n'
+            f'太子请立即介入：\n'
+            f'1. 检查 {state_label} 当前状态和在线情况\n'
+            f'2. 考虑使用 scheduler-rollback 回滚任务\n'
+            f'3. 或使用 scheduler-escalate 手动升级处理\n'
+            f'4. 必要时直接唤醒停滞部门\n\n'
+            f'⚠️ 看板已有此任务，请勿重复创建。'
+        )
+        wake_agent('taizi', critical_msg)
+        actions.append({'taskId': task_id, 'action': 'critical_stall', 'stalledSec': stalled_sec})
+
+    # ── 周期性重报：对超时上报后仍无进展的任务，每 _PERIODIC_RENOTIFY_SEC 重新通知 ──
+    for task in tasks:
+        task_id = task.get('id', '')
+        state = task.get('state', '')
+        if not task_id or state in _TERMINAL_STATES or task.get('archived'):
+            continue
+        sched = task.get('_scheduler') or {}
+        reported = sched.get('timeoutReportedAt')
+        if not reported:
+            continue
+        reported_dt = _parse_iso(reported)
+        if not reported_dt:
+            continue
+        elapsed_since_report = (now_dt - reported_dt).total_seconds()
+        if elapsed_since_report < _PERIODIC_RENOTIFY_SEC:
+            continue
+        # 检查是否有新进展（如果有则不需要重报）
+        last_progress = _parse_iso(sched.get('lastProgressAt') or task.get('updatedAt'))
+        if last_progress and last_progress > reported_dt:
+            continue  # 有新进展，不需要重报
+        # 重置超时标记，允许下一轮重新触发超时上报
+        sched['timeoutReportedAt'] = None
+        sched['remindedAt'] = None
+        task['updatedAt'] = now_iso()
+        changed = True
+        task_title = task.get('title', '(无标题)')
+        state_label = _SUPERVISION_CONFIG.get(state, {}).get('label', state)
+        log.info(f'🔄 周期性重报: {task_id} ({state_label}) 停滞超过 {_PERIODIC_RENOTIFY_SEC // 60} 分钟，重置通知标记')
+
+    # ── 新增：分级催办（针对性消息，直接发送到停滞部门） ──
+    for task_id, state, remind_agent, state_label, stalled_sec, remind_sec in pending_reminds:
+        task = next((t for t in tasks if t.get('id') == task_id), None)
+        task_title = task.get('title', '(无标题)') if task else '(无标题)'
+
+        # 确定实际停滞的 agent（谁需要收到催办）
+        stalled_agent = _STATE_AGENT_MAP.get(state, '')
+        if not stalled_agent and state in ('Doing', 'Next'):
+            stalled_agent = _ORG_AGENT_MAP.get(task.get('org', ''), '') if task else ''
+
+        # 🎯 使用该部门的针对性催办模板
+        remind_label = _AGENT_LABELS.get(remind_agent, remind_agent)
+        template = _AGENT_REMIND_TEMPLATES.get(stalled_agent, _DEFAULT_REMIND_TEMPLATE)
+        msg = template.format(
+            task_id=task_id,
+            task_title=task_title,
+            stalled_min=stalled_sec // 60,
+            parent_dept=remind_label,
+        )
+
+        # 直接向停滞部门发送针对性催办
+        if stalled_agent:
+            wake_agent(stalled_agent, msg)
+            log.info(f'🎯 已发送【针对性催办】给 {_AGENT_LABELS.get(stalled_agent, stalled_agent)} | 任务 {task_id}')
+        else:
+            # 回退：发送给催办负责人
+            wake_agent(remind_agent, msg)
+
+    # ── 新增：超时上报太子（针对性模板） ──
+    for task_id, state, state_label, stalled_sec, parent_agent in pending_timeouts:
+        task = next((t for t in tasks if t.get('id') == task_id), None)
+        task_title = task.get('title', '(无标题)') if task else '(无标题)'
+        parent_label = _AGENT_LABELS.get(parent_agent, parent_agent)
+        msg = _TIMEOUT_REPORT_TEMPLATE.format(
+            task_id=task_id,
+            task_title=task_title,
+            state_label=state_label,
+            parent_agent_label=parent_label,
+            stalled_min=stalled_sec // 60,
+        )
+        wake_agent('taizi', msg)
+
+    for task_id, state in pending_rollbacks:
+        rollback_task = next((t for t in tasks if t.get('id') == task_id), None)
+        if rollback_task and state not in _TERMINAL_STATES:
+            dispatch_for_state(task_id, rollback_task, state, trigger='taizi-auto-rollback')
+
+    return {
+        'ok': True,
+        'thresholdSec': threshold_sec,
+        'actions': actions,
+        'count': len(actions),
+        'checkedAt': now_iso(),
+    }
+
+
+def _startup_recover_queued_dispatches():
+    """服务启动后扫描 lastDispatchStatus=queued 的任务，重新派发。
+    解决：kill -9 重启导致派发线程中断、任务永久卡住的问题。"""
+    tasks = load_tasks()
+    recovered = 0
+    for task in tasks:
+        task_id = task.get('id', '')
+        state = task.get('state', '')
+        if not task_id or state in _TERMINAL_STATES or task.get('archived'):
+            continue
+        sched = task.get('_scheduler') or {}
+        if sched.get('lastDispatchStatus') == 'queued':
+            log.info(f'🔄 启动恢复: {task_id} 状态={state} 上次派发未完成，重新派发')
+            sched['lastDispatchTrigger'] = 'startup-recovery'
+            dispatch_for_state(task_id, task, state, trigger='startup-recovery')
+            recovered += 1
+    if recovered:
+        log.info(f'✅ 启动恢复完成: 重新派发 {recovered} 个任务')
+    else:
+        log.info(f'✅ 启动恢复: 无需恢复')
+
+    # 启动时扫描长期停滞任务（>2小时），立即通知太子
+    try:
+        _startup_check_long_stalled()
+    except Exception as e:
+        log.warning(f'启动停滞扫描异常: {e}')
+
+
+def _startup_check_long_stalled():
+    """服务启动后扫描长期停滞任务（>2小时），通知太子介入。"""
+    CRITICAL_SEC = 7200  # 2 小时
+    now_dt = datetime.datetime.now(datetime.timezone.utc)
+    tasks = load_tasks()
+    notified = 0
+    for task in tasks:
+        task_id = task.get('id', '')
+        state = task.get('state', '')
+        if not task_id or state in _TERMINAL_STATES or task.get('archived'):
+            continue
+        sched = task.get('_scheduler') or {}
+        last_progress = _parse_iso(sched.get('lastProgressAt') or task.get('updatedAt'))
+        if not last_progress:
+            continue
+        stalled_sec = max(0, int((now_dt - last_progress).total_seconds()))
+        if stalled_sec < CRITICAL_SEC:
+            continue
+        # 避免重复通知
+        if sched.get('lastCriticalNotifyAt'):
+            continue
+        sched['lastCriticalNotifyAt'] = now_iso()
+        task['updatedAt'] = now_iso()
+        task_title = task.get('title', '(无标题)')
+        state_label = _SUPERVISION_CONFIG.get(state, {}).get('label', state)
+        msg = (
+            f'🚨 启动检测：严重停滞警告\n'
+            f'任务ID: {task_id}\n'
+            f'任务标题: {task_title}\n'
+            f'停滞部门: {state_label}\n'
+            f'已停滞: {stalled_sec // 60} 分钟\n\n'
+            f'此任务在服务重启前已长期停滞，请太子立即介入处理。\n'
+            f'⚠️ 看板已有此任务，请勿重复创建。'
+        )
+        wake_agent('taizi', msg)
+        notified += 1
+    if notified:
+        save_tasks(tasks)
+        log.info(f'🚨 启动停滞扫描: 发现 {notified} 个长期停滞任务，已通知太子')
 
 
 def handle_repair_flow_order():
@@ -1677,10 +2445,10 @@ def get_task_activity(task_id):
         'archived': task.get('archived', False),
     }
 
-    # 当前负责 Agent（V8: 从 config 导入）
-    agent_id = _V8_STATE_AGENT_MAP.get(state)
+    # 当前负责 Agent（兼容旧逻辑）
+    agent_id = _STATE_AGENT_MAP.get(state)
     if agent_id is None and state in ('Doing', 'Next'):
-        agent_id = _V8_ORG_AGENT_MAP.get(org)
+        agent_id = _ORG_AGENT_MAP.get(org)
 
     # ── 构建活动条目列表（flow_log + progress_log）──
     activity = []
@@ -1884,11 +2652,242 @@ def get_task_activity(task_id):
     return result
 
 
-# 状态 → 中文标签映射（用于 UI 显示）
+# 状态推进顺序（手动推进用）
+_STATE_FLOW = {
+    'Pending':  ('Taizi', '皇上', '太子', '待处理旨意转交太子分拣'),
+    'Taizi':    ('Zhongshu', '太子', '中书省', '太子分拣完毕，转中书省起草'),
+    'Zhongshu': ('Menxia', '中书省', '门下省', '中书省方案提交门下省审议'),
+    'Menxia':   ('Assigned', '门下省', '尚书省', '门下省准奏，转尚书省派发'),
+    'Assigned': ('Doing', '尚书省', '六部', '尚书省开始派发执行'),
+    'Next':     ('Doing', '尚书省', '六部', '待执行任务开始执行'),
+    'Doing':    ('Review', '六部', '尚书省', '各部完成，进入汇总'),
+    'Review':   ('Done', '尚书省', '太子', '全流程完成，回奏太子转报皇上'),
+    # 【V7 修复】Blocked 状态的手动推进路径
+    'Blocked':  ('Doing', '太子', '解除阻塞，恢复执行'),
+}
 _STATE_LABELS = {
     'Pending': '待处理', 'Taizi': '太子', 'Zhongshu': '中书省', 'Menxia': '门下省',
     'Assigned': '尚书省', 'Next': '待执行', 'Doing': '执行中', 'Review': '审查', 'Done': '完成',
 }
+
+
+def dispatch_for_state(task_id, task, new_state, trigger='state-transition'):
+    """推进/审批后自动派发对应 Agent（后台异步，不阻塞响应）。"""
+    agent_id = _STATE_AGENT_MAP.get(new_state)
+    if agent_id is None and new_state in ('Doing', 'Next'):
+        org = task.get('org', '')
+        agent_id = _ORG_AGENT_MAP.get(org)
+        # Fix: if org is generic '六部' or '执行中', try targetDept
+        if not agent_id:
+            target_dept = task.get('targetDept', '')
+            if target_dept:
+                agent_id = _ORG_AGENT_MAP.get(target_dept)
+    if not agent_id:
+        # Issue #1 fix: 当无法确定具体六部 agent 时，记录详细日志帮助排查
+        log.warning(f'⚠️ {task_id} 新状态 {new_state} 无法确定目标 Agent（org={task.get("org","")}, targetDept={task.get("targetDept","")}），跳过自动派发。尚书省需在旨意中明确指定 targetDept。')
+        return
+
+    _update_task_scheduler(task_id, lambda t, s: (
+        s.update({
+            'lastDispatchAt': now_iso(),
+            'lastDispatchStatus': 'queued',
+            'lastDispatchAgent': agent_id,
+            'lastDispatchTrigger': trigger,
+        }),
+        _scheduler_add_flow(t, f'已入队派发：{new_state} → {agent_id}（{trigger}）', to=_STATE_LABELS.get(new_state, new_state))
+    ))
+
+    title = task.get('title', '(无标题)')
+    target_dept = task.get('targetDept', '')
+
+    # 根据 agent_id 构造针对性消息
+    _msgs = {
+        'taizi': (
+            f'📜 皇上旨意需要你处理\n'
+            f'任务ID: {task_id}\n'
+            f'旨意: {title}\n'
+            f'⚠️ 看板已有此任务，请勿重复创建。直接用 kanban_update.py 更新状态。\n'
+            f'请立即转交中书省起草执行方案。'
+        ),
+        'zhongshu': (
+            f'📜 旨意已到中书省，请起草方案\n'
+            f'任务ID: {task_id}\n'
+            f'旨意: {title}\n'
+            f'⚠️ 看板已有此任务记录，请勿重复创建。直接用 kanban_update.py state 更新状态。\n'
+            f'请立即起草执行方案，走完完整三省流程（中书起草→门下审议→尚书派发→六部执行）。'
+        ),
+        'menxia': (
+            f'📋 中书省方案提交审议\n'
+            f'任务ID: {task_id}\n'
+            f'旨意: {title}\n'
+            f'⚠️ 看板已有此任务，请勿重复创建。\n'
+            f'请审议中书省方案，给出准奏或封驳意见。'
+        ),
+        'shangshu': (
+            f'📮 门下省已准奏，请派发执行\n'
+            f'任务ID: {task_id}\n'
+            f'旨意: {title}\n'
+            f'{"建议派发部门: " + target_dept if target_dept else ""}\n'
+            f'⚠️ 看板已有此任务，请勿重复创建。\n'
+            f'请分析方案并派发给六部执行。'
+        ),
+    }
+    msg = _msgs.get(agent_id, (
+        f'📌 请处理任务\n'
+        f'任务ID: {task_id}\n'
+        f'旨意: {title}\n'
+        f'⚠️ 看板已有此任务，请勿重复创建。直接用 kanban_update.py 更新状态。'
+    ))
+
+    def _do_dispatch():
+        try:
+            if not _check_gateway_alive():
+                log.warning(f'⚠️ {task_id} 自动派发跳过: Gateway 未启动')
+                _update_task_scheduler(task_id, lambda t, s: s.update({
+                    'lastDispatchAt': now_iso(),
+                    'lastDispatchStatus': 'gateway-offline',
+                    'lastDispatchAgent': agent_id,
+                    'lastDispatchTrigger': trigger,
+                }))
+                return
+            # Fix #139/#182: dispatch channel 可配置；未配置时不传 --deliver 避免
+            # "unknown channel: feishu" 错误（非飞书用户）
+            _agent_cfg = read_json(DATA / 'agent_config.json', {})
+            _channel = (_agent_cfg.get('dispatchChannel') or '').strip()
+            cmd = ['openclaw', 'agent', '--agent', agent_id, '-m', msg, '--timeout', '300']
+            if _channel:
+                cmd.extend(['--deliver', '--channel', _channel])
+            max_retries = 2
+            err = ''
+            for attempt in range(1, max_retries + 1):
+                log.info(f'🔄 自动派发 {task_id} → {agent_id} (第{attempt}次)...')
+                result = subprocess.run(cmd, capture_output=True, text=True, timeout=310)
+                if result.returncode == 0:
+                    log.info(f'✅ {task_id} 自动派发成功 → {agent_id}')
+                    _update_task_scheduler(task_id, lambda t, s: (
+                        s.update({
+                            'lastDispatchAt': now_iso(),
+                            'lastDispatchStatus': 'success',
+                            'lastDispatchAgent': agent_id,
+                            'lastDispatchTrigger': trigger,
+                            'lastDispatchError': '',
+                        }),
+                        _scheduler_add_flow(t, f'派发成功：{agent_id}（{trigger}）', to=t.get('org', ''))
+                    ))
+                    return
+                err = result.stderr[:200] if result.stderr else result.stdout[:200]
+                log.warning(f'⚠️ {task_id} 自动派发失败(第{attempt}次): {err}')
+                if attempt < max_retries:
+                    import time
+                    time.sleep(5)
+            log.error(f'❌ {task_id} 自动派发最终失败 → {agent_id}')
+            _update_task_scheduler(task_id, lambda t, s: (
+                s.update({
+                    'lastDispatchAt': now_iso(),
+                    'lastDispatchStatus': 'failed',
+                    'lastDispatchAgent': agent_id,
+                    'lastDispatchTrigger': trigger,
+                    'lastDispatchError': err,
+                }),
+                _scheduler_add_flow(t, f'派发失败：{agent_id}（{trigger}）', to=t.get('org', ''))
+            ))
+            # Fix #11: 派发全部失败后，检查是否需要自动回滚
+            try:
+                def _check_rollback():
+                    tasks = load_tasks()
+                    t = next((t for t in tasks if t.get('id') == task_id), None)
+                    if t:
+                        sched = _ensure_scheduler(t)
+                        if sched.get('autoRollback', True):
+                            retry_count = int(sched.get('retryCount') or 0)
+                            max_retry = max(0, int(sched.get('maxRetry') or 1))
+                            if retry_count >= max_retry:
+                                handle_scheduler_rollback(task_id, f'Agent {agent_id} 派发失败: {err[:100]}')
+                threading.Thread(target=_check_rollback, daemon=True).start()
+            except Exception as e:
+                log.warning(f'派发失败后回滚检查异常: {e}')
+        except subprocess.TimeoutExpired:
+            log.error(f'❌ {task_id} 自动派发超时 → {agent_id}')
+            _update_task_scheduler(task_id, lambda t, s: (
+                s.update({
+                    'lastDispatchAt': now_iso(),
+                    'lastDispatchStatus': 'timeout',
+                    'lastDispatchAgent': agent_id,
+                    'lastDispatchTrigger': trigger,
+                    'lastDispatchError': 'timeout',
+                }),
+                _scheduler_add_flow(t, f'派发超时：{agent_id}（{trigger}）', to=t.get('org', ''))
+            ))
+        except Exception as e:
+            log.warning(f'⚠️ {task_id} 自动派发异常: {e}')
+            _update_task_scheduler(task_id, lambda t, s: (
+                s.update({
+                    'lastDispatchAt': now_iso(),
+                    'lastDispatchStatus': 'error',
+                    'lastDispatchAgent': agent_id,
+                    'lastDispatchTrigger': trigger,
+                    'lastDispatchError': str(e)[:200],
+                }),
+                _scheduler_add_flow(t, f'派发异常：{agent_id}（{trigger}）', to=t.get('org', ''))
+            ))
+
+    def _dispatch_with_semaphore():
+        _dispatch_semaphore.acquire()
+        try:
+            _do_dispatch()
+        finally:
+            _dispatch_semaphore.release()
+
+    threading.Thread(target=_dispatch_with_semaphore, daemon=True).start()
+    log.info(f'🚀 {task_id} 推进后自动派发 → {agent_id}')
+
+
+def handle_advance_state(task_id, comment=''):
+    """手动推进任务到下一阶段（解卡用），推进后自动派发对应 Agent。"""
+    tasks = load_tasks()
+    task = next((t for t in tasks if t.get('id') == task_id), None)
+    if not task:
+        return {'ok': False, 'error': f'任务 {task_id} 不存在'}
+    cur = task.get('state', '')
+    if cur not in _STATE_FLOW:
+        return {'ok': False, 'error': f'任务 {task_id} 状态为 {cur}，无法推进'}
+    _ensure_scheduler(task)
+    task['_scheduler']['_taiziManual'] = True
+    _scheduler_snapshot(task, f'advance-before-{cur}')
+    next_state, from_dept, to_dept, default_remark = _STATE_FLOW[cur]
+    remark = comment or default_remark
+
+    # Fix: resolve generic '六部' to specific department via targetDept
+    if next_state in ('Doing', 'Next') and to_dept == '六部':
+        target_dept = task.get('targetDept', '')
+        if target_dept and target_dept in _ORG_AGENT_MAP:
+            task['org'] = target_dept
+            to_dept = target_dept
+        else:
+            task['org'] = '执行中'
+    else:
+        task['org'] = _STATE_LABELS.get(next_state, to_dept)
+
+    task['state'] = next_state
+    task['now'] = f'⬇️ 手动推进：{remark}'
+    task.setdefault('flow_log', []).append({
+        'at': now_iso(),
+        'from': from_dept,
+        'to': to_dept,
+        'remark': f'⬇️ 手动推进：{remark}'
+    })
+    _scheduler_mark_progress(task, f'手动推进 {cur} -> {next_state}')
+    task['updatedAt'] = now_iso()
+    save_tasks(tasks)
+
+    # 🚀 推进后自动派发对应 Agent（Done 状态无需派发）
+    if next_state != 'Done':
+        dispatch_for_state(task_id, task, next_state)
+
+    from_label = _STATE_LABELS.get(cur, cur)
+    to_label = _STATE_LABELS.get(next_state, next_state)
+    dispatched = ' (已自动派发 Agent)' if next_state != 'Done' else ''
+    return {'ok': True, 'message': f'{task_id} {from_label} → {to_label}{dispatched}'}
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -2063,6 +3062,12 @@ class Handler(BaseHTTPRequestHandler):
                 self.send_json({'ok': False, 'error': 'task_id required'}, 400)
             else:
                 self.send_json(get_task_activity(task_id))
+        elif p.startswith('/api/scheduler-state/'):
+            task_id = p.replace('/api/scheduler-state/', '')
+            if not task_id:
+                self.send_json({'ok': False, 'error': 'task_id required'}, 400)
+            else:
+                self.send_json(get_scheduler_state(task_id))
         elif p == '/api/agents-status':
             self.send_json(get_agents_status())
         elif p.startswith('/api/task-output/'):
@@ -2163,9 +3168,21 @@ class Handler(BaseHTTPRequestHandler):
                     if channel_cls and not channel_cls.validate_webhook(webhook):
                         self.send_json({'ok': False, 'error': f'{channel_cls.label} Webhook URL 无效'}, 400)
                         return
+            webhook_legacy = body.get('feishu_webhook', '').strip()
+            if webhook_legacy and 'notification' not in body:
+                body['notification'] = {'enabled': True, 'channel': 'feishu', 'webhook': webhook_legacy}
             cfg_path = DATA / 'morning_brief_config.json'
             cfg_path.write_text(json.dumps(body, ensure_ascii=False, indent=2))
             self.send_json({'ok': True, 'message': '订阅配置已保存'})
+            return
+
+        if p == '/api/scheduler-scan':
+            threshold_sec = body.get('thresholdSec', 180)
+            try:
+                result = handle_scheduler_scan(threshold_sec)
+                self.send_json(result)
+            except Exception as e:
+                self.send_json({'ok': False, 'error': f'scheduler scan failed: {e}'}, 500)
             return
 
         if p == '/api/repair-flow-order':
@@ -2173,6 +3190,33 @@ class Handler(BaseHTTPRequestHandler):
                 self.send_json(handle_repair_flow_order())
             except Exception as e:
                 self.send_json({'ok': False, 'error': f'repair flow order failed: {e}'}, 500)
+            return
+
+        if p == '/api/scheduler-retry':
+            task_id = body.get('taskId', '').strip()
+            reason = body.get('reason', '').strip()
+            if not task_id:
+                self.send_json({'ok': False, 'error': 'taskId required'}, 400)
+                return
+            self.send_json(handle_scheduler_retry(task_id, reason))
+            return
+
+        if p == '/api/scheduler-escalate':
+            task_id = body.get('taskId', '').strip()
+            reason = body.get('reason', '').strip()
+            if not task_id:
+                self.send_json({'ok': False, 'error': 'taskId required'}, 400)
+                return
+            self.send_json(handle_scheduler_escalate(task_id, reason))
+            return
+
+        if p == '/api/scheduler-rollback':
+            task_id = body.get('taskId', '').strip()
+            reason = body.get('reason', '').strip()
+            if not task_id:
+                self.send_json({'ok': False, 'error': 'taskId required'}, 400)
+                return
+            self.send_json(handle_scheduler_rollback(task_id, reason))
             return
 
         if p == '/api/morning-brief/refresh':
@@ -2580,8 +3624,23 @@ class Handler(BaseHTTPRequestHandler):
             return
 
         if p == '/api/advance-state':
-            # V8: 此功能已迁移到编排引擎 (pipeline_orchestrator.py)
-            self.send_json({'ok': False, 'error': '此功能已迁移到编排引擎'}, 410)
+            task_id = body.get('taskId', '').strip()
+            comment = body.get('comment', '').strip()
+            if not task_id:
+                self.send_json({'ok': False, 'error': 'taskId required'}, 400)
+                return
+            result = handle_advance_state(task_id, comment)
+            self.send_json(result)
+            return
+
+        if p == '/api/agent-wake':
+            agent_id = body.get('agentId', '').strip()
+            message = body.get('message', '').strip()
+            if not agent_id:
+                self.send_json({'ok': False, 'error': 'agentId required'}, 400)
+                return
+            result = wake_agent(agent_id, message)
+            self.send_json(result)
             return
 
         if p == '/api/set-model':
@@ -2711,8 +3770,8 @@ def main():
 
     migrate_notification_config()
 
-    # 启动恢复由 pipeline_orchestrator 处理
-    log.info('启动恢复由 pipeline_orchestrator 接管')
+    # 启动恢复：重新派发上次被 kill 中断的 queued 任务
+    threading.Timer(3.0, _startup_recover_queued_dispatches).start()
 
     # Problem 4: 优雅关闭
     def _graceful_shutdown(signum, frame):
