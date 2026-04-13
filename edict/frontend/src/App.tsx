@@ -15,7 +15,6 @@ import TaskModal from './components/TaskModal';
 import Toaster from './components/Toaster';
 import CourtCeremony from './components/CourtCeremony';
 import CourtDiscussion from './components/CourtDiscussion';
-// [TaskOutput] 新增：产出阁组件
 import TaskOutputPanel from './components/TaskOutputPanel';
 
 export default function App() {
@@ -101,7 +100,6 @@ export default function App() {
       {activeTab === 'templates' && <TemplatePanel />}
       {activeTab === 'morning' && <MorningPanel />}
       {activeTab === 'audit' && <AuditPanel />}
-      {/* [TaskOutput] 新增：产出阁面板 */}
       {activeTab === 'outputs' && <TaskOutputPanel />}
 
       {/* ── Overlays ── */}
