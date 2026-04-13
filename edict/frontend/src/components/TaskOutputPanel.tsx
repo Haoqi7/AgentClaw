@@ -4,13 +4,14 @@
  * 功能：
  * 1. 左侧任务列表（按任务标题搜索过滤）
  * 2. 右侧选中任务的产出文件列表，按部门分组
- * 3. 支持拖拽上传、下载、删除
+ * 3. 支持浏览器端预览（Markdown 渲染）与下载
  * 4. 文件类型图标 + 部门颜色标签
+ * 5. 只读模式：禁止上传和删除
  *
  * 侵入点：零侵入，仅在 App.tsx 中注册为 Tab 即可使用
  */
 
-import { useState, useEffect, useCallback, useRef } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 import { useStore, deptColor, type Task } from '../store';
 import { api } from '../api';
 
@@ -74,6 +75,61 @@ function fileExt(name: string): string {
 }
 
 /* ═══════════════════════════════════════════════════════════
+   Preview helper — 纯浏览器端渲染，零服务器消耗
+   ═══════════════════════════════════════════════════════════ */
+
+function previewFile(filename: string, content: string) {
+  const w = window.open('', '_blank');
+  if (!w) return;
+  const ext = fileExt(filename);
+  const isMarkdown = ext === 'md';
+  const escaped = content.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+
+  if (isMarkdown) {
+    // Markdown 文件：通过 CDN 引入 marked.js 在浏览器端渲染
+    w.document.write(`<!DOCTYPE html>
+<html lang="zh-CN"><head><meta charset="utf-8"><title>${filename}</title>
+<script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"><\/script>
+<style>
+  body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;
+      background:#1a1a2e;color:#e0e0e0;padding:0;margin:0;line-height:1.7;}
+  .container{max-width:860px;margin:0 auto;padding:32px 24px 64px;}
+  h1,h2,h3,h4,h5,h6{color:#6a9eff;margin-top:1.5em;margin-bottom:0.5em;font-weight:600;}
+  h1{font-size:1.8em;border-bottom:1px solid #333;padding-bottom:8px;}
+  h2{font-size:1.5em;border-bottom:1px solid #2a2a3a;padding-bottom:6px;}
+  a{color:#6a9eff;text-decoration:none;} a:hover{text-decoration:underline;}
+  code{background:#2a2a3a;padding:2px 6px;border-radius:3px;font-size:0.9em;color:#f0c674;}
+  pre{background:#2a2a3a;padding:16px;border-radius:6px;overflow-x:auto;margin:12px 0;}
+  pre code{background:none;padding:0;color:#e0e0e0;}
+  blockquote{border-left:3px solid #6a9eff;margin:12px 0;padding:8px 16px;color:#aaa;background:rgba(106,158,255,0.05);}
+  table{border-collapse:collapse;width:100%;margin:12px 0;}
+  th,td{border:1px solid #333;padding:8px 12px;text-align:left;}
+  th{background:#2a2a3a;font-weight:600;}
+  ul,ol{padding-left:24px;} li{margin:4px 0;}
+  hr{border:none;border-top:1px solid #333;margin:20px 0;}
+  img{max-width:100%;border-radius:6px;}
+</style>
+</head><body>
+<div class="container" id="md-content"></div>
+<script>
+  document.getElementById('md-content').innerHTML = marked.parse(document.getElementById('md-source').textContent);
+<\/script>
+<script type="text/plain" id="md-source">${escaped}</script>
+</body></html>`);
+  } else {
+    // 其他文本文件：等宽字体原样显示
+    w.document.write(`<!DOCTYPE html>
+<html lang="zh-CN"><head><meta charset="utf-8"><title>${filename}</title>
+<style>
+  body{font-family:'SF Mono','Fira Code',Consolas,monospace;font-size:13px;
+      background:#1a1a2e;color:#e0e0e0;padding:20px;white-space:pre-wrap;word-wrap:break-word;margin:0;line-height:1.6;}
+</style>
+</head><body>${escaped}</body></html>`);
+  }
+  w.document.close();
+}
+
+/* ═══════════════════════════════════════════════════════════
    Component
    ═══════════════════════════════════════════════════════════ */
 
@@ -85,11 +141,7 @@ export default function TaskOutputPanel() {
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [outputData, setOutputData] = useState<TaskOutputData | null>(null);
   const [loading, setLoading] = useState(false);
-  const [uploading, setUploading] = useState(false);
   const [deptFilter, setDeptFilter] = useState<string>('');
-  const [confirmDelete, setConfirmDelete] = useState<string | null>(null);
-  const fileInputRef = useRef<HTMLInputElement>(null);
-  const dragRef = useRef(false);
 
   // Derive task list
   const tasks = liveStatus?.tasks || [];
@@ -127,60 +179,6 @@ export default function TaskOutputPanel() {
     }
   }, [filtered.length]);
 
-  // Upload handler
-  const handleUpload = async (files: FileList | File[], dept: string) => {
-    if (!selectedId) return;
-    setUploading(true);
-    try {
-      for (const file of Array.from(files)) {
-        const formData = new FormData();
-        formData.append('file', file);
-        formData.append('dept', dept);
-        await fetch(`/api/outputs/${encodeURIComponent(selectedId)}/upload`, {
-          method: 'POST',
-          body: formData,
-        });
-      }
-      toast('上传成功');
-      loadOutput(selectedId);
-    } catch (e) {
-      toast('上传失败', 'err');
-    } finally {
-      setUploading(false);
-      if (fileInputRef.current) fileInputRef.current.value = '';
-    }
-  };
-
-  // Delete handler
-  const handleDelete = async (filename: string) => {
-    if (!selectedId) return;
-    if (confirmDelete !== filename) {
-      setConfirmDelete(filename);
-      setTimeout(() => setConfirmDelete(null), 3000);
-      return;
-    }
-    try {
-      await api.taskOutputDelete(selectedId, filename);
-      toast('已删除');
-      loadOutput(selectedId);
-    } catch (e) {
-      toast('删除失败', 'err');
-    } finally {
-      setConfirmDelete(null);
-    }
-  };
-
-  // Drag & drop
-  const onDragOver = (e: React.DragEvent) => { e.preventDefault(); dragRef.current = true; };
-  const onDragLeave = (e: React.DragEvent) => { e.preventDefault(); dragRef.current = false; };
-  const onDrop = (e: React.DragEvent) => {
-    e.preventDefault();
-    dragRef.current = false;
-    if (e.dataTransfer.files.length > 0 && selectedId) {
-      handleUpload(e.dataTransfer.files, deptFilter || '尚书省');
-    }
-  };
-
   // Group artifacts by dept
   const artifacts = outputData?.artifacts || [];
   const grouped = artifacts.reduce<Record<string, Artifact[]>>((acc, a) => {
@@ -192,6 +190,8 @@ export default function TaskOutputPanel() {
   const filteredGrouped = deptFilter
     ? Object.fromEntries([[deptFilter, grouped[deptFilter] || []]])
     : grouped;
+
+  const PREVIEW_EXTENSIONS = ['md', 'txt', 'json', 'yaml', 'yml', 'py', 'js', 'ts', 'sh', 'csv', 'html', 'css', 'sql', 'log'];
 
   return (
     <div style={{ display: 'flex', height: 'calc(100vh - 110px)', gap: 0 }}>
@@ -257,7 +257,7 @@ export default function TaskOutputPanel() {
               </div>
               {t.state === 'Done' && (
                 <div style={{ fontSize: 11, color: '#2ecc8a', marginTop: 2 }}>
-                  ✅ 已完成
+                  已完成
                 </div>
               )}
             </div>
@@ -271,18 +271,14 @@ export default function TaskOutputPanel() {
         </div>
       </div>
 
-      {/* ── Right: Output Panel ── */}
-      <div style={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}
-        onDragOver={onDragOver}
-        onDragLeave={onDragLeave}
-        onDrop={onDrop}
-      >
+      {/* ── Right: Output Panel (只读) ── */}
+      <div style={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
         {!selectedTask ? (
           <div style={{
             flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center',
             color: 'var(--muted, #555)', fontSize: 14,
           }}>
-            ← 请选择一个任务查看产出
+            请选择一个任务查看产出
           </div>
         ) : (
           <>
@@ -316,37 +312,7 @@ export default function TaskOutputPanel() {
                     <option key={d} value={d}>{d}</option>
                   ))}
                 </select>
-                {/* Upload button */}
-                <button
-                  onClick={() => fileInputRef.current?.click()}
-                  disabled={uploading}
-                  style={{
-                    padding: '6px 14px', borderRadius: 6, fontSize: 12, cursor: uploading ? 'wait' : 'pointer',
-                    background: '#4a6fff', color: '#fff', border: 'none', fontWeight: 600,
-                    opacity: uploading ? 0.6 : 1,
-                  }}
-                >
-                  {uploading ? '上传中...' : '上传文件'}
-                </button>
-                <input
-                  ref={fileInputRef}
-                  type="file"
-                  multiple
-                  style={{ display: 'none' }}
-                  onChange={(e) => {
-                    if (e.target.files?.length) handleUpload(e.target.files, deptFilter || '尚书省');
-                  }}
-                />
               </div>
-            </div>
-
-            {/* Drag hint */}
-            <div style={{
-              padding: '6px 20px', fontSize: 11, color: 'var(--muted, #555)',
-              borderBottom: '1px solid var(--border, #2a2a3a)',
-              background: dragRef.current ? 'rgba(74, 111, 255, 0.08)' : 'transparent',
-            }}>
-              拖拽文件到此处上传 · 文件将保存到 <code style={{ color: '#6a9eff' }}>~/.openclaw/outputs/{selectedTask.id}/</code> 目录
             </div>
 
             {/* Content */}
@@ -364,10 +330,7 @@ export default function TaskOutputPanel() {
                   <div style={{ fontSize: 48, marginBottom: 12 }}>📦</div>
                   <div style={{ fontSize: 14, marginBottom: 6 }}>暂无产出文件</div>
                   <div style={{ fontSize: 12 }}>
-                    点击「上传文件」或拖拽文件到此处，为任务添加产出物
-                  </div>
-                  <div style={{ fontSize: 11, marginTop: 12, color: '#444' }}>
-                    各部门执行过程中产生的文档、代码、报告等文件均可上传到此处统一管理
+                    各部门执行过程中产生的文档、代码、报告等文件将自动汇聚于此
                   </div>
                 </div>
               )}
@@ -424,25 +387,15 @@ export default function TaskOutputPanel() {
                           </div>
                         </div>
 
-                        {/* Actions */}
+                        {/* Actions: only Preview + Download */}
                         <div style={{ display: 'flex', gap: 6, flexShrink: 0 }}>
-                          {/* Preview (text files) */}
-                          {['md', 'txt', 'json', 'yaml', 'yml', 'py', 'js', 'ts', 'sh', 'csv', 'html', 'css', 'sql', 'log'].includes(fileExt(f.name)) && (
+                          {PREVIEW_EXTENSIONS.includes(fileExt(f.name)) && (
                             <button
                               onClick={async () => {
                                 try {
                                   const data = await api.taskOutputPreview(selectedId!, f.name);
                                   if (data.ok && data.content) {
-                                    // Open in new window
-                                    const w = window.open('', '_blank');
-                                    if (w) {
-                                      w.document.write(`
-                                        <html><head><title>${f.name}</title>
-                                        <style>body{font-family:monospace;font-size:13px;background:#1a1a2e;color:#e0e0e0;padding:20px;white-space:pre-wrap;word-wrap:break-word;margin:0;}</style>
-                                        </head><body>${(data.content as string).replace(/</g, '&lt;').replace(/>/g, '&gt;')}</body></html>
-                                      `);
-                                      w.document.close();
-                                    }
+                                    previewFile(f.name, data.content as string);
                                   }
                                 } catch (e) { toast('预览失败', 'err'); }
                               }}
@@ -454,7 +407,6 @@ export default function TaskOutputPanel() {
                               预览
                             </button>
                           )}
-                          {/* Download */}
                           <a
                             href={`/api/outputs/${encodeURIComponent(selectedId!)}/download/${encodeURIComponent(f.name)}`}
                             download={f.name}
@@ -466,18 +418,6 @@ export default function TaskOutputPanel() {
                           >
                             下载
                           </a>
-                          {/* Delete */}
-                          <button
-                            onClick={() => handleDelete(f.name)}
-                            style={{
-                              padding: '4px 10px', borderRadius: 4, fontSize: 11, cursor: 'pointer',
-                              background: confirmDelete === f.name ? 'rgba(255, 82, 112, 0.2)' : 'transparent',
-                              border: `1px solid ${confirmDelete === f.name ? '#ff5270' : '#444'}`,
-                              color: confirmDelete === f.name ? '#ff5270' : '#888',
-                            }}
-                          >
-                            {confirmDelete === f.name ? '确认删除?' : '删除'}
-                          </button>
                         </div>
                       </div>
                     ))}
