@@ -20,7 +20,8 @@ WORKDIR /app/AgentClaw
 RUN if [ -f edict/backend/requirements.txt ]; then python3 -m pip install --no-cache-dir --break-system-packages -r edict/backend/requirements.txt; fi
 
 # Build frontend React app
-RUN cd /app/AgentClaw/edict/frontend && npm install && npm run build
+# RUN cd /app/AgentClaw/edict/frontend && npm install && npm run build
+RUN cd /app/AgentClaw/edict/frontend && npm ci
 
 COPY docker/entrypoint.sh /entrypoint.sh
 RUN chmod +x /entrypoint.sh
