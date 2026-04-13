@@ -157,7 +157,14 @@ def get_hb(agent_id, live_tasks):
     return {'status':'idle','label':'⚪ 待命','ageSec':None}
 
 def main():
-    tasks = rj(DATA/'tasks_source.json', [])
+    tasks_raw = rj(DATA/'tasks_source.json', [])
+    # 兼容新旧格式：新格式为 {"tasks":[...], ...} 字典，旧格式为 [...] 列表
+    if isinstance(tasks_raw, dict):
+        tasks = tasks_raw.get('tasks', [])
+    elif isinstance(tasks_raw, list):
+        tasks = tasks_raw
+    else:
+        tasks = []
     live  = rj(DATA/'live_status.json', {})
     live_tasks = live.get('tasks', [])
 

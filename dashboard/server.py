@@ -309,14 +309,24 @@ def _iter_task_data_dirs():
 
 
 def _task_source_score(task_file: pathlib.Path):
-    """给任务源打分：优先非 demo 任务，其次任务数，再按文件更新时间。"""
+    """给任务源打分：优先非 demo 任务，其次任务数，再按文件更新时间。
+    兼容新旧格式：新格式 {"tasks":[...], ...} 字典，旧格式 [...] 列表。
+    """
     try:
-        tasks = atomic_json_read(task_file, [])
+        raw = atomic_json_read(task_file, [])
     except Exception:
+        raw = []
+    # 兼容新旧格式
+    if isinstance(raw, dict):
+        tasks = raw.get("tasks", [])
+    elif isinstance(raw, list):
+        tasks = raw
+    else:
         tasks = []
+    # 确保任务是列表且每个元素是字典
     if not isinstance(tasks, list):
         tasks = []
-    non_demo = sum(1 for t in tasks if str((t or {}).get('id', '')) and not str((t or {}).get('id', '')).startswith('JJC-DEMO'))
+    non_demo = sum(1 for t in tasks if isinstance(t, dict) and str(t.get('id', '')) and not str(t.get('id', '')).startswith('JJC-DEMO'))
     try:
         mtime = task_file.stat().st_mtime
     except Exception:
@@ -2095,13 +2105,6 @@ class Handler(BaseHTTPRequestHandler):
             self.send_json(data if data else {'ok': False, 'error': 'session not found'}, 200 if data else 404)
         elif p == '/api/court-discuss/fate':
             self.send_json({'ok': True, 'event': cd_fate()})
-        elif p.startswith('/api/scheduler-state/'):
-            # 前端兼容：返回空状态（V8 中 scheduler 功能已由 pipeline_orchestrator 接管）
-            task_id = p.replace('/api/scheduler-state/', '')
-            if not task_id:
-                self.send_json({'ok': False, 'error': 'task_id required'}, 400)
-            else:
-                self.send_json({'ok': True, 'taskId': task_id, 'state': None, 'reason': 'V8 scheduler handled by pipeline_orchestrator'})
         elif self._serve_static(p):
             pass  # 已由 _serve_static 处理 (JS/CSS/图片等)
         else:
@@ -2161,7 +2164,7 @@ class Handler(BaseHTTPRequestHandler):
                         self.send_json({'ok': False, 'error': f'{channel_cls.label} Webhook URL 无效'}, 400)
                         return
             cfg_path = DATA / 'morning_brief_config.json'
-            atomic_json_write(cfg_path, body)
+            cfg_path.write_text(json.dumps(body, ensure_ascii=False, indent=2))
             self.send_json({'ok': True, 'message': '订阅配置已保存'})
             return
 
@@ -2456,7 +2459,7 @@ class Handler(BaseHTTPRequestHandler):
                 excluded.add(task_id)
                 msg = f'{task_id} 已停止监察'
             data['excluded_tasks'] = sorted(excluded)
-            atomic_json_write(exclude_file, data)
+            exclude_file.write_text(json.dumps(data, ensure_ascii=False, indent=2))
 
             # 即时清理 pipeline_audit.json 中的 watched_tasks/violations/notifications
             try:
@@ -2619,35 +2622,6 @@ class Handler(BaseHTTPRequestHandler):
                 return cfg
             atomic_json_update(DATA / 'agent_config.json', _set_channel, {})
             self.send_json({'ok': True, 'message': f'派发渠道已切换为 {channel}'})
-
-        # ── Agent 唤醒 ──
-        elif p == '/api/agent-wake':
-            agent_id = body.get('agentId', '').strip()
-            if not agent_id:
-                self.send_json({'ok': False, 'error': 'agentId required'}, 400)
-                return
-            try:
-                from agent_notifier import notify_agent_with_retry
-                result = notify_agent_with_retry(agent_id, f'[手动唤醒] 请检查待处理任务', session_id=f'manual-{agent_id}-{int(_time.time())}')
-                if result.success:
-                    self.send_json({'ok': True, 'message': f'Agent {agent_id} 唤醒成功'})
-                else:
-                    self.send_json({'ok': False, 'error': f'唤醒失败: {result.stderr[:200]}'}, 500)
-            except Exception as e:
-                self.send_json({'ok': False, 'error': str(e)}, 500)
-
-        # ── Scheduler 兼容端点（V8 中由 pipeline_orchestrator 接管）──
-        elif p == '/api/scheduler-scan':
-            self.send_json({'ok': True, 'message': 'V8 中由 pipeline_orchestrator 自动处理停滞检测', 'count': 0})
-
-        elif p == '/api/scheduler-retry':
-            self.send_json({'ok': True, 'message': 'V8 中由 pipeline_orchestrator 自动重试'})
-
-        elif p == '/api/scheduler-escalate':
-            self.send_json({'ok': True, 'message': 'V8 中由 pipeline_orchestrator 自动上报监察'})
-
-        elif p == '/api/scheduler-rollback':
-            self.send_json({'ok': True, 'message': 'V8 中由 pipeline_orchestrator 自动回滚'})
 
         # ── 朝堂议政 POST ──
         elif p == '/api/court-discuss/start':

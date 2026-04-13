@@ -139,18 +139,23 @@ def _next_message_id(kanban_data):
     return f"msg-{counter:04d}"
 
 
-def _normalize_kanban_data(data):
-    """将看板数据统一为 {"tasks": [...], ...} 格式。
+def _ensure_kanban_dict(kanban_data):
+    """确保看板数据为字典格式。
 
-    兼容旧格式（纯列表）和 atomic_json_update 传入的原始 JSON 结构。
+    兼容新旧两种格式：
+    - 新格式: {"tasks": [...], "global_counters": {...}}
+    - 旧格式: [...]
+
+    Args:
+        kanban_data: 看板数据（字典或列表）
+
+    Returns:
+        dict: 标准化后的看板字典
     """
-    if isinstance(data, list):
-        return {"tasks": data, "global_counters": {}}
-    if isinstance(data, dict):
-        # 确保有 tasks 字段
-        if "tasks" not in data:
-            return {"tasks": [], "global_counters": data}
-        return data
+    if isinstance(kanban_data, dict):
+        return kanban_data
+    if isinstance(kanban_data, list):
+        return {"tasks": kanban_data, "global_counters": {}}
     return {"tasks": [], "global_counters": {}}
 
 
@@ -158,7 +163,7 @@ def find_task(kanban_data, task_id):
     """在看板数据中查找指定任务。
 
     Args:
-        kanban_data: 看板数据（可能是 dict 或 list，自动兼容）
+        kanban_data: 看板数据（字典或列表，由 _load_kanban 或 atomic_json_update 返回）
         task_id: 任务ID（如 "JJC-20260412-001"）
 
     Returns:
@@ -166,7 +171,8 @@ def find_task(kanban_data, task_id):
     """
     if not kanban_data:
         return None
-    data = _normalize_kanban_data(kanban_data)
+    # 防御性处理：kanban_data 可能是 list（旧格式）或 dict（新格式）
+    data = _ensure_kanban_dict(kanban_data)
     for task in data.get("tasks", []):
         if isinstance(task, dict) and task.get("id") == task_id:
             return task
@@ -208,7 +214,7 @@ def add_message(task_id, msg_type, from_agent, to_agent, content, structured=Non
     _created_msg_id = [None]  # 闭包捕获 msg_id
 
     def _modifier(data):
-        data = _normalize_kanban_data(data)
+        data = _ensure_kanban_dict(data)
         task = find_task(data, task_id)
         if not task:
             raise ValueError(f"任务不存在: {task_id}")
@@ -274,8 +280,7 @@ def mark_message_read(kanban_data, msg_id):
     """
     if not kanban_data:
         return False
-    data = _normalize_kanban_data(kanban_data)
-    for task in data.get("tasks", []):
+    for task in kanban_data.get("tasks", []):
         for msg in task.get("kanban_messages", []):
             if msg.get("id") == msg_id:
                 msg["read"] = True
@@ -381,7 +386,7 @@ def update_task_state(task_id, new_state):
         ValueError: 任务不存在
     """
     def _modifier(data):
-        data = _normalize_kanban_data(data)
+        data = _ensure_kanban_dict(data)
         task = find_task(data, task_id)
         if not task:
             raise ValueError(f"任务不存在: {task_id}")
@@ -412,7 +417,7 @@ def log_flow(task_id, from_agent, to_agent, description):
         description: 流转描述（人类可读）
     """
     def _modifier(data):
-        data = _normalize_kanban_data(data)
+        data = _ensure_kanban_dict(data)
         task = find_task(data, task_id)
         if not task:
             logger.warning(f"[kanban] log_flow: 任务不存在 {task_id}")
@@ -453,7 +458,7 @@ def append_agent_log(task_id, agent_id, text):
         text: 日志文本内容
     """
     def _modifier(data):
-        data = _normalize_kanban_data(data)
+        data = _ensure_kanban_dict(data)
         task = find_task(data, task_id)
         if not task:
             return data
@@ -484,7 +489,7 @@ def add_audit_flag(task_id, flag_type, message):
         message: 审计描述
     """
     def _modifier(data):
-        data = _normalize_kanban_data(data)
+        data = _ensure_kanban_dict(data)
         task = find_task(data, task_id)
         if not task:
             return data
@@ -514,7 +519,7 @@ def record_dispatch_status(task_id, agent_id, status):
         status: 派发状态（"success" / "failed" / "queued"）
     """
     def _modifier(data):
-        data = _normalize_kanban_data(data)
+        data = _ensure_kanban_dict(data)
         task = find_task(data, task_id)
         if not task:
             return data
@@ -544,7 +549,7 @@ def update_task_fields(task_id, **fields):
         ValueError: 任务不存在
     """
     def _modifier(data):
-        data = _normalize_kanban_data(data)
+        data = _ensure_kanban_dict(data)
         task = find_task(data, task_id)
         if not task:
             raise ValueError(f"任务不存在: {task_id}")
@@ -574,7 +579,7 @@ def mark_messages_read_atomic(task_id, msg_ids):
     msg_id_set = set(msg_ids)
 
     def _modifier(data):
-        data = _normalize_kanban_data(data)
+        data = _ensure_kanban_dict(data)
         task = find_task(data, task_id)
         if not task:
             return data
