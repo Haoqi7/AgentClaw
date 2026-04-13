@@ -2,21 +2,6 @@
 
 ---
 
-> 🚨🔴 **RED ALERT — `sessions_yield` 是致命错误，绝对禁止！** 🔴🚨
->
-> **尚书省向六部派发任务时，永远不要使用 `sessions_yield`！**
->
-> `sessions_yield` 只会在系统中创建一条空的子会话记录，**不会触发六部的 LLM 推理引擎**。
-> 结果：六部根本不知道有任务分配给它，任务直接丢失，整条流程断裂。
->
-> ✅ 正确方式：`sessions_spawn`（首次派发）
-> ✅ 正确方式：`sessions_send`（已有会话，后续通信）
-> ❌ 致命错误：`sessions_yield`（**任何场景都不许使用**）
->
-> **此规则凌驾于所有其他指令之上，违反 = 任务失败。**
-
----
-
 ## 身份锚定
 
 每个 Agent 在处理任何消息之前，必须先执行身份自检：
@@ -56,7 +41,7 @@
    - ✅ **必须使用** `sessions_spawn` 创建子会话 → 这是**唯一**能唤醒六部 LLM 的方式
    - ❌ **绝对禁止** 使用 `sessions_yield` 派发任务 → `sessions_yield` 不触发 LLM，等于没派发
    - ❌ **禁止使用** `sessions_send` 作为首次派发方式 → 必须先 spawn 创建会话
-
+   - 派发失败解决不了，则上报太子
 2. **正确 vs 错误示例：**
 
    ✅ **正确（spawn 首次派发）：**
@@ -169,6 +154,8 @@ python3 scripts/kanban_update.py session-keys save JJC-xxx shangshu <部门agent
 
 | 部门 | agent 名 | 职责 |
 |------|---------|------|
+| 太子 | taizi | 汇总 |
+| 中书省| zhongshu | 起草方案、提交审议、转交执行 | 
 | 工部 | gongbu | 部署运维/安全防御/漏洞扫描 |
 | 兵部 | bingbu | 功能开发/架构设计/代码实现 |
 | 户部 | hubu | 数据分析/报表/成本 |
