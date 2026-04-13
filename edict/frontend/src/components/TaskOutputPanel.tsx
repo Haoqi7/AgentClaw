@@ -4,14 +4,13 @@
  * 功能：
  * 1. 左侧任务列表（按任务标题搜索过滤）
  * 2. 右侧选中任务的产出文件列表，按部门分组
- * 3. 支持浏览器端预览（Markdown 渲染）与下载
+ * 3. 支持拖拽上传、下载、删除
  * 4. 文件类型图标 + 部门颜色标签
- * 5. 只读模式：禁止上传和删除
  *
  * 侵入点：零侵入，仅在 App.tsx 中注册为 Tab 即可使用
  */
 
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 import { useStore, deptColor, type Task } from '../store';
 import { api } from '../api';
 
@@ -75,73 +74,58 @@ function fileExt(name: string): string {
 }
 
 /* ═══════════════════════════════════════════════════════════
-   Preview helper — 纯浏览器端渲染，零服务器消耗
-   ═══════════════════════════════════════════════════════════ */
-
-function previewFile(filename: string, content: string) {
-  const w = window.open('', '_blank');
-  if (!w) return;
-  const ext = fileExt(filename);
-  const isMarkdown = ext === 'md';
-  const escaped = content.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
-
-  if (isMarkdown) {
-    // Markdown 文件：通过 CDN 引入 marked.js 在浏览器端渲染
-    w.document.write(`<!DOCTYPE html>
-<html lang="zh-CN"><head><meta charset="utf-8"><title>${filename}</title>
-<script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"><\/script>
-<style>
-  body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;
-      background:#1a1a2e;color:#e0e0e0;padding:0;margin:0;line-height:1.7;}
-  .container{max-width:860px;margin:0 auto;padding:32px 24px 64px;}
-  h1,h2,h3,h4,h5,h6{color:#6a9eff;margin-top:1.5em;margin-bottom:0.5em;font-weight:600;}
-  h1{font-size:1.8em;border-bottom:1px solid #333;padding-bottom:8px;}
-  h2{font-size:1.5em;border-bottom:1px solid #2a2a3a;padding-bottom:6px;}
-  a{color:#6a9eff;text-decoration:none;} a:hover{text-decoration:underline;}
-  code{background:#2a2a3a;padding:2px 6px;border-radius:3px;font-size:0.9em;color:#f0c674;}
-  pre{background:#2a2a3a;padding:16px;border-radius:6px;overflow-x:auto;margin:12px 0;}
-  pre code{background:none;padding:0;color:#e0e0e0;}
-  blockquote{border-left:3px solid #6a9eff;margin:12px 0;padding:8px 16px;color:#aaa;background:rgba(106,158,255,0.05);}
-  table{border-collapse:collapse;width:100%;margin:12px 0;}
-  th,td{border:1px solid #333;padding:8px 12px;text-align:left;}
-  th{background:#2a2a3a;font-weight:600;}
-  ul,ol{padding-left:24px;} li{margin:4px 0;}
-  hr{border:none;border-top:1px solid #333;margin:20px 0;}
-  img{max-width:100%;border-radius:6px;}
-</style>
-</head><body>
-<div class="container" id="md-content"></div>
-<script>
-  document.getElementById('md-content').innerHTML = marked.parse(document.getElementById('md-source').textContent);
-<\/script>
-<script type="text/plain" id="md-source">${escaped}</script>
-</body></html>`);
-  } else {
-    // 其他文本文件：等宽字体原样显示
-    w.document.write(`<!DOCTYPE html>
-<html lang="zh-CN"><head><meta charset="utf-8"><title>${filename}</title>
-<style>
-  body{font-family:'SF Mono','Fira Code',Consolas,monospace;font-size:13px;
-      background:#1a1a2e;color:#e0e0e0;padding:20px;white-space:pre-wrap;word-wrap:break-word;margin:0;line-height:1.6;}
-</style>
-</head><body>${escaped}</body></html>`);
-  }
-  w.document.close();
-}
-
-/* ═══════════════════════════════════════════════════════════
    Component
    ═══════════════════════════════════════════════════════════ */
+
+/* ═══════════════════════════════════════════════════════════
+   Markdown 渲染样式
+   ═══════════════════════════════════════════════════════════ */
+const MD_STYLES = `.markdown-body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,sans-serif;font-size:15px;line-height:1.7;color:#d0d0d0}
+.markdown-body h1,.markdown-body h2,.markdown-body h3{margin:1em 0 .6em;font-weight:600;color:#e8e8e8;border-bottom:1px solid #333;padding-bottom:.3em}
+.markdown-body h1{font-size:1.5em}.markdown-body h2{font-size:1.3em}.markdown-body h3{font-size:1.15em}
+.markdown-body p{margin:.6em 0}.markdown-body ul,.markdown-body ol{padding-left:2em;margin:.5em 0}
+.markdown-body li{margin:.2em 0}.markdown-body code{background:#2a2a4a;padding:2px 6px;border-radius:4px;font-size:.9em;color:#9ae}
+.markdown-body pre{background:#12121f;padding:14px;border-radius:8px;overflow-x:auto;margin:.8em 0}
+.markdown-body pre code{background:none;padding:0;color:#d0d0d0}
+.markdown-body blockquote{border-left:4px solid #4a6fff;padding:.5em 1em;margin:.8em 0;background:rgba(74,111,255,.06);color:#b0b0cc}
+.markdown-body table{border-collapse:collapse;width:100%;margin:.8em 0}
+.markdown-body th,.markdown-body td{border:1px solid #333;padding:8px 12px;text-align:left}
+.markdown-body th{background:#22223a;font-weight:600;color:#e0e0e0}
+.markdown-body a{color:#6a9eff;text-decoration:none}.markdown-body a:hover{text-decoration:underline}
+.markdown-body hr{border:none;border-top:1px solid #333;margin:1.5em 0}
+.markdown-body img{max-width:100%;border-radius:8px}`;
+
+function ensureMarked() {
+  if ((window as any).marked) return;
+  if (!document.getElementById('marked-cdn')) {
+    const s = document.createElement('script');
+    s.id = 'marked-cdn';
+    s.src = 'https://cdn.jsdelivr.net/npm/marked/marked.min.js';
+    document.head.appendChild(s);
+  }
+  if (!document.getElementById('marked-style')) {
+    const st = document.createElement('style');
+    st.id = 'marked-style';
+    st.textContent = MD_STYLES;
+    document.head.appendChild(st);
+  }
+}
 
 export default function TaskOutputPanel() {
   const liveStatus = useStore((s) => s.liveStatus);
   const toast = useStore((s) => s.toast);
+  useEffect(() => { ensureMarked(); }, []);
 
   const [search, setSearch] = useState('');
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [outputData, setOutputData] = useState<TaskOutputData | null>(null);
   const [loading, setLoading] = useState(false);
+  const [uploading, setUploading] = useState(false);
   const [deptFilter, setDeptFilter] = useState<string>('');
+  const [confirmDelete, setConfirmDelete] = useState<string | null>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
+  const dragRef = useRef(false);
+  const [preview, setPreview] = useState<{ name: string; content: string } | null>(null);
 
   // Derive task list
   const tasks = liveStatus?.tasks || [];
@@ -179,6 +163,60 @@ export default function TaskOutputPanel() {
     }
   }, [filtered.length]);
 
+  // Upload handler
+  const handleUpload = async (files: FileList | File[], dept: string) => {
+    if (!selectedId) return;
+    setUploading(true);
+    try {
+      for (const file of Array.from(files)) {
+        const formData = new FormData();
+        formData.append('file', file);
+        formData.append('dept', dept);
+        await fetch(`/api/outputs/${encodeURIComponent(selectedId)}/upload`, {
+          method: 'POST',
+          body: formData,
+        });
+      }
+      toast('上传成功');
+      loadOutput(selectedId);
+    } catch (e) {
+      toast('上传失败', 'err');
+    } finally {
+      setUploading(false);
+      if (fileInputRef.current) fileInputRef.current.value = '';
+    }
+  };
+
+  // Delete handler
+  const handleDelete = async (filename: string) => {
+    if (!selectedId) return;
+    if (confirmDelete !== filename) {
+      setConfirmDelete(filename);
+      setTimeout(() => setConfirmDelete(null), 3000);
+      return;
+    }
+    try {
+      await api.taskOutputDelete(selectedId, filename);
+      toast('已删除');
+      loadOutput(selectedId);
+    } catch (e) {
+      toast('删除失败', 'err');
+    } finally {
+      setConfirmDelete(null);
+    }
+  };
+
+  // Drag & drop
+  const onDragOver = (e: React.DragEvent) => { e.preventDefault(); dragRef.current = true; };
+  const onDragLeave = (e: React.DragEvent) => { e.preventDefault(); dragRef.current = false; };
+  const onDrop = (e: React.DragEvent) => {
+    e.preventDefault();
+    dragRef.current = false;
+    if (e.dataTransfer.files.length > 0 && selectedId) {
+      handleUpload(e.dataTransfer.files, deptFilter || '尚书省');
+    }
+  };
+
   // Group artifacts by dept
   const artifacts = outputData?.artifacts || [];
   const grouped = artifacts.reduce<Record<string, Artifact[]>>((acc, a) => {
@@ -190,8 +228,6 @@ export default function TaskOutputPanel() {
   const filteredGrouped = deptFilter
     ? Object.fromEntries([[deptFilter, grouped[deptFilter] || []]])
     : grouped;
-
-  const PREVIEW_EXTENSIONS = ['md', 'txt', 'json', 'yaml', 'yml', 'py', 'js', 'ts', 'sh', 'csv', 'html', 'css', 'sql', 'log'];
 
   return (
     <div style={{ display: 'flex', height: 'calc(100vh - 110px)', gap: 0 }}>
@@ -257,7 +293,7 @@ export default function TaskOutputPanel() {
               </div>
               {t.state === 'Done' && (
                 <div style={{ fontSize: 11, color: '#2ecc8a', marginTop: 2 }}>
-                  已完成
+                  ✅ 已完成
                 </div>
               )}
             </div>
@@ -271,14 +307,18 @@ export default function TaskOutputPanel() {
         </div>
       </div>
 
-      {/* ── Right: Output Panel (只读) ── */}
-      <div style={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
+      {/* ── Right: Output Panel ── */}
+      <div style={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}
+        onDragOver={onDragOver}
+        onDragLeave={onDragLeave}
+        onDrop={onDrop}
+      >
         {!selectedTask ? (
           <div style={{
             flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center',
             color: 'var(--muted, #555)', fontSize: 14,
           }}>
-            请选择一个任务查看产出
+            ← 请选择一个任务查看产出
           </div>
         ) : (
           <>
@@ -312,7 +352,37 @@ export default function TaskOutputPanel() {
                     <option key={d} value={d}>{d}</option>
                   ))}
                 </select>
+                {/* Upload button */}
+                <button
+                  onClick={() => fileInputRef.current?.click()}
+                  disabled={uploading}
+                  style={{
+                    padding: '6px 14px', borderRadius: 6, fontSize: 12, cursor: uploading ? 'wait' : 'pointer',
+                    background: '#4a6fff', color: '#fff', border: 'none', fontWeight: 600,
+                    opacity: uploading ? 0.6 : 1,
+                  }}
+                >
+                  {uploading ? '上传中...' : '上传文件'}
+                </button>
+                <input
+                  ref={fileInputRef}
+                  type="file"
+                  multiple
+                  style={{ display: 'none' }}
+                  onChange={(e) => {
+                    if (e.target.files?.length) handleUpload(e.target.files, deptFilter || '尚书省');
+                  }}
+                />
               </div>
+            </div>
+
+            {/* Drag hint */}
+            <div style={{
+              padding: '6px 20px', fontSize: 11, color: 'var(--muted, #555)',
+              borderBottom: '1px solid var(--border, #2a2a3a)',
+              background: dragRef.current ? 'rgba(74, 111, 255, 0.08)' : 'transparent',
+            }}>
+              拖拽文件到此处上传 · 文件将保存到 <code style={{ color: '#6a9eff' }}>~/.openclaw/outputs/{selectedTask.id}/</code> 目录
             </div>
 
             {/* Content */}
@@ -330,7 +400,10 @@ export default function TaskOutputPanel() {
                   <div style={{ fontSize: 48, marginBottom: 12 }}>📦</div>
                   <div style={{ fontSize: 14, marginBottom: 6 }}>暂无产出文件</div>
                   <div style={{ fontSize: 12 }}>
-                    各部门执行过程中产生的文档、代码、报告等文件将自动汇聚于此
+                    点击「上传文件」或拖拽文件到此处，为任务添加产出物
+                  </div>
+                  <div style={{ fontSize: 11, marginTop: 12, color: '#444' }}>
+                    各部门执行过程中产生的文档、代码、报告等文件均可上传到此处统一管理
                   </div>
                 </div>
               )}
@@ -387,15 +460,18 @@ export default function TaskOutputPanel() {
                           </div>
                         </div>
 
-                        {/* Actions: only Preview + Download */}
+                        {/* Actions */}
                         <div style={{ display: 'flex', gap: 6, flexShrink: 0 }}>
-                          {PREVIEW_EXTENSIONS.includes(fileExt(f.name)) && (
+                          {/* Preview (text files) */}
+                          {['md', 'txt', 'json', 'yaml', 'yml', 'py', 'js', 'ts', 'sh', 'csv', 'html', 'css', 'sql', 'log'].includes(fileExt(f.name)) && (
                             <button
                               onClick={async () => {
                                 try {
                                   const data = await api.taskOutputPreview(selectedId!, f.name);
                                   if (data.ok && data.content) {
-                                    previewFile(f.name, data.content as string);
+                                    setPreview({ name: f.name, content: data.content as string });
+                                  } else {
+                                    toast(data.error || '文件为空', 'err');
                                   }
                                 } catch (e) { toast('预览失败', 'err'); }
                               }}
@@ -407,6 +483,7 @@ export default function TaskOutputPanel() {
                               预览
                             </button>
                           )}
+                          {/* Download */}
                           <a
                             href={`/api/outputs/${encodeURIComponent(selectedId!)}/download/${encodeURIComponent(f.name)}`}
                             download={f.name}
@@ -418,6 +495,18 @@ export default function TaskOutputPanel() {
                           >
                             下载
                           </a>
+                          {/* Delete */}
+                          <button
+                            onClick={() => handleDelete(f.name)}
+                            style={{
+                              padding: '4px 10px', borderRadius: 4, fontSize: 11, cursor: 'pointer',
+                              background: confirmDelete === f.name ? 'rgba(255, 82, 112, 0.2)' : 'transparent',
+                              border: `1px solid ${confirmDelete === f.name ? '#ff5270' : '#444'}`,
+                              color: confirmDelete === f.name ? '#ff5270' : '#888',
+                            }}
+                          >
+                            {confirmDelete === f.name ? '确认删除?' : '删除'}
+                          </button>
                         </div>
                       </div>
                     ))}
@@ -428,6 +517,76 @@ export default function TaskOutputPanel() {
           </>
         )}
       </div>
+
+      {/* ── Preview Modal ── */}
+      {preview && (
+        <div
+          onClick={() => setPreview(null)}
+          style={{
+            position: 'fixed', top: 0, left: 0, right: 0, bottom: 0,
+            background: 'rgba(0,0,0,0.6)', zIndex: 9999,
+            display: 'flex', alignItems: 'center', justifyContent: 'center',
+          }}
+        >
+          <div
+            onClick={(e) => e.stopPropagation()}
+            style={{
+              width: '80vw', maxWidth: 900, height: '78vh', maxHeight: 700,
+              background: '#1a1a2e', borderRadius: 12,
+              border: '1px solid #333', display: 'flex', flexDirection: 'column',
+              boxShadow: '0 8px 32px rgba(0,0,0,0.5)',
+            }}
+          >
+            {/* Modal header */}
+            <div style={{
+              padding: '14px 20px', borderBottom: '1px solid #2a2a3a',
+              display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexShrink: 0,
+            }}>
+              <div style={{ fontSize: 14, fontWeight: 600, color: '#e0e0e0' }}>
+                {fileIcon(preview.name)} {preview.name}
+              </div>
+              <div style={{ display: 'flex', gap: 8 }}>
+                <a
+                  href={`/api/outputs/${encodeURIComponent(selectedId!)}/download/${encodeURIComponent(preview.name)}`}
+                  download={preview.name}
+                  style={{
+                    padding: '4px 12px', borderRadius: 4, fontSize: 12, textDecoration: 'none',
+                    background: 'rgba(46,204,138,0.1)', border: '1px solid rgba(46,204,138,0.3)', color: '#2ecc8a',
+                  }}
+                >下载</a>
+                <button
+                  onClick={() => setPreview(null)}
+                  style={{
+                    padding: '4px 12px', borderRadius: 4, fontSize: 14, cursor: 'pointer',
+                    background: 'rgba(255,82,112,0.1)', border: '1px solid rgba(255,82,112,0.3)', color: '#ff5270',
+                  }}
+                >✕</button>
+              </div>
+            </div>
+            {/* Modal body */}
+            <div style={{
+              flex: 1, overflow: 'auto', padding: '20px 24px',
+              fontSize: 14, lineHeight: 1.7, color: '#d0d0d0',
+            }}>
+              {fileExt(preview.name) === 'md' ? (
+                <div
+                  className="markdown-body"
+                  dangerouslySetInnerHTML={{
+                    __html: typeof window !== 'undefined' && (window as any).marked
+                      ? (window as any).marked.parse(preview.content)
+                      : preview.content.replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/\n/g, '<br/>'),
+                  }}
+                />
+              ) : (
+                <pre style={{
+                  margin: 0, fontFamily: 'monospace', fontSize: 13,
+                  whiteSpace: 'pre-wrap', wordWrap: 'break-word', color: '#d0d0d0',
+                }}>{preview.content}</pre>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
