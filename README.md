@@ -320,56 +320,6 @@ AgentClaw/
 ├── install.sh               # 一键安装
 └── uninstall.sh             # 一键卸载
 ```
-
----
-
-## ❓ 故障排查
-
-<details>
-<summary><b>Agent 报错 "No API key found"</b></summary>
-
-```bash
-# 为所有 Agent 同步 API Key
-MAIN_AUTH=$(find ~/.openclaw/agents -name auth-profiles.json | head -1)
-for agent in taizi zhongshu menxia shangshu hubu libu bingbu xingbu gongbu libu_hr zaochao jiancha; do
-  mkdir -p ~/.openclaw/agents/$agent/agent
-  cp "$MAIN_AUTH" ~/.openclaw/agents/$agent/agent/auth-profiles.json
-done
-```
-
-</details>
-
-<details>
-<summary><b>看板显示「服务器未启动」</b></summary>
-
-```bash
-python3 dashboard/server.py
-```
-
-</details>
-
-<details>
-<summary><b>数据不更新</b></summary>
-
-```bash
-# 检查刷新循环
-ps aux | grep run_loop
-# 手动同步
-python3 scripts/refresh_live_data.py
-```
-
-</details>
-
-<details>
-<summary><b>Agent 不响应</b></summary>
-
-```bash
-openclaw gateway status
-openclaw gateway restart
-```
-
-</details>
-
 ---
 
 ## 🤝 衍生声明
