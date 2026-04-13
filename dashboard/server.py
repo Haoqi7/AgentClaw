@@ -3374,20 +3374,20 @@ class Handler(BaseHTTPRequestHandler):
             parts = p.split('/')
             # parts: ['', 'api', 'outputs', :taskId, 'download'/'preview', :filename]
             #         [0]    [1]     [2]      [3]        [4]              [5]
-            if len(parts) >= 5 and len(parts) >= 6 and parts[4] == 'download':
+            if len(parts) >= 6 and parts[4] == 'download':
                 # GET /api/outputs/:taskId/download/:filename
-                task_id = parts[3]
-                filename = '/'.join(parts[5:])
+                task_id = urllib.parse.unquote(parts[3])
+                filename = urllib.parse.unquote('/'.join(parts[5:]))
                 handle_output_download(task_id, filename, self)
                 return
-            elif len(parts) >= 5 and len(parts) >= 6 and parts[4] == 'preview':
+            elif len(parts) >= 6 and parts[4] == 'preview':
                 # GET /api/outputs/:taskId/preview/:filename
-                task_id = parts[3]
-                filename = '/'.join(parts[5:])
+                task_id = urllib.parse.unquote(parts[3])
+                filename = urllib.parse.unquote('/'.join(parts[5:]))
                 self.send_json(handle_output_preview(task_id, filename))
             elif len(parts) >= 4:
                 # GET /api/outputs/:taskId
-                task_id = parts[3]
+                task_id = urllib.parse.unquote(parts[3])
                 if not task_id:
                     self.send_json({'ok': False, 'error': 'task_id required'}, 400)
                 else:
@@ -4049,14 +4049,14 @@ class Handler(BaseHTTPRequestHandler):
 
         # [TaskOutput] 产出管理 POST 路由
         elif p.startswith('/api/outputs/') and '/upload' in p:
-            task_id = p.replace('/api/outputs/', '').replace('/upload', '')
+            task_id = urllib.parse.unquote(p.replace('/api/outputs/', '').replace('/upload', ''))
             if not task_id:
                 self.send_json({'ok': False, 'error': 'task_id required'}, 400)
             else:
                 result = handle_output_upload(task_id, self)
                 self.send_json(result)
         elif p.startswith('/api/outputs/') and '/delete' in p:
-            task_id = p.replace('/api/outputs/', '').replace('/delete', '')
+            task_id = urllib.parse.unquote(p.replace('/api/outputs/', '').replace('/delete', ''))
             filename = (body or {}).get('filename', '')
             if not task_id or not filename:
                 self.send_json({'ok': False, 'error': 'task_id and filename required'}, 400)
