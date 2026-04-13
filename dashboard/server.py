@@ -3372,20 +3372,22 @@ class Handler(BaseHTTPRequestHandler):
         # [TaskOutput] 产出管理 GET 路由
         elif p.startswith('/api/outputs/'):
             parts = p.split('/')
-            if len(parts) >= 5 and parts[3] == 'download':
+            # parts: ['', 'api', 'outputs', :taskId, 'download'/'preview', :filename]
+            #         [0]    [1]     [2]      [3]        [4]              [5]
+            if len(parts) >= 5 and len(parts) >= 6 and parts[4] == 'download':
                 # GET /api/outputs/:taskId/download/:filename
-                task_id = parts[2]
-                filename = '/'.join(parts[4:])
+                task_id = parts[3]
+                filename = '/'.join(parts[5:])
                 handle_output_download(task_id, filename, self)
                 return
-            elif len(parts) >= 5 and parts[3] == 'preview':
+            elif len(parts) >= 5 and len(parts) >= 6 and parts[4] == 'preview':
                 # GET /api/outputs/:taskId/preview/:filename
-                task_id = parts[2]
-                filename = '/'.join(parts[4:])
+                task_id = parts[3]
+                filename = '/'.join(parts[5:])
                 self.send_json(handle_output_preview(task_id, filename))
-            elif len(parts) >= 4 and parts[3] not in ('download', 'preview'):
+            elif len(parts) >= 4:
                 # GET /api/outputs/:taskId
-                task_id = parts[2]
+                task_id = parts[3]
                 if not task_id:
                     self.send_json({'ok': False, 'error': 'task_id required'}, 400)
                 else:
