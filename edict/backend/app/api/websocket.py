@@ -74,7 +74,7 @@ async def _relay_events(pubsub, ws: WebSocket):
                 })
             except Exception as e:
                 log.warning(f"Failed to relay event: {e}")
-                break
+                continue  # 跳过单条错误事件，继续转发后续事件
 
 
 async def _handle_client_messages(ws: WebSocket):
@@ -142,7 +142,7 @@ async def task_websocket(ws: WebSocket, task_id: str):
 async def broadcast(event: dict):
     """向所有连接的 WebSocket 客户端广播事件（服务端内部调用用）。"""
     dead = set()
-    for ws in _connections:
+    for ws in list(_connections):  # snapshot 防止并发修改
         try:
             await ws.send_json(event)
         except Exception:

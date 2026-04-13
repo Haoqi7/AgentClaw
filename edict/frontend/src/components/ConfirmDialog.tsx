@@ -15,8 +15,8 @@ export default function ConfirmDialog({ title, message, okLabel, okClass, onOk, 
   return (
     <div className="confirm-bg open" onClick={onCancel}>
       <div className="confirm-box" onClick={(e) => e.stopPropagation()}>
-        <div className="confirm-title" dangerouslySetInnerHTML={{ __html: title }} />
-        <div className="confirm-msg" dangerouslySetInnerHTML={{ __html: message }} />
+        <div className="confirm-title">{title}</div>
+        <div className="confirm-msg">{message}</div>
         <textarea
           className="confirm-reason"
           value={reason}

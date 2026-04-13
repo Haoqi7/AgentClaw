@@ -88,6 +88,9 @@ export default function CourtDiscussion() {
   }, [session?.messages?.length]);
 
   // 自动推进
+  const handleAdvanceRef = useRef(handleAdvance);
+  handleAdvanceRef.current = handleAdvance;
+
   useEffect(() => {
     autoPlayRef.current = autoPlay;
   }, [autoPlay]);
@@ -96,7 +99,7 @@ export default function CourtDiscussion() {
     if (!autoPlay || !session || loading) return;
     const timer = setInterval(() => {
       if (autoPlayRef.current && !loading) {
-        handleAdvance();
+        handleAdvanceRef.current();
       }
     }, 5000);
     return () => clearInterval(timer);
@@ -238,8 +241,9 @@ export default function CourtDiscussion() {
         cycle();
         setEmotions((prev) => ({ ...prev, ...emotionMap }));
       }
-    } catch {
-      // silently
+    } catch (e: unknown) {
+      console.error('CourtDiscussion handleAdvance error:', e);
+      toast('推进讨论失败: ' + ((e as Error).message || '未知错误'), 'err');
     } finally {
       setLoading(false);
     }

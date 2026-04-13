@@ -45,7 +45,7 @@ export default function MorningPanel() {
     let lastDate: string | null = null;
     try {
       lastDate = morningBrief?.generated_at || null;
-    } catch { /* */ }
+    } catch (e) { console.error('MorningPanel read generated_at error:', e); }
 
     try {
       await api.refreshMorning();
@@ -74,7 +74,7 @@ export default function MorningPanel() {
           } else {
             setRefreshLabel(`⟳ 采集中… (${count * 5}s)`);
           }
-        } catch { /* */ }
+        } catch (e) { console.error('MorningPanel poll error:', e); }
       }, 5000);
     } catch {
       toast('触发失败', 'err');

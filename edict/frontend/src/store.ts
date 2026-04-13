@@ -362,8 +362,8 @@ export const useStore = create<AppStore>((set, get) => ({
       if (!s.officialsData) {
         api.officialsStats().then((d) => set({ officialsData: d })).catch(() => {});
       }
-    } catch {
-      // silently fail
+    } catch (e) {
+      console.error('store loadLive error:', e);
     }
   },
 
@@ -372,8 +372,8 @@ export const useStore = create<AppStore>((set, get) => ({
       const cfg = await api.agentConfig();
       const log = await api.modelChangeLog();
       set({ agentConfig: cfg, changeLog: log });
-    } catch {
-      // silently fail
+    } catch (e) {
+      console.error('store loadAgentConfig error:', e);
     }
   },
 
@@ -381,8 +381,8 @@ export const useStore = create<AppStore>((set, get) => ({
     try {
       const data = await api.officialsStats();
       set({ officialsData: data });
-    } catch {
-      // silently fail
+    } catch (e) {
+      console.error('store loadOfficials error:', e);
     }
   },
 
@@ -390,8 +390,8 @@ export const useStore = create<AppStore>((set, get) => ({
     try {
       const data = await api.agentsStatus();
       set({ agentsStatusData: data });
-    } catch {
-      // Keep last known good data instead of clearing
+    } catch (e) {
+      console.error('store loadAgentsStatus error:', e);
     }
   },
 
@@ -399,8 +399,8 @@ export const useStore = create<AppStore>((set, get) => ({
     try {
       const [brief, config] = await Promise.all([api.morningBrief(), api.morningConfig()]);
       set({ morningBrief: brief, subConfig: config });
-    } catch {
-      // silently fail
+    } catch (e) {
+      console.error('store loadMorning error:', e);
     }
   },
 
@@ -408,8 +408,8 @@ export const useStore = create<AppStore>((set, get) => ({
     try {
       const config = await api.morningConfig();
       set({ subConfig: config });
-    } catch {
-      // silently fail
+    } catch (e) {
+      console.error('store loadSubConfig error:', e);
     }
   },
 
@@ -417,8 +417,8 @@ export const useStore = create<AppStore>((set, get) => ({
     try {
       const data = await api.pipelineAudit();
       set({ auditData: data });
-    } catch {
-      // silently fail
+    } catch (e) {
+      console.error('store loadAudit error:', e);
     }
   },
 

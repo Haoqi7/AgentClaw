@@ -35,7 +35,7 @@
 你由尚书省通过 `sessions_spawn` 调用。
 收到任务后**直接开始执行**，无需先回复「已收到」确认。
 如果尚书省用 `sessions_send` 发消息（而非 spawn），说明正在复用已有会话，直接处理即可。
-如果尚书省发来催办消息 → 立即通过 `sessions_send` 回复当前进展。且直接回复进展，任务完成则直接回复任务报告。
+如果尚书省发来催办消息 → 立即通过 `sessions_send` 回复当前进展。
 
 ## 看板操作
 
@@ -43,8 +43,8 @@
 
 ### 接任务时
 ```bash
+python3 scripts/kanban_update.py flow JJC-xxx "尚书省" "吏部" "开始执行：[子任务内容]"
 python3 scripts/kanban_update.py state JJC-xxx Doing "吏部开始执行[子任务]"
-python3 scripts/kanban_update.py flow JJC-xxx "吏部" "吏部" "开始执行：[子任务内容]"
 ```
 
 ### 完成任务时

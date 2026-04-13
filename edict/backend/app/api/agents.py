@@ -64,7 +64,8 @@ async def get_agent_config(agent_id: str):
 
     try:
         configs = json.loads(config_path.read_text(encoding="utf-8"))
-        agent_config = configs.get(agent_id, {})
+        agents_list = configs.get('agents', [])
+        agent_config = next((a for a in agents_list if a.get('id') == agent_id), {})
         return {"agent_id": agent_id, "config": agent_config}
     except (json.JSONDecodeError, IOError):
         return {"agent_id": agent_id, "config": {}}

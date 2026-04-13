@@ -110,10 +110,25 @@ FATE_EVENTS = [
 # ── Session 管理 ──
 
 _sessions: dict[str, dict] = {}
+_SESSION_MAX_AGE = 4 * 3600  # 4小时过期清理
+
+
+def _cleanup_expired_sessions():
+    """清理过期会话，防止内存泄漏。"""
+    now = time.time()
+    expired = [sid for sid, s in _sessions.items()
+               if now - s.get('created_at', 0) > _SESSION_MAX_AGE]
+    for sid in expired:
+        _sessions.pop(sid, None)
+    if expired:
+        print(f'[court_discuss] 已清理 {len(expired)} 个过期会话')
 
 
 def create_session(topic: str, official_ids: list[str], task_id: str = '') -> dict:
     """创建新的朝堂议政会话。"""
+    # 创建新会话前先清理过期会话
+    _cleanup_expired_sessions()
+
     session_id = str(uuid.uuid4())[:12]
 
     officials = []
@@ -383,6 +398,23 @@ def _get_llm_config() -> dict | None:
             model_id = _pick_chat_model(prov.get('models', []))
             if not model_id:
                 continue
+
+            # SSRF 防护：验证 base_url 不是内网地址
+            try:
+                from urllib.parse import urlparse
+                import ipaddress
+                parsed = urlparse(base_url)
+                hostname = parsed.hostname or ''
+                if hostname:
+                    try:
+                        ip = ipaddress.ip_address(hostname)
+                        if ip.is_private or ip.is_loopback or ip.is_reserved:
+                            logger.info('Skipping provider=%s (private/reserved IP: %s)', name, hostname)
+                            continue
+                    except ValueError:
+                        pass  # 不是 IP 地址，是域名，允许
+            except Exception:
+                pass
 
             # 本地代理先探测是否可用
             if 'localhost' in base_url or '127.0.0.1' in base_url:
