@@ -62,8 +62,10 @@ PYEOF
         exit 1
       fi
       ;;
-    *)
-      warn "检测到无效配置：channels.feishu.dmPolicy=\"${DM_POLICY}\"（允许值：open, pairing, allowlist）"
+    disabled|"")
+      warn "⚠️ dmPolicy=\"${DM_POLICY:-<empty>}\"：私信功能已禁用或未配置"
+      warn "飞书私信将被网关拒绝，所有 Agent 无法通过飞书通信"
+      warn "建议修改 channels.feishu.dmPolicy 为 \"open\" 以启用私信功能"
       warn "自动修正为 \"open\"..."
       python3 - "$OC_CFG" <<'PYEOF'
 import json, pathlib, sys
@@ -115,40 +117,15 @@ if [ "$GATEWAY_READY" = false ]; then
 fi
 
 # 刷新循环后台
-_orch_crash_count=0
-_orch_max_crash=5
+if [ -f /app/AgentClaw/scripts/run_loop.sh ]; then
+  bash /app/AgentClaw/scripts/run_loop.sh &
+fi
 
-start_background_processes() {
-    if [ -f /app/AgentClaw/scripts/run_loop.sh ]; then
-        bash /app/AgentClaw/scripts/run_loop.sh &
-    fi
-
-    log "starting pipeline orchestrator..."
-    python3 /app/AgentClaw/scripts/pipeline_orchestrator.py &
-    ORCH_PID=$!
-    log "pipeline orchestrator started (PID=$ORCH_PID)"
-}
-
-start_background_processes
-
-# 子进程守护循环
-while true; do
-    sleep 10
-    # 检查编排引擎是否存活
-    if ! kill -0 "$ORCH_PID" 2>/dev/null; then
-        _orch_crash_count=$((_orch_crash_count + 1))
-        if [ "$_orch_crash_count" -ge "$_orch_max_crash" ]; then
-            warn "pipeline orchestrator 在短时间内崩溃 $_orch_crash_count 次，停止重启"
-            break
-        fi
-        warn "pipeline orchestrator (PID=$ORCH_PID) 已退出，正在重启（第$_orch_crash_count次）..."
-        sleep 3
-        start_background_processes
-    else
-        # 进程正常时重置崩溃计数
-        _orch_crash_count=0
-    fi
-done &
+# 编排引擎（V8 核心：看板轮询 + Agent 派发）
+log "starting pipeline orchestrator..."
+python3 /app/AgentClaw/scripts/pipeline_orchestrator.py &
+ORCH_PID=$!
+log "pipeline orchestrator started (PID=$ORCH_PID)"
 
 # 前台启动 dashboard（容器主进程）
 exec python3 /app/AgentClaw/dashboard/server.py

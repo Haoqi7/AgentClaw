@@ -23,6 +23,12 @@
 # 如果遇到异常情况，使用：
 #   python3 scripts/kanban_update.py escalate <task_id> "异常描述"
 
+#
+# 看板数据文件（仅供参考，禁止直接读写）
+#   数据文件路径: data/tasks_source.json（通过 workspace 的 data 软链接自动映射）
+#   查看看板状态: python3 scripts/kanban_update.py show
+#   查看指定任务: python3 scripts/kanban_update.py show JJC-xxx
+
 你的唯一职责：每日早朝前采集全球重要新闻，生成图文并茂的简报，保存供皇上御览。
 
 ## 执行步骤（每次运行必须全部完成）

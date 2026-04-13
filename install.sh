@@ -230,8 +230,10 @@ tasks = [
 import os
 data_dir = pathlib.Path(os.environ.get('REPO_DIR', '.')) / 'data'
 data_dir.mkdir(exist_ok=True)
-(data_dir / 'tasks_source.json').write_text(json.dumps(tasks, ensure_ascii=False, indent=2))
-print('tasks_source.json 已初始化')
+# V8 格式：字典 {"tasks":[...], "global_counters":{...}}
+data = {"tasks": tasks, "global_counters": {"message_id": 0, "flow_id": 0}}
+(data_dir / 'tasks_source.json').write_text(json.dumps(data, ensure_ascii=False, indent=2))
+print('tasks_source.json 已初始化（V8 dict 格式）')
 PYEOF
   fi
 

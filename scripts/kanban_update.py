@@ -243,7 +243,7 @@ def cmd_done_v2(task_id, output='', comment=''):
         log.error(f'[done-v2] 失败: {e}')
 
 
-def cmd_report(task_id, output='', comment='', action=None):
+def cmd_report(task_id, output='', comment=''):
     """V8 命令：尚书省/中书省汇总报告。
 
     用法: kanban_update.py report JJC-xxx "/path/to/summary" "汇总完成"
@@ -263,35 +263,27 @@ def cmd_report(task_id, output='', comment='', action=None):
             agent_id = 'unknown'
 
         # 根据 Agent 确定目标和 action
-        action_val = None
         if agent_id == 'shangshu':
             to_agent = 'zhongshu'
-            action_val = ''
+            action = ''
         elif agent_id == 'zhongshu':
-            # 中书省：根据 action 参数决定目标
-            if action == 'report_to_taizi':
-                to_agent = 'taizi'
-                action_val = 'report_to_taizi'
-            elif action == 'forward_to_shangshu':
-                to_agent = 'shangshu'
-                action_val = 'forward_to_shangshu'
-            else:
-                to_agent = 'menxia'
-                action_val = 'draft_proposal'
+            # 中书省根据 action 决定目标
+            to_agent = 'menxia'  # 默认提交审议
+            action = 'draft_proposal'
         elif agent_id == 'taizi':
             to_agent = 'zhongshu'
-            action_val = 'forward_edict'
+            action = 'forward_edict'
         else:
             to_agent = 'shangshu'
-            action_val = ''
+            action = ''
 
         structured = {'output': output}
-        if action_val:
-            structured['action'] = action_val
+        if action:
+            structured['action'] = action
 
         msg_id = _add_msg(task_id, 'report', agent_id, to_agent, comment or '汇总报告', structured)
         print(f'[report] 已写入报告消息: {msg_id} | task={task_id} | from={agent_id} -> {to_agent}', flush=True)
-        log.info(f'[report] 汇总: {task_id} | from={agent_id} -> {to_agent} | action={action_val or "default"} | msg={msg_id}')
+        log.info(f'[report] 汇总: {task_id} | from={agent_id} -> {to_agent} | action={action or "default"} | msg={msg_id}')
         _trigger_refresh()
     except Exception as e:
         print(f'[report] 失败: {e}', flush=True)
@@ -381,6 +373,58 @@ def cmd_redirect(task_id, to_agent, reason):
     except Exception as e:
         print(f'[redirect] 失败: {e}', flush=True)
         log.error(f'[redirect] 失败: {e}')
+
+
+def cmd_show(task_id=None):
+    """查看看板状态（供 Agent 查询任务列表和详情）。
+    
+    用法: 
+      python3 kanban_update.py show              # 列出所有任务概要
+      python3 kanban_update.py show JJC-xxx      # 查看指定任务详情
+    """
+    tasks = load()
+    if not tasks:
+        print('[show] 看板为空', flush=True)
+        return
+    
+    if task_id:
+        t = find_task(tasks, task_id)
+        if not t:
+            print(f'[show] 任务 {task_id} 不存在', flush=True)
+            return
+        # Print task details
+        import json as _json
+        print(f'[show] 任务详情: {task_id}', flush=True)
+        print(f'  标题: {t.get("title", "")}', flush=True)
+        print(f'  状态: {t.get("state", "")}', flush=True)
+        print(f'  部门: {t.get("org", "")}', flush=True)
+        print(f'  负责人: {t.get("official", "")}', flush=True)
+        print(f'  当前: {t.get("now", "")}', flush=True)
+        print(f'  阻塞: {t.get("block", "")}', flush=True)
+        print(f'  更新: {t.get("updatedAt", "")}', flush=True)
+        # flow_log
+        fl = t.get('flow_log', [])
+        if fl:
+            print(f'  流转记录({len(fl)}条):', flush=True)
+            for f_entry in fl[-5:]:
+                print(f'    {f_entry.get("at","")} | {f_entry.get("from","")} → {f_entry.get("to","")} | {f_entry.get("remark","")}', flush=True)
+        # kanban_messages (last 5)
+        msgs = t.get('kanban_messages', [])
+        if msgs:
+            print(f'  未读消息({len([m for m in msgs if not m.get("read")])}条未读/共{len(msgs)}条):', flush=True)
+            for m in msgs[-5:]:
+                read_mark = '' if m.get('read') else '[未读]'
+                print(f'    {read_mark} {m.get("timestamp","")} | {m.get("type","")} | {m.get("from_agent","")}→{m.get("to_agent","")} | {m.get("content","")[:60]}', flush=True)
+    else:
+        # List all tasks summary
+        print(f'[show] 看板共 {len(tasks)} 个任务:', flush=True)
+        for t in tasks:
+            tid = t.get('id', '?')
+            state = t.get('state', '?')
+            org = t.get('org', '')
+            title = t.get('title', '')[:40]
+            updated = t.get('updatedAt', '')[:16]
+            print(f'  {tid} | {state:<12} | {org:<6} | {title} | {updated}', flush=True)
 
 
 def load():
@@ -711,6 +755,8 @@ _CMD_MIN_ARGS = {
     # V8 看板命令
     'approve': 2, 'reject': 2, 'assign': 3, 'done-v2': 2, 'report': 2,
     'ask': 4, 'answer': 4, 'escalate': 3, 'redirect': 4,
+    # 查看命令
+    'show': 1,
 }
 
 if __name__ == '__main__':
@@ -804,21 +850,9 @@ if __name__ == '__main__':
                      args[2] if len(args) > 2 else '',
                      args[3] if len(args) > 3 else '')
     elif cmd == 'report':
-        # 支持 --action 可选参数
-        report_pos = []
-        report_action = None
-        ri = 1
-        while ri < len(args):
-            if args[ri] == '--action' and ri + 1 < len(args):
-                report_action = args[ri + 1]; ri += 2
-            else:
-                report_pos.append(args[ri]); ri += 1
-        cmd_report(
-            report_pos[0] if len(report_pos) > 0 else '',
-            report_pos[1] if len(report_pos) > 1 else '',
-            report_pos[2] if len(report_pos) > 2 else '',
-            action=report_action,
-        )
+        cmd_report(args[1],
+                   args[2] if len(args) > 2 else '',
+                   args[3] if len(args) > 3 else '')
     elif cmd == 'ask':
         cmd_ask(args[1], args[2], args[3] if len(args) > 3 else '')
     elif cmd == 'answer':
@@ -841,6 +875,8 @@ if __name__ == '__main__':
         cmd_escalate(args[1], args[2] if len(args) > 2 else '')
     elif cmd == 'redirect':
         cmd_redirect(args[1], args[2], args[3] if len(args) > 3 else '')
+    elif cmd == 'show':
+        cmd_show(args[1] if len(args) > 1 else None)
     else:
         print(__doc__)
         sys.exit(1)

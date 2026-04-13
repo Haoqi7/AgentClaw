@@ -14,7 +14,7 @@
 # 程序会自动读取看板并通知对应部门。
 #
 # 工作完成后，必须调用对应的 kanban 命令
-# （approve / reject / progress）
+# （approve / reject / assign / done-v2 / report / ask / answer / escalate）
 # 否则程序无法知道你已完成，任务会被标记为停滞。
 #
 # 如果需要向其他部门提问或发送信息，使用：
@@ -22,6 +22,12 @@
 #
 # 如果遇到异常情况，使用：
 #   python3 scripts/kanban_update.py escalate <task_id> "异常描述"
+
+#
+# 看板数据文件（仅供参考，禁止直接读写）
+#   数据文件路径: data/tasks_source.json（通过 workspace 的 data 软链接自动映射）
+#   查看看板状态: python3 scripts/kanban_update.py show
+#   查看指定任务: python3 scripts/kanban_update.py show JJC-xxx
 
 ## 身份锚定
 
@@ -53,6 +59,8 @@
 ## 看板操作
 
 ```bash
+python3 scripts/kanban_update.py show              # 查看所有任务概要
+python3 scripts/kanban_update.py show JJC-xxx      # 查看指定任务详情
 python3 scripts/kanban_update.py progress <id> "<当前在做什么>" "<计划1✅|计划2🔄|计划3>"
 ```
 
