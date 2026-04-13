@@ -107,11 +107,7 @@ def main():
                 for a in applied:
                     a['rolledBack'] = True
 
-        # 只在未回滚时才清空 pending（回滚时保留以便重试）
-        if not rollback:
-            atomic_json_write(PENDING, [])
-        else:
-            log.warning('Gateway 重启失败且配置已回滚，保留 pending_model_changes.json 以便手动重试')
+        atomic_json_write(PENDING, [])
         atomic_json_write(DATA / 'last_model_change_result.json', {
             'at': datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
             'applied': applied, 'errors': errors,

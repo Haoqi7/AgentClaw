@@ -62,10 +62,8 @@ PYEOF
         exit 1
       fi
       ;;
-    disabled|"")
-      warn "⚠️ dmPolicy=\"${DM_POLICY:-<empty>}\"：私信功能已禁用或未配置"
-      warn "飞书私信将被网关拒绝，所有 Agent 无法通过飞书通信"
-      warn "建议修改 channels.feishu.dmPolicy 为 \"open\" 以启用私信功能"
+    *)
+      warn "检测到无效配置：channels.feishu.dmPolicy=\"${DM_POLICY}\"（允许值：open, pairing, allowlist）"
       warn "自动修正为 \"open\"..."
       python3 - "$OC_CFG" <<'PYEOF'
 import json, pathlib, sys
@@ -120,12 +118,6 @@ fi
 if [ -f /app/AgentClaw/scripts/run_loop.sh ]; then
   bash /app/AgentClaw/scripts/run_loop.sh &
 fi
-
-# 编排引擎（V8 核心：看板轮询 + Agent 派发）
-log "starting pipeline orchestrator..."
-python3 /app/AgentClaw/scripts/pipeline_orchestrator.py &
-ORCH_PID=$!
-log "pipeline orchestrator started (PID=$ORCH_PID)"
 
 # 前台启动 dashboard（容器主进程）
 exec python3 /app/AgentClaw/dashboard/server.py

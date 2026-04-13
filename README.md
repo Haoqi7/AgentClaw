@@ -1,325 +1,245 @@
-# AgentClaw V8 — 三省六部协作系统
+<h1 align="center">⚔️ 三省六部 · AgentClaw</h1>
 
-> 一个基于「看板即消息总线」的多 Agent 协作框架。
-> 12 个 AI Agent 模拟古代三省六部，自动协作完成你的任务。
-
-## 这是什么？
-
-你可以把它想象成一个**AI 朝廷**：
-
-```
-你（皇上）下旨 → 太子接旨 → 中书省起草方案 → 门下省审议
-    → 尚书省派发 → 六部执行 → 中书省回奏 → 太子回奏给你
-```
-
-你只需要说一句话（下旨），12 个 AI 就会自动走完整个流程，最终把结果交给你。
-
-**它能做什么？**
-- 写文章、做数据分析、写代码、做方案……任何你想让 AI 做的事
-- 多个 Agent 分工协作，每个 Agent 负责自己的专业领域
-- 全程可追踪，随时在看板上查看进度
+> 运行依赖 **OpenClaw**。请先完成 OpenClaw 安装与初始化，再继续安装/启动本项目。
 
 ---
 
-## 快速开始
+## 🚀 快速上手
 
-### 方式一：Docker 一键部署（推荐小白使用）
+### 第一步：安装 OpenClaw（必须）
 
-**前提**：你的服务器上已经装好了 Docker 和 Docker Compose。
+三省六部基于OpenClaw 运行，请先安装：
 
-```bash
-# 1. 下载代码
-git clone https://github.com/Haoqi7/AgentClaw.git
-cd AgentClaw
+## 4 步上手
 
-# 2. 创建数据目录（Docker 会把数据存在这里，不会丢失）
-mkdir -p data logs openclaw-home
-
-# 3. 配置 API Key（重要！没有 API Key Agent 无法工作）
-# 先启动容器完成初始化，然后进入容器配置：
-docker compose -f docker/docker-compose.yml up -d
-
-# 4. 进入容器配置 API Key（只需配置一次）
-docker exec -it agentclaw-all-in-one bash
-# 在容器内执行：
-openclaw onboard          # 按提示完成初始化（输入你的 API Key）
-exit
-
-# 5. 重启容器使配置生效
-docker compose -f docker/docker-compose.yml restart
-
-# 6. 打开浏览器访问看板
-# http://你的服务器IP:7891
-```
-
-**就这么简单，看到看板页面就说明部署成功了。**
-
-> **如何通过 GitHub Actions 自动构建 Docker 镜像？**
-> 仓库里已经配好了两条自动化流水线：
-> - `master.yml`：构建镜像并推送到 Docker Hub（需要在 GitHub 仓库 Settings → Secrets 中配置 `DOCKER_USERNAME` 和 `DOCKER_TOKEN`）
-> - `main.yml`：构建 amd64 + arm64 两个平台的镜像包，上传到 GitHub Release 供下载
+> **前提条件**：需要 **Node.js >= 22+（[下载 Node.js](https://nodejs.org/)）
 >
-> 使用方法：GitHub 仓库页面 → Actions → 选择 workflow → Run workflow → 输入版本号（如 `v1.0.0`）→ 点击运行
+> 检查版本：`node -v`
 
-### 方式二：手动部署（适合有经验的用户）
+### 第 1 步：安装
+
+**最新中文稳定版**
+```bash
+npm install -g @qingchencloud/openclaw-zh@latest
+```
+**docker目前固定为此版本** `/openclaw-zh@2026.4.2-zh.1`
+
+### 第 2 步：初始化（推荐守护进程模式）
 
 ```bash
-# 1. 下载代码
+openclaw onboard --install-daemon
+```
+
+初始化向导会引导你完成：选择 AI 模型 → 配置 API 密钥 → 设置聊天通道
+
+### 第 3 步：启动网关
+
+```bash
+openclaw gateway
+```
+
+### 第 4 步：打开控制台
+
+```bash
+openclaw dashboard
+```
+
+浏览器会自动打开全中文的 Dashboard 控制台。完成！
+
+
+
+安装完成后初始化：
+
+```bash
+openclaw init
+```
+
+---
+
+
+
+## 第二步：克隆并安装三省六部
+
+```bash
 git clone https://github.com/Haoqi7/AgentClaw.git
 cd AgentClaw
+chmod +x install.sh && ./install.sh
+```
 
-# 2. 安装依赖
-# 需要提前安装好：Python 3.8+、Node.js 18+、openclaw CLI
-# openclaw 安装参考：https://openclaw.ai
+安装脚本会自动完成：
+- ✅ 创建 12 个 Agent Workspace（`~/.openclaw/workspace-*`）
+- ✅ 写入各省部 SOUL.md 人格文件
+- ✅ 注册 Agent 及权限矩阵到 `openclaw.json`
+- ✅ 配置旨意数据清洗规则
+- ✅ 构建 React 前端到 `dashboard/dist/`（需 Node.js 22+）
+- ✅ 初始化数据目录
+- ✅ 执行首次数据同步
+- ✅ 重启 Gateway 使配置生效
 
-# 3. 一键安装（创建 Workspace、注册 Agent、初始化数据）
-bash install.sh
+## 第三步：配置消息渠道
 
-# 4. 配置 API Key（按提示操作）
+在 OpenClaw 中配置消息渠道（Feishu / Telegram / Signal），将 `taizi`（太子）Agent 设为旨意入口。太子会自动分拣闲聊与指令，指令类消息提炼标题后转发中书省。
+
+```bash
+# 查看当前渠道
+openclaw channels list
+
+# 添加飞书渠道（入口设为太子）
+openclaw channels add --type feishu --agent taizi
+```
+
+参考 OpenClaw 文档：https://docs.openclaw.ai/channels
+
+## 第四步：启动服务
+
+```bash
+# 终端 1：数据刷新循环（每 15 秒同步）
+bash scripts/run_loop.sh
+
+# 终端 2：看板服务器
+python3 dashboard/server.py
+
+# 打开浏览器
+open http://127.0.0.1:7891
+```
+
+> 💡 **提示**：`run_loop.sh` 每 15 秒自动同步数据。可用 `&` 后台运行。
+
+> 💡 **看板即开即用**：`server.py` 内嵌 `dashboard/dashboard.html`，无需额外构建。Docker 镜像包含预构建的 React 前端。
+
+## 第五步：发送第一道旨意
+
+通过消息渠道发送任务（太子会自动识别并转发到中书省）：
+
+```
+请帮我用 Python 写一个文本分类器：
+1. 使用 scikit-learn
+2. 支持多分类
+3. 输出混淆矩阵
+4. 写完整的文档
+```
+
+## 第六步：观察执行过程
+
+打开看板 http://127.0.0.1:7891
+
+1. **📋 旨意看板** — 观察任务在各状态之间流转
+2. **🔭 省部调度** — 查看各部门工作分布
+3. **📜 奏折阁** — 任务完成后自动归档为奏折
+
+任务流转路径：
+```
+收件 → 太子分拣 → 中书规划 → 门下审议 → 已派发 → 执行中 → 已完成
+```
+
+---
+
+## docker部署
+从release下载对应版本，上传到docker。
+开放port：'7891'，'18789'
+挂载 '/root/.openclaw'
+## 🎯 进阶用法
+
+### 使用圣旨模板
+
+> 看板 → 📜 旨库 → 选择模板 → 填写参数 → 下旨
+
+9 个预设模板：周报生成 · 代码审查 · API 设计 · 竞品分析 · 数据报告 · 博客文章 · 部署方案 · 邮件文案 · 站会摘要
+
+### 切换 Agent 模型
+
+> 看板 → ⚙️ 模型配置 → 选择新模型 → 应用更改
+
+约 5 秒后 Gateway 自动重启生效。
+
+### 管理技能
+
+> 看板 → 🛠️ 技能配置 → 查看已安装技能 → 点击添加新技能
+
+### 叫停 / 取消任务
+
+> 在旨意看板或任务详情中，点击 **⏸ 叫停** 或 **🚫 取消** 按钮
+
+### 订阅天下要闻
+
+> 看板 → 📰 天下要闻 → ⚙️ 订阅管理 → 选择分类 / 添加源 / 配飞书推送
+
+---
+
+## ❓ 故障排查
+
+### 看板显示「服务器未启动」
+```bash
+# 确认服务器正在运行
+python3 dashboard/server.py
+```
+
+### Agent 报错 "No API key found for provider"
+
+这是最常见的问题。三省六部有 11 个 Agent，每个都需要 API Key。
+
+```bash
+# 方法一：为任意 Agent 配置后重新运行 install.sh（推荐）
+openclaw agents add taizi          # 按提示输入 Anthropic API Key
+cd edict && ./install.sh            # 自动同步到所有 Agent
+
+# 方法二：手动复制 auth 文件
+MAIN_AUTH=$(find ~/.openclaw/agents -name auth-profiles.json | head -1)
+for agent in taizi zhongshu menxia shangshu hubu libu bingbu xingbu gongbu; do
+  mkdir -p ~/.openclaw/agents/$agent/agent
+  cp "$MAIN_AUTH" ~/.openclaw/agents/$agent/agent/auth-profiles.json
+done
+
+# 方法三：逐个配置
 openclaw agents add taizi
-# 重新运行安装脚本同步 Key 到所有 Agent
-bash install.sh
-
-# 5. 一键启动（启动所有后台进程）
-bash start.sh
-# 按 Ctrl+C 停止所有进程
-
-# 6. 打开浏览器访问看板
-# http://127.0.0.1:7891
+openclaw agents add zhongshu
+# ... 其他 Agent
 ```
 
----
-
-## 使用方法
-
-部署完成后，打开看板页面（`http://你的IP:7891`），你可以：
-
-### 1. 下旨（创建任务）
-
-在看板上点击「下旨」按钮，输入你的需求，例如：
-
-- "帮我写一篇关于人工智能的文章"
-- "分析一下最近一个月的销售数据"
-- "开发一个用户登录功能"
-
-系统会自动走完整个流程：太子分拣 → 中书省规划 → 门下省审议 → 尚书省派发 → 六部执行 → 回奏结果
-
-### 2. 查看进度
-
-看板上会实时显示每个任务的当前状态：
-
-| 状态 | 含义 | 谁在处理 |
-|------|------|----------|
-| Taizi | 皇上刚下旨，太子正在接旨 | 太子 |
-| Zhongshu | 中书省正在起草方案 | 中书省 |
-| Menxia | 门下省正在审议方案 | 门下省 |
-| Assigned | 门下省已准奏，尚书省正在派发 | 尚书省 |
-| Doing | 六部正在执行任务 | 各部 |
-| Review | 执行完成，尚书省正在审查 | 尚书省 |
-| Zhongshu_Final | 中书省正在撰写回奏 | 中书省 |
-| Done | 任务完成 | - |
-| Blocked | 任务被阻塞 | - |
-
-### 3. 管理任务
-
-- **叫停**：随时暂停正在执行的任务
-- **恢复**：恢复被暂停的任务
-- **取消**：彻底取消任务
-- **归档**：把已完成的任务归档，保持看板整洁
-
----
-
-## 十二官署说明
-
-| 机构 | 对应 Agent | 职责 |
-|------|-----------|------|
-| 太子 | taizi | 接收皇上旨意，分拣归类后转交中书省 |
-| 中书省 | zhongshu | 起草执行方案，撰写回奏报告 |
-| 门下省 | menxia | 审议方案，可准奏或封驳（最多 2 次封驳） |
-| 尚书省 | shangshu | 执行调度，将任务派发给合适的六部 |
-| 户部 | hubu | 数据分析、统计、报表 |
-| 礼部 | libu | 文档撰写、内容创作 |
-| 兵部 | bingbu | 功能开发、技术实现 |
-| 刑部 | xingbu | 审查测试、质量把控 |
-| 工部 | gongbu | 部署运维、基础架构 |
-| 吏部 | libu_hr | 人事管理、资源配置 |
-| 钦天监 | zaochao | 早朝简报、信息汇总 |
-| 御史台 | jiancha | 流程监察、异常纠正 |
-
----
-
-## 项目文件结构
-
-```
-AgentClaw/
-├── install.sh                      # 一键安装脚本（首次部署运行一次）
-├── start.sh                        # 一键启动脚本（每次启动运行）
-├── uninstall.sh                    # 一键卸载脚本
-│
-├── scripts/                        # 核心程序代码
-│   ├── config.py                   # 全局配置（常量、路径、超时等）
-│   ├── file_lock.py                # 文件锁（防止并发冲突）
-│   ├── kanban_commands.py          # 看板命令协议（消息增删改查）
-│   ├── kanban_update.py            # 看板命令 CLI（Agent 调用入口）
-│   ├── agent_notifier.py           # Agent 唤醒模块
-│   ├── pipeline_orchestrator.py    # 编排引擎（系统大脑，5 秒轮询）
-│   ├── pipeline_watchdog.py        # 监察脚本（检测停滞、异常）
-│   └── run_loop.sh                 # 数据刷新循环（后台常驻）
-│
-├── agents/                         # Agent 灵魂提示词
-│   ├── taizi/SOUL.md               # 太子的人设和职责定义
-│   ├── zhongshu/SOUL.md            # 中书省的人设和职责定义
-│   ├── menxia/SOUL.md              # 门下省的人设和职责定义
-│   └── ...                         # 其他部门同理
-│
-├── dashboard/                      # 看板前端 + 后端
-│   ├── server.py                   # 看板 HTTP 服务器（端口 7891）
-│   └── dist/                       # 前端页面（React 构建）
-│
-├── docker/                         # Docker 部署相关
-│   ├── Dockerfile                  # 镜像构建文件
-│   ├── docker-compose.yml          # Docker Compose 配置
-│   └── entrypoint.sh               # 容器启动脚本
-│
-├── edict/                          # 前端源码（Vue/React）
-│   ├── frontend/                   # 前端项目
-│   └── backend/                    # 后端 API
-│
-├── data/                           # 运行数据（自动生成）
-│   ├── tasks_source.json           # 看板主数据
-│   └── ...                         # 其他数据文件
-│
-└── logs/                           # 运行日志（自动生成）
-```
-
----
-
-## 三个脚本的分工
-
-| 脚本 | 做什么 | 什么时候用 |
-|------|--------|-----------|
-| `install.sh` | 安装初始化：创建 Workspace、注册 Agent、复制提示词、初始化数据、构建前端 | **首次部署时运行一次**；以后添加新 Agent 或更新提示词时再跑 |
-| `start.sh` | 启动运行：启动 Gateway、编排引擎、数据循环、看板服务器 | **每次启动系统时运行**（服务器重启后也要跑） |
-| `uninstall.sh` | 完全卸载：清理所有 Agent 注册、Workspace、数据 | 不想用了的时候 |
-
-简单来说：
-```
-第一次：bash install.sh  →  bash start.sh
-以后每次：bash start.sh
-```
-
-Docker 部署不需要手动运行这些脚本，`entrypoint.sh` 会自动处理。
-
----
-
-## 系统运行时有哪些进程？
-
-系统启动后，后台会运行 4 个进程：
-
-| 进程 | 作用 | 说明 |
-|------|------|------|
-| OpenClaw Gateway | Agent 通信网关 | 端口 18789，所有 Agent 通信走这里 |
-| pipeline_orchestrator | 编排引擎 | 系统大脑，每 5 秒扫描看板决定下一步 |
-| run_loop.sh | 数据刷新循环 | 每 15 秒刷新数据，每 60 秒跑监察，每 2 分钟检查 Gateway 健康状况 |
-| dashboard/server.py | 看板 HTTP 服务 | 端口 7891，你看到的网页界面 |
-
-它们之间会互相监控：如果 Gateway 挂了，run_loop 会自动重启；如果看板服务挂了，run_loop 也会自动重启。**你不需要手动维护。**
-
----
-
-## 核心机制说明
-
-### 封驳机制
-
-门下省审议中书省的方案时，可以选择：
-- **准奏**（approve）：方案通过，进入执行阶段
-- **封驳**（reject）：打回修改，中书省需要重新起草
-
-每个任务最多封驳 **2 次**，第 3 次系统会自动强制准奏（防止无限循环）。
-
-### 停滞检测
-
-如果一个任务在某个状态停留太久：
-- **3 分钟没动静**：系统自动催办当前负责的 Agent
-- **6 分钟没动静**：系统自动上报给御史台（监察部门）处理
-
-### 监察系统
-
-御史台负责流程完整性检查，发现问题会自动纠正，比如：任务卡在错误的状态、流程断链等。
-
-### 文件锁
-
-所有数据读写都通过文件锁保证安全，即使多个进程同时操作同一个文件也不会出错。
-
----
-
-## 常见问题
-
-### Q: 部署后看板打不开？
-
-1. 检查端口 7891 是否被占用：`netstat -tlnp | grep 7891`
-2. 检查防火墙是否放行端口
-3. Docker 部署检查容器是否在运行：`docker ps`
-
-### Q: Agent 不响应 / 报错？
-
-1. 检查 API Key 是否配置正确：`openclaw agents list`
-2. 检查 Gateway 是否在运行（端口 18789）
-3. 查看日志：`logs/` 目录下的日志文件
-
-### Q: 如何更新代码？
-
+### Agent 不响应
 ```bash
-cd AgentClaw
-git pull
-# 如果有新的 Agent 或提示词更新：
-bash install.sh
-# 然后重启：
-# Docker: docker compose -f docker/docker-compose.yml restart
-# 手动: 先 Ctrl+C 停止 start.sh，再重新 bash start.sh
+# 检查 Gateway 状态
+openclaw gateway status
+
+# 必要时重启
+openclaw gateway restart
 ```
 
-### Q: 如何备份数据？
-
-所有重要数据都在 `data/` 目录下，只需备份这个目录即可：
+### 数据不更新
 ```bash
-cp -r data/ data_backup_$(date +%Y%m%d)/
+# 检查刷新循环是否运行
+ps aux | grep run_loop
+
+# 手动执行一次同步
+python3 scripts/refresh_live_data.py
 ```
 
-Docker 部署的数据在项目根目录的 `data/` 和 `openclaw-home/` 中，这两个目录已通过 volumes 映射到宿主机。
+### 心跳显示红色 / 告警
+```bash
+# 检查对应 Agent 的进程
+openclaw agent status <agent-id>
 
-### Q: 如何修改封驳次数上限？
-
-编辑 `scripts/config.py`，找到这一行：
-```python
-MAX_REJECT_COUNT = 2    # 门下省最大封驳次数
+# 重启指定 Agent
+openclaw agent restart <agent-id>
 ```
-修改数字后重启系统生效。
+
+### 模型切换后不生效
+等待约 5 秒让 Gateway 重启完成。仍不生效则：
+```bash
+python3 scripts/apply_model_changes.py
+openclaw gateway restart
+```
 
 ---
 
-## 端口说明
 
-| 端口 | 服务 | 说明 |
-|------|------|------|
-| 7891 | 看板 Dashboard | 浏览器访问的网页界面 |
-| 18789 | OpenClaw Gateway | Agent 通信网关（一般不需要直接访问） |
 
----
+### 📄 许可证
+本项目 **AgentClaw** 基于 [MIT 许可证](LICENSE) 开源，您可以自由使用、修改和分发本项目代码，需遵循许可证相关声明。
 
-## 技术要求
+#### 衍生项目声明
+本项目基于以下两个开源项目衍生开发：
+1. [OpenClawChineseTranslation](https://github.com/1186258278/OpenClawChineseTranslation)
+2. [edict](https://github.com/cft0808/edict)
 
-| 项目 | 最低要求 |
-|------|---------|
-| Python | 3.8+ |
-| Node.js | 18+（仅构建前端需要） |
-| openclaw CLI | 最新版（Agent 通信必需） |
-| Docker（可选） | 20.10+ |
-| 内存 | 建议 2GB 以上 |
-| 磁盘 | 建议 10GB 以上 |
-
----
-
-## License
-
-MIT
+本项目严格遵守上述上游项目的开源许可证协议，保留所有原始版权与授权声明。

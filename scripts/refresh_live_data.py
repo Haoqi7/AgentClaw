@@ -23,20 +23,9 @@ def main():
     officials_data = read_json(DATA / 'officials_stats.json', {})
     officials = officials_data.get('officials', []) if isinstance(officials_data, dict) else officials_data
     # 任务源优先：tasks_source.json（可对接外部系统同步写入）
-    # 兼容新旧格式：新格式为 {"tasks":[...], ...} 字典，旧格式为 [...] 列表
-    tasks_raw = atomic_json_read(DATA / 'tasks_source.json', [])
-    if isinstance(tasks_raw, dict):
-        tasks = tasks_raw.get("tasks", [])
-    elif isinstance(tasks_raw, list):
-        tasks = tasks_raw
-    else:
-        tasks = []
+    tasks = atomic_json_read(DATA / 'tasks_source.json', [])
     if not tasks:
-        tasks_fallback = read_json(DATA / 'tasks.json', [])
-        if isinstance(tasks_fallback, dict):
-            tasks = tasks_fallback.get("tasks", [])
-        elif isinstance(tasks_fallback, list):
-            tasks = tasks_fallback
+        tasks = read_json(DATA / 'tasks.json', [])
 
     sync_status = read_json(DATA / 'sync_status.json', {})
 
@@ -48,9 +37,6 @@ def main():
 
     now_ts = datetime.datetime.now(datetime.timezone.utc)
     for t in tasks:
-        # 防御性类型检查：跳过非字典元素
-        if not isinstance(t, dict):
-            continue
         t['org'] = t.get('org') or org_map.get(t.get('official', ''), '')
         t['outputMeta'] = output_meta(t.get('output', ''))
 
@@ -90,15 +76,13 @@ def main():
         if isinstance(lm, str) and lm[:10] == today_str:
             return True
         return False
-    today_done = sum(1 for t in tasks if isinstance(t, dict) and _is_today_done(t))
-    total_done = sum(1 for t in tasks if isinstance(t, dict) and t.get('state') == 'Done')
-    in_progress = sum(1 for t in tasks if isinstance(t, dict) and t.get('state') in ['Doing', 'Review', 'Next', 'Blocked'])
-    blocked = sum(1 for t in tasks if isinstance(t, dict) and t.get('state') == 'Blocked')
+    today_done = sum(1 for t in tasks if _is_today_done(t))
+    total_done = sum(1 for t in tasks if t.get('state') == 'Done')
+    in_progress = sum(1 for t in tasks if t.get('state') in ['Doing', 'Review', 'Next', 'Blocked'])
+    blocked = sum(1 for t in tasks if t.get('state') == 'Blocked')
 
     history = []
     for t in tasks:
-        if not isinstance(t, dict):
-            continue
         if t.get('state') == 'Done':
             lm = t.get('outputMeta', {}).get('lastModified')
             history.append({

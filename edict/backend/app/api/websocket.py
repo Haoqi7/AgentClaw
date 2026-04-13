@@ -74,7 +74,7 @@ async def _relay_events(pubsub, ws: WebSocket):
                 })
             except Exception as e:
                 log.warning(f"Failed to relay event: {e}")
-                continue
+                break
 
 
 async def _handle_client_messages(ws: WebSocket):

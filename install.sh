@@ -230,10 +230,8 @@ tasks = [
 import os
 data_dir = pathlib.Path(os.environ.get('REPO_DIR', '.')) / 'data'
 data_dir.mkdir(exist_ok=True)
-# V8 格式：字典 {"tasks":[...], "global_counters":{...}}
-data = {"tasks": tasks, "global_counters": {"message_id": 0, "flow_id": 0}}
-(data_dir / 'tasks_source.json').write_text(json.dumps(data, ensure_ascii=False, indent=2))
-print('tasks_source.json 已初始化（V8 dict 格式）')
+(data_dir / 'tasks_source.json').write_text(json.dumps(tasks, ensure_ascii=False, indent=2))
+print('tasks_source.json 已初始化')
 PYEOF
   fi
 
@@ -439,10 +437,9 @@ echo "下一步："
 echo "  1. 配置 API Key（如尚未配置）:"
 echo "     openclaw agents add taizi     # 按提示输入 Anthropic API Key"
 echo "     ./install.sh                  # 重新运行以同步到所有 Agent"
-echo "  2. 启动编排引擎:      python3 scripts/pipeline_orchestrator.py &"
-echo "  3. 启动数据刷新循环:  bash scripts/run_loop.sh &"
-echo "  4. 启动看板服务器:    python3 \"\$REPO_DIR/dashboard/server.py\""
-echo "  5. 打开看板:          http://127.0.0.1:7891"
+echo "  2. 启动数据刷新循环:  bash scripts/run_loop.sh &"
+echo "  3. 启动看板服务器:    python3 \"\$REPO_DIR/dashboard/server.py\""
+echo "  4. 打开看板:          http://127.0.0.1:7891"
 echo ""
 warn "首次安装必须配置 API Key，否则 Agent 会报错"
 info "文档: docs/getting-started.md"
