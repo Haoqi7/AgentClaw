@@ -19,7 +19,9 @@ import {
   onConnectionStatusChange,
   type ConnectionStatus,
 } from './api';
+
 export type { Task } from './api';
+
 // ── Pipeline Definition (PIPE) ──
 
 export const PIPE = [

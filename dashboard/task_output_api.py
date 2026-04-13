@@ -33,8 +33,8 @@ import shutil as _shutil
 import cgi as _cgi
 import io as _io
 
-# [TaskOutput] 产出存储根目录
-_OUTPUTS_DIR = DATA / 'outputs'
+# [TaskOutput] 产出存储根目录（改为 openclaw 统一目录，Docker 持久化）
+_OUTPUTS_DIR = OCLAW_HOME / 'outputs'
 
 
 # [TaskOutput] 辅助函数

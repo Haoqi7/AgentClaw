@@ -171,12 +171,12 @@ python3 scripts/kanban_update.py session-keys list <id>
 
 ## 产出物管理
 
-任务产出物统一存放于 `data/outputs/{任务ID}/` 目录下。
+任务产出物统一存放于 `/root/.openclaw/outputs/{任务ID}/` 目录下。
 中书省负责圣旨拟定、任务拆解与全局协调，相关文件（圣旨草稿、任务分解表、协调备忘等）请保存到该任务目录下以你的部门名称命名的子目录中。
 
 例如任务 ID 为 JJC-20260223-012：
 ```
-data/outputs/JJC-20260223-012/中书省/
+/root/.openclaw/outputs/JJC-20260223-012/中书省/
 ```
 
 所有部门共享同一个任务目录，各部在各自子目录中工作，互不干扰。

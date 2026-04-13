@@ -346,7 +346,7 @@ export default function TaskOutputPanel() {
               borderBottom: '1px solid var(--border, #2a2a3a)',
               background: dragRef.current ? 'rgba(74, 111, 255, 0.08)' : 'transparent',
             }}>
-              拖拽文件到此处上传 · 文件将保存到 <code style={{ color: '#6a9eff' }}>data/outputs/{selectedTask.id}/</code> 目录
+              拖拽文件到此处上传 · 文件将保存到 <code style={{ color: '#6a9eff' }}>~/.openclaw/outputs/{selectedTask.id}/</code> 目录
             </div>
 
             {/* Content */}
