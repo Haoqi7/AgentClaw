@@ -4,7 +4,7 @@
  * 功能：
  * 1. 左侧任务列表（按任务标题搜索过滤）
  * 2. 右侧选中任务的产出文件列表，按部门分组
- * 3. 支持拖拽上传、下载、删除
+ * 3. 支持预览和下载
  * 4. 文件类型图标 + 部门颜色标签
  *
  * 侵入点：零侵入，仅在 App.tsx 中注册为 Tab 即可使用
@@ -120,11 +120,7 @@ export default function TaskOutputPanel() {
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [outputData, setOutputData] = useState<TaskOutputData | null>(null);
   const [loading, setLoading] = useState(false);
-  const [uploading, setUploading] = useState(false);
   const [deptFilter, setDeptFilter] = useState<string>('');
-  const [confirmDelete, setConfirmDelete] = useState<string | null>(null);
-  const fileInputRef = useRef<HTMLInputElement>(null);
-  const dragRef = useRef(false);
   const [preview, setPreview] = useState<{ name: string; content: string } | null>(null);
 
   // Derive task list
@@ -163,59 +159,7 @@ export default function TaskOutputPanel() {
     }
   }, [filtered.length]);
 
-  // Upload handler
-  const handleUpload = async (files: FileList | File[], dept: string) => {
-    if (!selectedId) return;
-    setUploading(true);
-    try {
-      for (const file of Array.from(files)) {
-        const formData = new FormData();
-        formData.append('file', file);
-        formData.append('dept', dept);
-        await fetch(`/api/outputs/${encodeURIComponent(selectedId)}/upload`, {
-          method: 'POST',
-          body: formData,
-        });
-      }
-      toast('上传成功');
-      loadOutput(selectedId);
-    } catch (e) {
-      toast('上传失败', 'err');
-    } finally {
-      setUploading(false);
-      if (fileInputRef.current) fileInputRef.current.value = '';
-    }
-  };
 
-  // Delete handler
-  const handleDelete = async (filename: string) => {
-    if (!selectedId) return;
-    if (confirmDelete !== filename) {
-      setConfirmDelete(filename);
-      setTimeout(() => setConfirmDelete(null), 3000);
-      return;
-    }
-    try {
-      await api.taskOutputDelete(selectedId, filename);
-      toast('已删除');
-      loadOutput(selectedId);
-    } catch (e) {
-      toast('删除失败', 'err');
-    } finally {
-      setConfirmDelete(null);
-    }
-  };
-
-  // Drag & drop
-  const onDragOver = (e: React.DragEvent) => { e.preventDefault(); dragRef.current = true; };
-  const onDragLeave = (e: React.DragEvent) => { e.preventDefault(); dragRef.current = false; };
-  const onDrop = (e: React.DragEvent) => {
-    e.preventDefault();
-    dragRef.current = false;
-    if (e.dataTransfer.files.length > 0 && selectedId) {
-      handleUpload(e.dataTransfer.files, deptFilter || '尚书省');
-    }
-  };
 
   // Group artifacts by dept
   const artifacts = outputData?.artifacts || [];
@@ -308,11 +252,7 @@ export default function TaskOutputPanel() {
       </div>
 
       {/* ── Right: Output Panel ── */}
-      <div style={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}
-        onDragOver={onDragOver}
-        onDragLeave={onDragLeave}
-        onDrop={onDrop}
-      >
+      <div style={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
         {!selectedTask ? (
           <div style={{
             flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center',
@@ -352,37 +292,7 @@ export default function TaskOutputPanel() {
                     <option key={d} value={d}>{d}</option>
                   ))}
                 </select>
-                {/* Upload button */}
-                <button
-                  onClick={() => fileInputRef.current?.click()}
-                  disabled={uploading}
-                  style={{
-                    padding: '6px 14px', borderRadius: 6, fontSize: 12, cursor: uploading ? 'wait' : 'pointer',
-                    background: '#4a6fff', color: '#fff', border: 'none', fontWeight: 600,
-                    opacity: uploading ? 0.6 : 1,
-                  }}
-                >
-                  {uploading ? '上传中...' : '上传文件'}
-                </button>
-                <input
-                  ref={fileInputRef}
-                  type="file"
-                  multiple
-                  style={{ display: 'none' }}
-                  onChange={(e) => {
-                    if (e.target.files?.length) handleUpload(e.target.files, deptFilter || '尚书省');
-                  }}
-                />
               </div>
-            </div>
-
-            {/* Drag hint */}
-            <div style={{
-              padding: '6px 20px', fontSize: 11, color: 'var(--muted, #555)',
-              borderBottom: '1px solid var(--border, #2a2a3a)',
-              background: dragRef.current ? 'rgba(74, 111, 255, 0.08)' : 'transparent',
-            }}>
-              拖拽文件到此处上传 · 文件将保存到 <code style={{ color: '#6a9eff' }}>~/.openclaw/outputs/{selectedTask.id}/</code> 目录
             </div>
 
             {/* Content */}
@@ -400,10 +310,7 @@ export default function TaskOutputPanel() {
                   <div style={{ fontSize: 48, marginBottom: 12 }}>📦</div>
                   <div style={{ fontSize: 14, marginBottom: 6 }}>暂无产出文件</div>
                   <div style={{ fontSize: 12 }}>
-                    点击「上传文件」或拖拽文件到此处，为任务添加产出物
-                  </div>
-                  <div style={{ fontSize: 11, marginTop: 12, color: '#444' }}>
-                    各部门执行过程中产生的文档、代码、报告等文件均可上传到此处统一管理
+                    任务执行过程中各部门的产出物将自动显示在此处
                   </div>
                 </div>
               )}
@@ -495,18 +402,7 @@ export default function TaskOutputPanel() {
                           >
                             下载
                           </a>
-                          {/* Delete */}
-                          <button
-                            onClick={() => handleDelete(f.name)}
-                            style={{
-                              padding: '4px 10px', borderRadius: 4, fontSize: 11, cursor: 'pointer',
-                              background: confirmDelete === f.name ? 'rgba(255, 82, 112, 0.2)' : 'transparent',
-                              border: `1px solid ${confirmDelete === f.name ? '#ff5270' : '#444'}`,
-                              color: confirmDelete === f.name ? '#ff5270' : '#888',
-                            }}
-                          >
-                            {confirmDelete === f.name ? '确认删除?' : '删除'}
-                          </button>
+
                         </div>
                       </div>
                     ))}
