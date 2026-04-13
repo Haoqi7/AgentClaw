@@ -211,6 +211,16 @@ export const api = {
     postJ<ActionResult & { cleared?: number }>(`${API_BASE}/api/gateway/clear-agent-sessions`, { agentId }),
   gatewaySessionsUrl: () =>
     fetchJ<{ ok: boolean; url: string }>(`${API_BASE}/api/gateway/sessions-url`),
+
+  // ═══════════════════════════════════════════════════════════
+  // [TaskOutput] 新增：产出管理 API
+  // ═══════════════════════════════════════════════════════════
+  taskOutputList: (taskId: string) =>
+    fetchJ<TaskOutputListResult>(`${API_BASE}/api/outputs/${encodeURIComponent(taskId)}`),
+  taskOutputPreview: (taskId: string, filename: string) =>
+    fetchJ<TaskOutputPreviewResult>(`${API_BASE}/api/outputs/${encodeURIComponent(taskId)}/preview/${encodeURIComponent(filename)}`),
+  taskOutputDelete: (taskId: string, filename: string) =>
+    postJ<ActionResult>(`${API_BASE}/api/outputs/${encodeURIComponent(taskId)}/delete`, { filename }),
 };
 
 // ── Types ──
@@ -641,5 +651,35 @@ export interface GatewayConversationsResult {
   ok: boolean;
   conversations?: GatewayConversation[];
   total?: number;
+  error?: string;
+}
+
+// ═══════════════════════════════════════════════════════════
+// [TaskOutput] 新增：产出管理 Types
+// ═══════════════════════════════════════════════════════════
+
+export interface TaskArtifact {
+  name: string;
+  dept: string;
+  type: string;
+  size: number;
+  path: string;
+  uploadedAt: string;
+}
+
+export interface TaskOutputListResult {
+  ok: boolean;
+  taskId?: string;
+  taskTitle?: string;
+  artifacts?: TaskArtifact[];
+  totalSize?: number;
+  error?: string;
+}
+
+export interface TaskOutputPreviewResult {
+  ok: boolean;
+  content?: string;
+  filename?: string;
+  size?: number;
   error?: string;
 }

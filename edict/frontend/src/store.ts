@@ -87,7 +87,8 @@ export function getPipeStatus(t: Task): PipeStatus[] {
 
 export type TabKey =
   | 'edicts' | 'monitor' | 'officials' | 'models'
-  | 'skills' | 'sessions' | 'memorials' | 'templates' | 'morning' | 'audit' | 'court';
+  | 'skills' | 'sessions' | 'memorials' | 'templates' | 'morning' | 'audit' | 'court'
+  | 'outputs';  // [TaskOutput] 新增产出阁 Tab
 
 export const TAB_DEFS: { key: TabKey; label: string; icon: string }[] = [
   { key: 'edicts',    label: '旨意看板', icon: '📜' },
@@ -101,6 +102,7 @@ export const TAB_DEFS: { key: TabKey; label: string; icon: string }[] = [
   { key: 'templates', label: '旨库',     icon: '📋' },
   { key: 'morning',   label: '天下要闻', icon: '🌅' },
   { key: 'audit',     label: '流程监察', icon: '🛡️' },
+  { key: 'outputs',   label: '产出阁',   icon: '📦' },  // [TaskOutput] 新增
 ];
 
 // ── DEPTS for monitor ──
