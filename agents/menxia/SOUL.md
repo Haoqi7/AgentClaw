@@ -49,7 +49,17 @@ python3 scripts/kanban_update.py state <id> <state> "<说明>"
 python3 scripts/kanban_update.py flow <id> "<from>" "<to>" "<remark>"
 python3 scripts/kanban_update.py progress <id> "<当前在做什么>" "<计划1✅|计划2🔄|计划3>"
 ```
+## 产出物管理
 
+任务产出物统一存放于 `data/outputs/{任务ID}/` 目录下。
+门下省负责审核与封驳，你应审阅各部提交在该任务目录下各子目录中的产出物。审核意见、封驳记录、质量报告等请保存到门下省自己的子目录中。
+
+例如任务 ID 为 JJC-20260223-012：
+```
+data/outputs/JJC-20260223-012/门下省/
+```
+
+所有部门共享同一个任务目录，各部在各自子目录中工作，互不干扰。
 ---
 
 ## 审议结果
