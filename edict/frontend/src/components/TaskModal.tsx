@@ -1,5 +1,5 @@
 import { useEffect, useState, useRef, useCallback } from 'react';
-import { useStore, getPipeStatus, deptColor, stateLabel, STATE_LABEL } from '../store';
+import { useStore, getPipeStatus, deptColor, stateLabel, STATE_LABEL, fmtBJT } from '../store';
 import { api } from '../api';
 import type {
   Task,
@@ -48,7 +48,14 @@ function fmtActivityTime(ts: number | string | undefined): string {
     const d = new Date(ts);
     return `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}:${String(d.getSeconds()).padStart(2, '0')}`;
   }
-  if (typeof ts === 'string' && ts.length >= 19) return ts.substring(11, 19);
+  if (typeof ts === 'string' && ts.length >= 19) {
+    const d = new Date(ts.includes('T') ? ts : ts.replace(' ', 'T') + '+08:00');
+    if (!isNaN(d.getTime())) {
+      const p = (n: number) => String(n).padStart(2, '0');
+      return `${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`;
+    }
+    return ts.substring(11, 19);
+  }
   return String(ts).substring(0, 8);
 }
 
@@ -302,8 +309,8 @@ export default function TaskModal() {
             </div>
             {sched && (
               <div className="sched-line">
-                {sched.lastProgressAt && <span>最近进展 {(sched.lastProgressAt || '').replace('T', ' ').substring(0, 19)}</span>}
-                {sched.lastDispatchAt && <span>最近派发 {(sched.lastDispatchAt || '').replace('T', ' ').substring(0, 19)}</span>}
+                {sched.lastProgressAt && <span>最近进展 {fmtBJT(sched.lastProgressAt, 'datetime')}</span>}
+                {sched.lastDispatchAt && <span>最近派发 {fmtBJT(sched.lastDispatchAt, 'datetime')}</span>}
                 <span>自动回滚 {sched.autoRollback === false ? '关闭' : '开启'}</span>
                 {sched.lastDispatchAgent && <span>目标 {sched.lastDispatchAgent}</span>}
               </div>
@@ -365,7 +372,7 @@ export default function TaskModal() {
                   const col = deptColor(fl.from || '');
                   return (
                     <div className="fl-item" key={i}>
-                      <div className="fl-time">{fl.at ? fl.at.substring(11, 16) : ''}</div>
+                      <div className="fl-time">{fl.at ? fmtBJT(fl.at, 'time').substring(0, 5) : ''}</div>
                       <div className="fl-dot" style={{ background: col }} />
                       <div className="fl-content">
                         <div className="fl-who">

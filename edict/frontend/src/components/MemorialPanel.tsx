@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { useStore, isEdict, STATE_LABEL } from '../store';
+import { useStore, isEdict, STATE_LABEL, fmtBJT } from '../store';
 import { api, type Task, type FlowEntry } from '../api';
 
 export default function MemorialPanel() {
@@ -19,14 +19,14 @@ export default function MemorialPanel() {
     md += `- **状态**: ${t.state}\n`;
     md += `- **负责部门**: ${t.org}\n`;
     if (fl.length) {
-      const startAt = fl[0].at ? fl[0].at.substring(0, 19).replace('T', ' ') : '未知';
-      const endAt = fl[fl.length - 1].at ? fl[fl.length - 1].at.substring(0, 19).replace('T', ' ') : '未知';
+      const startAt = fl[0].at ? fmtBJT(fl[0].at, 'datetime') : '未知';
+      const endAt = fl[fl.length - 1].at ? fmtBJT(fl[fl.length - 1].at, 'datetime') : '未知';
       md += `- **开始时间**: ${startAt}\n`;
       md += `- **完成时间**: ${endAt}\n`;
     }
     md += `\n## 流转记录\n\n`;
     for (const f of fl) {
-      md += `- **${f.from}** → **${f.to}**  \n  ${f.remark}  \n  _${(f.at || '').substring(0, 19)}_\n\n`;
+      md += `- **${f.from}** → **${f.to}**  \n  ${f.remark}  \n  _${fmtBJT(f.at, 'datetime')}_\n\n`;
     }
     if (t.output && t.output !== '-') md += `## 产出物\n\n\`${t.output}\`\n`;
     navigator.clipboard.writeText(md).then(
@@ -77,8 +77,8 @@ export default function MemorialPanel() {
           mems.map((t) => {
             const fl = t.flow_log || [];
             const depts = [...new Set(fl.map((f) => f.from).concat(fl.map((f) => f.to)).filter((x) => x && x !== '皇上'))];
-            const firstAt = fl.length ? (fl[0].at || '').substring(0, 16).replace('T', ' ') : '';
-            const lastAt = fl.length ? (fl[fl.length - 1].at || '').substring(0, 16).replace('T', ' ') : '';
+            const firstAt = fl.length ? fmtBJT(fl[0].at, 'short') : '';
+            const lastAt = fl.length ? fmtBJT(fl[fl.length - 1].at, 'short') : '';
             const stIcon = t.state === 'Done' ? '✅' : '🚫';
             return (
               <div className="mem-card" key={t.id} onClick={() => setDetailTask(t)}>
@@ -178,7 +178,7 @@ function MemorialDetailModal({
                   <span className="md-tl-to">→ {f.to}</span>
                 </div>
                 <div className="md-tl-remark">{f.remark}</div>
-                <div className="md-tl-time">{(f.at || '').substring(0, 19).replace('T', ' ')}</div>
+                <div className="md-tl-time">{fmtBJT(f.at, 'datetime')}</div>
               </div>
             );
           })}

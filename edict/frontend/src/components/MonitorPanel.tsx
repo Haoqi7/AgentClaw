@@ -1,5 +1,5 @@
 import { useEffect } from 'react';
-import { useStore, DEPTS, isEdict, stateLabel } from '../store';
+import { useStore, DEPTS, isEdict, stateLabel, fmtBJT } from '../store';
 import { api, type OfficialInfo } from '../api';
 
 export default function MonitorPanel() {
@@ -103,7 +103,7 @@ export default function MonitorPanel() {
             {offline > 0 && <span><span className="as-dot offline" style={{ position: 'static', width: 8, height: 8 }} /> {offline} 离线</span>}
             {unconf > 0 && <span><span className="as-dot unconfigured" style={{ position: 'static', width: 8, height: 8 }} /> {unconf} 未配置</span>}
             <span style={{ marginLeft: 'auto', fontSize: 10, color: 'var(--muted)' }}>
-              检测于 {(asData.checkedAt || '').substring(11, 19)}
+              检测于 {fmtBJT(asData.checkedAt, 'time')}
             </span>
           </div>
         </div>
