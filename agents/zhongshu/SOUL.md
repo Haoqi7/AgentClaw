@@ -145,9 +145,7 @@ python3 scripts/kanban_update.py session-keys save JJC-xxx zhongshu shangshu "
 ### 步骤 4：通过太子回奏皇上
 只有在尚书省返回结果后才能回奏：
 ```bash
-python3 scripts/kanban_update.py done JJC-xxx "
-" "
-"
+python3 scripts/kanban_update.py done JJC-xxx " "
 ```
 将完整结果通过 sessions_send 发送给太子，禁止直接回复飞书消息给皇上。
 ---
