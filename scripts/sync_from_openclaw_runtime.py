@@ -24,7 +24,8 @@ def ms_to_str(ts_ms):
     if not ts_ms:
         return '-'
     try:
-        return datetime.datetime.fromtimestamp(ts_ms / 1000).strftime('%Y-%m-%d %H:%M:%S')
+        _BJT = datetime.timezone(datetime.timedelta(hours=8))
+        return datetime.datetime.fromtimestamp(ts_ms / 1000, tz=_BJT).strftime('%Y-%m-%d %H:%M:%S')
     except Exception:
         return '-'
 
@@ -53,7 +54,6 @@ def detect_official(agent_id):
         'gongbu':  ('工部尚书', '工部'),
         'libu_hr': ('吏部尚书', '吏部'),
         'zaochao': ('钦天监', '钦天监'),
-        'jiancha': ('监察御史', '御史台'),
     }
     return mapping.get(agent_id, ('尚书令', '尚书省'))
 
