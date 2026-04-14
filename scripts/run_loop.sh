@@ -110,7 +110,7 @@ while true; do
   # 定期监察：流程完整性检查 + 断链唤醒
   WATCHDOG_COUNTER=$((WATCHDOG_COUNTER + INTERVAL))
   if (( WATCHDOG_COUNTER >= WATCHDOG_INTERVAL )); then
-    WATCHDOG_COUNTER=30
+    WATCHDOG_COUNTER=0
     safe_run "$SCRIPT_DIR/pipeline_watchdog.py"
   fi
 
