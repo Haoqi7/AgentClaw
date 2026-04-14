@@ -144,9 +144,6 @@ function EdictCard({ task }: { task: Task }) {
         {!task.archived && (
           <button className="mini-act" onClick={handleArchive}>📦 归档</button>
         )}
-        {task.archived && (
-          <button className="mini-act" onClick={handleArchive}>📤 取消归档</button>
-        )}
       </div>
     </div>
   );

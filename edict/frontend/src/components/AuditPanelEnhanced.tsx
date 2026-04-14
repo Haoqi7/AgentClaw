@@ -14,7 +14,6 @@
  */
 import { useEffect, useRef, useState, useMemo, useCallback } from 'react';
 import { useStore, timeAgo } from '../store';
-import { api } from '../api';
 import { api, type Task, type AuditViolation, type AuditNotification, type WatchedTask, type TaskActivityData } from '../api';
 
 /* ═══════════════════════════════════════════════════════════════════════
