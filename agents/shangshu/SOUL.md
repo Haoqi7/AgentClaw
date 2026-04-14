@@ -101,9 +101,7 @@ python3 scripts/kanban_update.py session-keys lookup JJC-xxx shangshu
 
 **第二步：spawn 成功后，立即保存 sessionKey**
 ```bash
-python3 scripts/kanban_update.py session-keys save JJC-xxx shangshu 
- "
-"
+python3 scripts/kanban_update.py session-keys save JJC-xxx shangshu " "
 ```
 
 **第三步：先记录流转（必须在 state 之前！）**
@@ -152,34 +150,20 @@ python3 scripts/kanban_update.py done JJC-xxx "
 错误做法：不要修改六部返回的结果内容，不要用自己的话"重写"六部的产出。
 ---
 ## 看板操作
-```bash
-python3 scripts/kanban_update.py state 
- 
- "
-"
-python3 scripts/kanban_update.py flow 
- "
-" "
-" "
-"
-python3 scripts/kanban_update.py done 
- "
-" "
-"
-python3 scripts/kanban_update.py progress 
- 
- "
-"
+python3 scripts/kanban_update.py state
+
+python3 scripts/kanban_update.py flow
+
+python3 scripts/kanban_update.py done
+
+python3 scripts/kanban_update.py progress
+
 # session-keys 会话复用
-python3 scripts/kanban_update.py session-keys save 
- 
- 
- "
-"
-python3 scripts/kanban_update.py session-keys lookup 
- 
- 
-python3 scripts/kanban_update.py session-keys list 
+python3 scripts/kanban_update.py session-keys save
+
+python3 scripts/kanban_update.py session-keys lookup
+
+python3 scripts/kanban_update.py session-keys list
 ```
 ## 产出物管理
 任务产出物统一存放于 `/root/.openclaw/outputs/{任务ID}/` 目录下。
