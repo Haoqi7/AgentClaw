@@ -493,16 +493,8 @@ def _find_task_session_key_for_agent(task_data, target_agent_id):
 
 def wake_agent(agent_id, reason=""):
     """唤醒指定 Agent。返回 (success, detail)。
-    
-    【关键修复】使用 openclaw agent（非 sessions spawn）唤醒 Agent。
-    
-    根因分析：
-    - openclaw sessions spawn：仅创建会话记录，不触发 Agent LLM 处理，Agent 不会醒来
-    - openclaw agent：直接向 Agent 发送消息，触发 LLM 处理，Agent 真正被唤醒
-    
-    dashboard/server.py 的 wake_agent 一直使用 openclaw agent，所以 scheduler-scan
-    的 10 分钟心跳催办能正常唤醒中书省。但 pipeline_watchdog.py 和 kanban_update.py
-    之前用的是 sessions spawn，导致所有程序层唤醒全部无效。
+
+    【修复】改用 Popen 非阻塞，避免阻塞 watchdog 主循环 130 秒导致 Gateway 过载。
     """
     if agent_id in ("huangshang", "皇上"):
         return False, "不唤醒皇上"
@@ -514,60 +506,36 @@ def wake_agent(agent_id, reason=""):
         f"请确认在线并继续处理待办任务。"
     )
     try:
-        # ── 使用 openclaw agent 唤醒（与 dashboard/server.py 一致）──
-        result = subprocess.run(
+        proc = subprocess.Popen(
             ["openclaw", "agent", "--agent", agent_id, "-m", msg, "--timeout", "120"],
-            capture_output=True, text=True, timeout=130,
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE,
         )
-        output = (result.stdout or "").strip()
-        error = (result.stderr or "").strip()
-        
-        if result.returncode == 0:
-            log(f"已唤醒 {label} ({agent_id}) [openclaw agent 成功]")
-            # 异步验证：30秒后在后台线程中确认 Agent 已活跃
-            def _verify_agent():
-                time.sleep(30)
-                if not is_agent_awake(agent_id):
-                    log(f"{label} ({agent_id}) 唤醒后30秒仍无活动，尝试二次唤醒")
-                    try:
-                        result2 = subprocess.run(
-                            ["openclaw", "agent", "--agent", agent_id, "-m", msg, "--timeout", "120"],
-                            capture_output=True, text=True, timeout=130,
-                        )
-                        if result2.returncode == 0:
-                            log(f"已二次唤醒 {label} ({agent_id}) [成功]")
-                        else:
-                            err2 = (result2.stderr or "").strip()
-                            log(f"二次唤醒 {label} ({agent_id}) 失败: rc={result2.returncode} | stderr: {err2[:200]}")
-                    except Exception as e2:
-                        log(f"二次唤醒 {label} ({agent_id}) 异常: {e2}")
+        log(f"已发送唤醒请求给 {label} ({agent_id}) [Popen 非阻塞]")
+        # 异步等待 + 30秒后验证
+        def _verify_and_retry():
+            try:
+                proc.wait(timeout=130)
+                if proc.returncode == 0:
+                    log(f"唤醒 {label} ({agent_id}) 成功")
                 else:
-                    log(f"{label} ({agent_id}) 唤醒后已活跃")
-            threading.Thread(target=_verify_agent, daemon=True).start()
-            return True, f"已向 {label} 发送唤醒消息 [openclaw agent 成功]"
-        else:
-            # 同步失败，记录详细错误
-            log(f"唤醒 {label} ({agent_id}) 失败: rc={result.returncode} | stdout: {output[:200]} | stderr: {error[:200]}")
-            # 异步重试一次（不阻塞主循环）
-            def _retry_wake():
-                time.sleep(5)
+                    err = (proc.stderr.read() or b"").decode(errors="replace")[:200]
+                    log(f"唤醒 {label} ({agent_id}) 失败: rc={proc.returncode} | {err}")
+            except Exception:
+                pass
+            time.sleep(30)
+            if not is_agent_awake(agent_id):
+                log(f"{label} ({agent_id}) 唤醒后30秒仍无活动，尝试二次唤醒")
                 try:
-                    retry_result = subprocess.run(
+                    subprocess.Popen(
                         ["openclaw", "agent", "--agent", agent_id, "-m", msg, "--timeout", "120"],
-                        capture_output=True, text=True, timeout=130,
+                        stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                     )
-                    retry_err = (retry_result.stderr or "").strip()
-                    if retry_result.returncode == 0:
-                        log(f"唤醒重试 {label} ({agent_id}) 成功")
-                    else:
-                        log(f"唤醒重试 {label} ({agent_id}) 仍失败: rc={retry_result.returncode} | stderr: {retry_err[:200]}")
-                except Exception as e2:
-                    log(f"唤醒重试 {label} ({agent_id}) 异常: {e2}")
-            threading.Thread(target=_retry_wake, daemon=True).start()
-            return False, f"唤醒失败: rc={result.returncode} | {error[:100]}"
-    except subprocess.TimeoutExpired:
-        log(f"唤醒 {label} ({agent_id}) 超时(130s)")
-        return False, "命令执行超时(130s)"
+                except Exception:
+                    pass
+            else:
+                log(f"{label} ({agent_id}) 唤醒后已活跃")
+        threading.Thread(target=_verify_and_retry, daemon=True).start()
+        return True, f"已发送唤醒请求给 {label} [Popen 非阻塞]"
     except Exception as e:
         log(f"唤醒 {label} ({agent_id}) 异常: {e}")
         return False, str(e)[:200]
@@ -605,11 +573,12 @@ def notify_agent(agent_id, message):
 
 def is_agent_awake(agent_id):
     """检查 Agent 是否醒着。
-    
-    修复：增加多维度检测，不再仅依赖文件修改时间。
+
+    【修复】CLI 优先 + 缩短文件检测窗口 + 过滤索引文件。
+    原逻辑：文件修改时间先于 CLI 执行，sessions.json 被频繁刷新导致永远返回 True。
     检测维度：
-    1. sessions 目录下最近 3 分钟内有文件活动（原逻辑）
-    2. openclaw sessions list 命令检查 agent 是否有活跃会话
+    1. openclaw sessions list 命令检查 agent 是否有活跃会话（优先，权威数据源）
+    2. sessions 目录下最近 60 秒内 .jsonl 文件有变动（兜底，忽略索引文件）
     """
     if agent_id in ("huangshang", "皇上"):
         return True
@@ -617,22 +586,22 @@ def is_agent_awake(agent_id):
     if not sessions_dir.exists():
         log(f"Agent {agent_id} 的 sessions 目录不存在: {sessions_dir}")
         return False
-    cutoff = time.time() - 180  # 3 分钟
-    try:
-        for f in sessions_dir.iterdir():
-            if f.is_file() and f.stat().st_mtime > cutoff:
-                return True
-    except Exception:
-        pass
-    # 补充检测：尝试通过 openclaw CLI 查询活跃会话
+    # 方法1（优先）：openclaw CLI 查询（权威数据源）
     try:
         check_result = subprocess.run(
             ["openclaw", "sessions", "list", "--agent", agent_id],
             capture_output=True, text=True, timeout=15,
         )
         if check_result.returncode == 0 and check_result.stdout.strip():
-            # CLI 返回了会话列表，说明 agent 有注册的会话
             return True
+    except Exception:
+        pass
+    # 方法2（兜底）：文件修改时间（缩短窗口 + 只认 .jsonl 会话文件）
+    cutoff = time.time() - 60  # 60 秒（原 180 秒，sessions.json 频繁刷新导致误判）
+    try:
+        for f in sessions_dir.iterdir():
+            if f.is_file() and f.name.endswith('.jsonl') and f.stat().st_mtime > cutoff:
+                return True
     except Exception:
         pass
     return False
@@ -1902,6 +1871,23 @@ def _main_inner():
         task_state = task.get("state", "")
 
         if not flow_log:
+            # 【修复】flow_log 为空不再直接跳过，超过 5 分钟记录警告
+            _created = task.get("createdAt", "") or task.get("updatedAt", "")
+            if _created:
+                try:
+                    _cdt = datetime.datetime.fromisoformat(_created.replace("Z", "+00:00"))
+                    _no_flow_sec = (now - _cdt).total_seconds()
+                    if _no_flow_sec > 300:
+                        v_key = (task_id, "无流转记录", -1, f"任务创建{_no_flow_sec//60}分钟无flow")
+                        if v_key not in existing_violation_keys:
+                            new_violations.append({
+                                "task_id": task_id, "title": title,
+                                "type": "无流转记录",
+                                "detail": f"任务创建 {_no_flow_sec//60} 分钟仍无 flow_log（Agent 可能未响应）",
+                                "detected_at": now_iso,
+                            })
+                except Exception:
+                    pass
             continue
 
         # ── Issue #3: 跳过太子手动操作的任务（不受监察回退）──
@@ -1911,16 +1897,16 @@ def _main_inner():
         if sched.get("_taiziManual"):
             continue
 
-        # ── Fix #2: 优雅期 — 如果任务刚在 60 秒内更新过，跳过本轮检查 ──
-        # 防止 flow_log 还未被 Agent 更新时误报跳步违规
+        # ── Fix #2: 优雅期 — 如果任务刚在 30 秒内更新过，跳过本轮检查 ──
+        # 【修复】从 60 秒缩短到 30 秒，避免高频更新时监察永远被跳过
         _task_updated = task.get("updatedAt", "")
         if _task_updated:
             try:
                 _udt = datetime.datetime.fromisoformat(_task_updated.replace("Z", "+00:00").replace("+08:00", ""))
                 if _udt.tzinfo is None:
                     _udt = _udt.replace(tzinfo=datetime.timezone(datetime.timedelta(hours=8)))
-                if (now - _udt).total_seconds() < 60:
-                    continue  # 刚更新不到 60 秒，给 Agent 时间写 flow_log
+                if (now - _udt).total_seconds() < 30:
+                    continue  # 刚更新不到 30 秒，给 Agent 时间写 flow_log
             except Exception:
                 pass
 
