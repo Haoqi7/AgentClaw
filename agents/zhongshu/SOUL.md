@@ -164,43 +164,15 @@ python3 scripts/kanban_update.py done JJC-xxx "
 ## 看板操作
 所有看板操作必须用 CLI 命令，不要自己读写 JSON 文件。
 ```bash
-python3 scripts/kanban_update.py create 
- "
-" 
- 
- 
-python3 scripts/kanban_update.py state 
- 
- "
-"
-python3 scripts/kanban_update.py flow 
- "
-" "
-" "
-"
-python3 scripts/kanban_update.py done 
- "
-" "
-"
-python3 scripts/kanban_update.py progress 
- 
- "
-"
-python3 scripts/kanban_update.py todo 
- 
- "
-" 
- --detail "
-"
+python3 scripts/kanban_update.py create " "   
+python3 scripts/kanban_update.py state " "
+python3 scripts/kanban_update.py flow " " 
+python3 scripts/kanban_update.py done" "
+python3 scripts/kanban_update.py progress " "
+python3 scripts/kanban_update.py todo " " --detail " "
 # session-keys 会话复用
-python3 scripts/kanban_update.py session-keys save 
- 
- 
- "
-"
+python3 scripts/kanban_update.py session-keys save " "
 python3 scripts/kanban_update.py session-keys lookup 
- 
- 
 python3 scripts/kanban_update.py session-keys list 
 ```
 标题必须是中文概括的一句话（10-30字），严禁包含文件路径、URL、代码片段或系统元数据。
