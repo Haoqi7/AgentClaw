@@ -1737,6 +1737,7 @@ def _main_inner():
         if t.get("state") not in ("Done", "Cancelled")
         and _is_edict_task(t)
         and t.get("id", "") not in exclude_list
+                        and not t.get("archived")
     ]
     watched_tasks = []
     for t in truly_active:

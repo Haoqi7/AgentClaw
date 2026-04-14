@@ -14,6 +14,7 @@
  */
 import { useEffect, useRef, useState, useMemo, useCallback } from 'react';
 import { useStore, timeAgo } from '../store';
+import { api } from '../api';
 import { api, type Task, type AuditViolation, type AuditNotification, type WatchedTask, type TaskActivityData } from '../api';
 
 /* ═══════════════════════════════════════════════════════════════════════
@@ -175,6 +176,8 @@ export default function AuditPanelEnhanced() {
   const auditData = useStore((s) => s.auditData);
   const liveStatus = useStore((s) => s.liveStatus);
   const loadAudit = useStore((s) => s.loadAudit);
+  const loadAll = useStore((s) => s.loadAll);
+  const toast = useStore((s) => s.toast);
   const setModalTaskId = useStore((s) => s.setModalTaskId);
 
   // 主 Tab 状态
@@ -231,6 +234,24 @@ export default function AuditPanelEnhanced() {
     api.taskActivity(id).then(r => setActivityData(r)).catch(() => {}).finally(() => setActivityLoading(false));
   }, []);
   const closeDetail = useCallback(() => { setSelected(null); setActivityData(null); }, []);
+
+  // ── 停止监察（归档任务） ──
+  const handleStopMonitoring = useCallback(async (taskId: string, e: React.MouseEvent) => {
+    e.stopPropagation();
+    if (!confirm('停止监察将同时归档此任务，确定继续？')) return;
+    try {
+      const r = await api.archiveTask(taskId, true);
+      if (r.ok) {
+        toast(`🛑 ${taskId} 已停止监察并归档`);
+        loadAll();
+        loadAudit();
+      } else {
+        toast(r.error || '操作失败', 'err');
+      }
+    } catch {
+      toast('服务器连接失败', 'err');
+    }
+  }, [toast, loadAll, loadAudit]);
 
   const selTask = selected ? taskMap.get(selected.id) : null;
   const selViolations = useMemo(() => {
@@ -527,6 +548,9 @@ export default function AuditPanelEnhanced() {
 
                     {/* 底部元信息 */}
                     <div className="ec-footer" style={{ marginBottom: 8, paddingBottom: 0, borderBottom: 'none' }}>
+                      <button className="mini-act" onClick={(e) => handleStopMonitoring(w.task_id, e)}
+                        style={{ fontSize: 10, padding: '1px 6px', marginLeft: 0, marginRight: 4 }}
+                        title="停止监察并归档此任务">🛑 停止监察</button>
                       <span className="hb">流转 {w.flow_count} 步</span>
                       <span className="hb" style={{ cursor: 'pointer' }} onClick={(e) => { e.stopPropagation(); setExpandedSessionCard(expandedSessionCard === w.task_id ? null : w.task_id); }}>
                         🔑 {w.session_key_count ?? (w.session_keys ? Object.keys(w.session_keys).length : 0)} 会话 {expandedSessionCard === w.task_id ? '▾' : '▸'}

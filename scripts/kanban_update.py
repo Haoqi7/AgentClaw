@@ -1619,6 +1619,37 @@ def cmd_state(task_id, new_state, now_text=None):
             _start_liubu_alive_check(task_id, t)
 
 
+
+
+# ── 门下省越权校验辅助 ──
+def _record_menxia_violation(task_id, from_dept, to_dept, detail):
+    """记录门下省越权流转到 pipeline_audit.json 通知记录，不通知任何部门。
+
+    门下省只能向中书省流转（准奏/封驳），禁止直接向尚书省或六部发送流转。
+    违规时静默拒绝命令，但将越权信息写入通知记录供前端展示。
+    """
+    audit_file = _BASE / 'data' / 'pipeline_audit.json'
+    try:
+        audit = atomic_json_read(audit_file, {"last_check": "", "violations": [], "notifications": []})
+        notif = {
+            "type": "越权通报",
+            "to": "系统",
+            "summary": f"门下省越权流转拦截: {from_dept}→{to_dept} ({task_id})",
+            "sent_at": now_iso(),
+            "detail": detail,
+            "task_id": task_id,
+            "task_ids": [],
+            "status": "sent",
+        }
+        audit.setdefault("notifications", []).append(notif)
+        # 保持通知记录上限
+        if len(audit["notifications"]) > 200:
+            audit["notifications"] = audit["notifications"][-200:]
+        atomic_json_write(audit_file, audit)
+        log.info(f'📝 已记录门下省越权到通知记录: {task_id} 门下省→{to_dept}')
+    except Exception as e:
+        log.warning(f'📝 记录门下省越权失败: {e}')
+
 def cmd_flow(task_id, from_dept, to_dept, remark):
     """添加流转记录（原子操作，含去重）"""
     clean_remark = _sanitize_remark(remark)
@@ -1635,6 +1666,19 @@ def cmd_flow(task_id, from_dept, to_dept, remark):
     if not is_valid_to:
         log.warning(f'⚠️ {task_id} 流转校验失败 (to={to_dept}): {err_to}')
         print(f'[看板] 流转被拒绝: {err_to}', flush=True)
+        return
+
+    # ── 门下省越权校验：禁止直接向尚书省或六部发送流转 ──
+    # 门下省只能向中书省流转（准奏/封驳），直接向尚书省或六部属于越权行为。
+    # 越权时静默拒绝命令，将越权信息写入通知记录供前端展示，不通知其他部门。
+    _MENXIA_FORBIDDEN_TARGETS = {"尚书省", "工部", "兵部", "户部", "礼部", "刑部", "吏部"}
+    if from_dept == "门下省" and to_dept in _MENXIA_FORBIDDEN_TARGETS:
+        detail = (
+            f"门下省越权流转被拦截：{task_id} 门下省→{to_dept}。"
+            f"门下省只能向中书省流转（准奏或封驳），禁止直接向尚书省或六部发送流转。"
+            f"正确流程：门下省准奏 →中书省→尚书省→六部。"
+        )
+        _record_menxia_violation(task_id, from_dept, to_dept, detail)
         return
     
     # 🔒 流转去重检测
