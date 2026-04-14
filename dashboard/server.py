@@ -3303,15 +3303,63 @@ class Handler(BaseHTTPRequestHandler):
                 pass
             if excluded or archived_task_ids:
                 filter_ids = excluded | archived_task_ids
-                audit['violations'] = [v for v in audit.get('violations', []) if v.get('task_id') not in filter_ids]
-                audit['notifications'] = [
-                    n for n in audit.get('notifications', [])
-                    # 保留：无 task_id 的系统通知，或 task_id 不在过滤列表中的通知
-                    if (not n.get('task_id') or n.get('task_id', '') not in filter_ids)
+                # ── 违规记录：分离活跃与归档，归档记录合并进 archived_violations ──
+                # 修复时序空白：归档后 watchdog 尚未运行时，违规记录同时不在
+                # violations[] 和 archived_violations[] 中导致记录不可见
+                _active_v = []
+                _newly_archived_v = []
+                for v in audit.get('violations', []):
+                    if v.get('task_id', '') in filter_ids:
+                        _newly_archived_v.append(v)
+                    else:
+                        _active_v.append(v)
+                audit['violations'] = _active_v
+                if _newly_archived_v:
+                    _existing_archived_v = audit.get('archived_violations', [])
+                    # 去重：避免重复加入已在 archived_violations 中的记录
+                    _archived_v_keys = set()
+                    for _av in _existing_archived_v:
+                        _archived_v_keys.add((_av.get('task_id', ''), _av.get('type', ''), _av.get('flow_index', -1), _av.get('detail', '')))
+                    _deduped = []
+                    for _nv in _newly_archived_v:
+                        _nk = (_nv.get('task_id', ''), _nv.get('type', ''), _nv.get('flow_index', -1), _nv.get('detail', ''))
+                        if _nk not in _archived_v_keys:
+                            _deduped.append(_nv)
+                            _archived_v_keys.add(_nk)
+                    if _deduped:
+                        audit['archived_violations'] = _existing_archived_v + _deduped
+
+                # ── 通知记录：分离活跃与归档，归档记录合并进 archived_notifications ──
+                _active_n = []
+                _newly_archived_n = []
+                for n in audit.get('notifications', []):
+                    _n_tid = n.get('task_id', '')
+                    _n_tids = n.get('task_ids') or []
+                    # 保留条件：无 task_id（系统通知）或 task_id 不在过滤列表
+                    _keep = (not _n_tid or _n_tid not in filter_ids)
                     # 如果有 task_ids 列表，至少有一个不在过滤列表中才保留
-                    and (not n.get('task_ids')
-                         or any(tid not in filter_ids for tid in n.get('task_ids', [])))
-                ]
+                    if _keep and _n_tids:
+                        _keep = any(tid not in filter_ids for tid in _n_tids)
+                    if _keep:
+                        _active_n.append(n)
+                    else:
+                        _newly_archived_n.append(n)
+                audit['notifications'] = _active_n
+                if _newly_archived_n:
+                    _existing_archived_n = audit.get('archived_notifications', [])
+                    # 去重：避免重复加入已在 archived_notifications 中的记录
+                    _archived_n_keys = set()
+                    for _an in _existing_archived_n:
+                        _archived_n_keys.add((_an.get('type', ''), _an.get('detail', ''), _an.get('sent_at', '')))
+                    _deduped_n = []
+                    for _nn in _newly_archived_n:
+                        _nk2 = (_nn.get('type', ''), _nn.get('detail', ''), _nn.get('sent_at', ''))
+                        if _nk2 not in _archived_n_keys:
+                            _deduped_n.append(_nn)
+                            _archived_n_keys.add(_nk2)
+                    if _deduped_n:
+                        audit['archived_notifications'] = _existing_archived_n + _deduped_n
+
                 # 同时过滤 watched_tasks，确保停止监察后立即从列表中移除
                 audit['watched_tasks'] = [
                     w for w in audit.get('watched_tasks', [])

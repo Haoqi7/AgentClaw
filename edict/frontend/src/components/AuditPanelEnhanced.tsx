@@ -305,10 +305,12 @@ export default function AuditPanelEnhanced() {
     }
     for (const n of notifications) {
       const tid = n.task_id || (n.task_ids || [])[0] || '';
-      if (wIds.has(tid)) {
+      // 修复：包含系统级通知（无 task_id 的巡检、归档等）
+      const isSystemNotif = !n.task_id && (!n.task_ids || n.task_ids.length === 0);
+      if (wIds.has(tid) || isSystemNotif) {
         const meta = NOTIF_META[n.type] || { icon: '📢', color: '#6a9eff' };
         items.push({ kind: 'notif', icon: meta.icon, type: n.type, color: meta.color,
-          summary: n.summary || n.detail?.substring(0, 50) || '', time: n.sent_at || '', taskId: tid });
+          summary: n.summary || n.detail?.substring(0, 50) || '', time: n.sent_at || '', taskId: tid || '系统' });
       }
     }
     items.sort((a, b) => {
