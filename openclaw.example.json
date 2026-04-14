@@ -1,0 +1,310 @@
+{
+  "models": {
+    "mode": "merge",
+    "providers": {
+      "astroncodingplan": {
+        "baseUrl": "https://maas-coding-api.cn-huabei-1.xf-yun.com/v2",
+        "apiKey": "yours-key",
+        "api": "openai-completions",
+        "models": [
+          {
+            "id": "astron-code-latest",
+            "name": "astron-code-latest",
+            "reasoning": false,
+            "input": [
+              "text"
+            ],
+            "contextWindow": 92160,
+            "maxTokens": 32768
+          }
+        ]
+      },
+      "codingplan": {
+        "baseUrl": "https://maas-coding-api.cn-huabei-1.xf-yun.com/v2",
+        "apiKey": "yours-key",
+        "api": "openai-completions",
+        "models": [
+          {
+            "id": "astron-code-latest",
+            "name": "astron-code-latest",
+            "api": "openai-completions",
+            "reasoning": false,
+            "input": [
+              "text"
+            ],
+            "contextWindow": 92130,
+            "maxTokens": 32768
+          }
+        ]
+      }
+    }
+  },
+  "agents": {
+    "defaults": {
+      "workspace": "/root/.openclaw/workspace",
+      "models": {
+        "github-copilot/gpt-4o": {},
+        "github-copilot/gpt-5.2": {}
+      },
+      "model": {
+        "primary": "codingplan/astron-code-latest",
+        "fallbacks": [
+          "github-copilot/gpt-5.2"
+        ]
+      }
+    },
+    "list": [
+      {
+        "id": "taizi",
+        "workspace": "/root/.openclaw/workspace-taizi",
+        "subagents": {
+          "allowAgents": [
+            "zhongshu"
+          ]
+        }
+      },
+      {
+        "id": "zhongshu",
+        "workspace": "/root/.openclaw/workspace-zhongshu",
+        "subagents": {
+          "allowAgents": [
+            "menxia",
+            "shangshu"
+          ]
+        }
+      },
+      {
+        "id": "menxia",
+        "workspace": "/root/.openclaw/workspace-menxia",
+        "subagents": {
+          "allowAgents": [
+            "zhongshu"
+          ]
+        }
+      },
+      {
+        "id": "shangshu",
+        "workspace": "/root/.openclaw/workspace-shangshu",
+        "subagents": {
+          "allowAgents": [
+            "zhongshu",
+            "hubu",
+            "libu",
+            "bingbu",
+            "xingbu",
+            "gongbu",
+            "libu_hr"
+          ]
+        }
+      },
+      {
+        "id": "hubu",
+        "workspace": "/root/.openclaw/workspace-hubu",
+        "subagents": {
+          "allowAgents": [
+            "shangshu"
+          ]
+        }
+      },
+      {
+        "id": "libu",
+        "workspace": "/root/.openclaw/workspace-libu",
+        "subagents": {
+          "allowAgents": [
+            "shangshu"
+          ]
+        }
+      },
+      {
+        "id": "bingbu",
+        "workspace": "/root/.openclaw/workspace-bingbu",
+        "subagents": {
+          "allowAgents": [
+            "shangshu"
+          ]
+        }
+      },
+      {
+        "id": "xingbu",
+        "workspace": "/root/.openclaw/workspace-xingbu",
+        "subagents": {
+          "allowAgents": [
+            "shangshu"
+          ]
+        }
+      },
+      {
+        "id": "gongbu",
+        "workspace": "/root/.openclaw/workspace-gongbu",
+        "subagents": {
+          "allowAgents": [
+            "shangshu"
+          ]
+        }
+      },
+      {
+        "id": "libu_hr",
+        "workspace": "/root/.openclaw/workspace-libu_hr",
+        "subagents": {
+          "allowAgents": [
+            "shangshu"
+          ]
+        }
+      },
+      {
+        "id": "zaochao",
+        "workspace": "/root/.openclaw/workspace-zaochao",
+        "subagents": {
+          "allowAgents": []
+        }
+      },
+      {
+        "id": "jiancha",
+        "workspace": "/root/.openclaw/workspace-jiancha",
+        "subagents": {
+          "allowAgents": [
+            "taizi",
+            "zhongshu",
+            "menxia",
+            "shangshu",
+            "hubu",
+            "libu",
+            "bingbu",
+            "xingbu",
+            "gongbu",
+            "libu_hr"
+          ]
+        }
+      }
+    ]
+  },
+  "gateway": {
+    "mode": "local",
+    "auth": {
+      "mode": "token",
+      "token": "yourstokem"
+    },
+    "port": 18789,
+    "bind": "lan",
+    "tailscale": {
+      "mode": "off",
+      "resetOnExit": false
+    },
+    "controlUi": {
+      "allowedOrigins": [
+        "*"
+      ],
+      "allowInsecureAuth": true,
+      "dangerouslyDisableDeviceAuth": true
+    },
+    "nodes": {
+      "denyCommands": [
+        "camera.snap",
+        "camera.clip",
+        "screen.record",
+        "contacts.add",
+        "calendar.add",
+        "reminders.add",
+        "sms.send",
+        "sms.search"
+      ]
+    }
+  },
+  "session": {
+    "dmScope": "per-channel-peer"
+  },
+  "bindings": [
+    {
+      "type": "route",
+      "agentId": "taizi",
+      "match": {
+        "channel": "feishu",
+        "accountId": "default"
+      }
+    }
+  ],
+  "tools": {
+    "profile": "full",
+    "web": {
+      "search": {
+        "provider": "tavily",
+        "enabled": true
+      }
+    },
+    "sessions": {
+      "visibility": "all"
+    },
+    "agentToAgent": {
+      "enabled": true
+    }
+  },
+  "auth": {
+    "profiles": {
+      "github-copilot:github": {
+        "provider": "github-copilot",
+        "mode": "token"
+      }
+    }
+  },
+  "channels": {
+    "feishu": {
+      "enabled": true,
+      "appId": "yours",
+      "appSecret": "yours",
+      "connectionMode": "websocket",
+      "domain": "feishu",
+      "groupPolicy": "open",
+      "blockStreaming": false,
+      "streaming": true,
+      "replyMode": "streaming",
+      "footer": {
+        "status": true,
+        "elapsed": true
+      }
+    }
+  },
+  "plugins": {
+    "entries": {
+      "tavily": {
+        "enabled": true,
+        "config": {
+          "webSearch": {
+            "apiKey": "yours-key"
+          }
+        }
+      },
+      "feishu": {
+        "enabled": true
+      }
+    }
+  },
+  "hooks": {
+    "internal": {
+      "enabled": true,
+      "entries": {
+        "boot-md": {
+          "enabled": true
+        },
+        "bootstrap-extra-files": {
+          "enabled": true
+        },
+        "command-logger": {
+          "enabled": true
+        },
+        "session-memory": {
+          "enabled": true
+        }
+      }
+    }
+  },
+  "wizard": {
+    "lastRunAt": "2026-04-06T08:14:15.722Z",
+    "lastRunVersion": "2026.4.6",
+    "lastRunCommand": "onboard",
+    "lastRunMode": "local"
+  },
+  "meta": {
+    "lastTouchedVersion": "2026.4.6",
+    "lastTouchedAt": "2026-04-13T04:20:03.807Z"
+  }
+}
