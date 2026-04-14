@@ -1750,38 +1750,40 @@ def cmd_flow(task_id, from_dept, to_dept, remark):
     log.info(f'✅ {task_id} 流转记录: {from_dept} → {to_dept}')
 
     # ═══════════════════════════════════════════════════════════════════════
-    # 【V6 关键修复】流转目标为六部时，触发程序级通知（断链点②兜底）
+    # 【V6 流转通知】已注释掉 — 2026-04-14
     #
-    # 根因：尚书省可能先调 state Doing 再调 flow（SOUL.md旧顺序），
-    # 导致 state 触发通知时 org 还是'尚书省'，六部收不到通知。
+    # 注释原因：
+    #   尚书省 LLM 通过 sessions_spawn 派发六部时，已直接通知了六部。
+    #   cmd_flow 的 V6 兜底程序通知与 LLM 通知重复，导致六部收到 2~3 次
+    #   相同任务通知（LLM 通知 1 次 + 程序通知 1~2 次）。
+    #   如果尚书省重复调 flow，六部会被通知更多次。
     #
-    # 兜底：当 flow 目标是六部且当前状态为 Doing/Next 时，
-    # 程序级直接唤醒目标六部 Agent。
+    # 为什么可以安全去掉：
+    #   1. 六部通知由尚书省 LLM 层 sessions_spawn 负责（唯一的 LLM 层通知环节）
+    #   2. 如果六部迟迟没被唤醒，监察系统 pipeline_watchdog 每 3.5 分钟巡检，
+    #      断链检测会自动发现并唤醒六部，不需要 cmd_flow 兜底
+    #   3. cmd_state 中已有 Doing/Next 状态的通知逻辑（V7 修复），
+    #      且加了 V8 修复跳过尚书省重复通知
     #
-    # 去重保护：_notify_agent 内置冷却机制，
-    # 若 cmd_state 已成功通知过同一 agent（90秒内），此处自动跳过。
     # ═══════════════════════════════════════════════════════════════════════
-    _LIU_BU_AGENT_SET = {'libu', 'hubu', 'bingbu', 'xingbu', 'gongbu', 'libu_hr'}
-    to_agent_id = _ORG_AGENT_MAP.get(to_dept.strip(), '')
-    if to_agent_id in _LIU_BU_AGENT_SET:
-        try:
-            _flow_tasks = load()
-            _flow_task = find_task(_flow_tasks, task_id)
-            if _flow_task and _flow_task.get('state') in ('Doing', 'Next'):
-                log.info(f'🔗 V6流转通知: {task_id} flow目标为六部({to_dept}/{to_agent_id})，状态={_flow_task.get("state")}，触发程序级唤醒')
-                _notify_agent(
-                    agent_id=to_agent_id,
-                    task_id=task_id,
-                    from_org=from_dept,
-                    to_org=to_dept,
-                    title=_flow_task.get('title', ''),
-                    remark=clean_remark or f'{from_dept}派发任务至{to_dept}',
-                )
-        except Exception as _flow_notify_err:
-            log.warning(f'🔗 V6流转通知异常: {_flow_notify_err}')
-
-    # ⚠️ 基础通知仍由 cmd_state 触发，此处仅为六部目标兜底
-    # 两个路径都有 _notify_agent 冷却去重保护，不会重复唤醒
+    # _LIU_BU_AGENT_SET = {'libu', 'hubu', 'bingbu', 'xingbu', 'gongbu', 'libu_hr'}
+    # to_agent_id = _ORG_AGENT_MAP.get(to_dept.strip(), '')
+    # if to_agent_id in _LIU_BU_AGENT_SET:
+    #     try:
+    #         _flow_tasks = load()
+    #         _flow_task = find_task(_flow_tasks, task_id)
+    #         if _flow_task and _flow_task.get('state') in ('Doing', 'Next'):
+    #             log.info(f'🔗 V6流转通知: {task_id} flow目标为六部({to_dept}/{to_agent_id})，状态={_flow_task.get("state")}，触发程序级唤醒')
+    #             _notify_agent(
+    #                 agent_id=to_agent_id,
+    #                 task_id=task_id,
+    #                 from_org=from_dept,
+    #                 to_org=to_dept,
+    #                 title=_flow_task.get('title', ''),
+    #                 remark=clean_remark or f'{from_dept}派发任务至{to_dept}',
+    #             )
+    #     except Exception as _flow_notify_err:
+    #         log.warning(f'🔗 V6流转通知异常: {_flow_notify_err}')
 
 
 # ── 六部名称集合（用于 cmd_flow 校验：拒绝「六部」泛称）──
