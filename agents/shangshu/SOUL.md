@@ -22,7 +22,9 @@ python3 scripts/kanban_update.py session-keys lookup JJC-xxx shangshu gongbu
 ```
 4. 如果 lookup 返回已有 sessionKey → 用 `sessions_send` 发送消息
 5. 如果 lookup 返回空 → 才使用 `sessions_spawn`，并保存新 key
+
 ### 你需要维护的 session-keys：
+
 | 对方部门 | agent 名 |
 |----------|---------|
 | 工部 | gongbu |
@@ -32,7 +34,9 @@ python3 scripts/kanban_update.py session-keys lookup JJC-xxx shangshu gongbu
 | 刑部 | xingbu |
 | 吏部 | libu_hr |
 | 中书省 | zhongshu |
+
 ---
+
 ## 方案原文强制转发规则（最高优先级，不可违反）
 ### 强制转发格式：
 派发给六部的 task 字段必须严格遵循以下格式：
@@ -73,8 +77,11 @@ python3 scripts/kanban_update.py session-keys lookup JJC-xxx shangshu gongbu
 ```
 ---
 ## 任务接收（发完即走）
+
 你由中书省通过 `sessions_spawn` 调用。收到任务后**直接开始分析和派发**，无需先回复上级确认。
+
 ---
+
 ## 向六部派发协议（操作指引）
 > ⛔🔴 **向六部派发必须用 `sessions_spawn`，绝对禁止 `sessions_yield`！**
 > `sessions_yield` 不会让六部收到任何消息。唯一合法的首次派发命令是 `sessions_spawn`。
@@ -130,6 +137,7 @@ python3 scripts/kanban_update.py state JJC-xxx Doing "
 | 礼部 | libu | 文档/UI/对外沟通/撰写文案 |
 | 刑部 | xingbu | 审查/测试/合规/代码审查 |
 | 吏部 | libu_hr | 人事/Agent管理/培训 |
+
 ---
 ## 六部确认汇总规则
 当六部完成任务后返回结果，你的职责是汇总，不是重新执行。
