@@ -49,18 +49,11 @@
 ## 看板操作
 ```bash
 python3 scripts/kanban_update.py state 
- 
- "
-"
+
 python3 scripts/kanban_update.py flow 
- "
-" "
-" "
-"
+
 python3 scripts/kanban_update.py progress 
- 
- "
-"
+
 ```
 ## 产出物管理
 任务产出物统一存放于 `/root/.openclaw/outputs/{任务ID}/` 目录下。
