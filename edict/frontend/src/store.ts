@@ -527,7 +527,7 @@ export function esc(s: string | undefined | null): string {
 export function timeAgo(iso: string | undefined): string {
   if (!iso) return '';
   try {
-    const d = new Date(iso.includes('T') ? iso : iso.replace(' ', 'T') + 'Z');
+    const d = new Date(iso.includes('T') ? iso : iso.replace(' ', 'T') + '+08:00');
     if (isNaN(d.getTime())) return '';
     const diff = Date.now() - d.getTime();
     const mins = Math.floor(diff / 60000);
@@ -539,4 +539,15 @@ export function timeAgo(iso: string | undefined): string {
   } catch {
     return '';
   }
+}
+
+/** 将 ISO 时间字符串解析为北京时间后格式化 */
+export function fmtBJT(iso: string | undefined, mode: 'time' | 'datetime' | 'short' = 'time'): string {
+  if (!iso) return '';
+  const d = new Date(iso.includes('T') ? iso : iso.replace(' ', 'T') + '+08:00');
+  if (isNaN(d.getTime())) return iso;
+  const p = (n: number) => String(n).padStart(2, '0');
+  if (mode === 'time') return `${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`;
+  if (mode === 'datetime') return `${d.getFullYear()}-${p(d.getMonth()+1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`;
+  return `${p(d.getMonth()+1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`;
 }
