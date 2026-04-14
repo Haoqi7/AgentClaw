@@ -3714,7 +3714,13 @@ class Handler(BaseHTTPRequestHandler):
             return
 
         if p == '/api/gateway/clear-agent-sessions':
-            """清空指定 Agent 的所有非 main 会话（通过本地文件系统操作）"""
+            """清空指定 Agent 的会话（通过本地文件系统操作）
+
+            agentId 支持的值：
+              'all'                   → 清除所有 Agent 的非 main 会话（保留所有主会话）
+              'all-including-main'    → 清除所有 Agent 的所有会话（仅保留太子的 main）
+              具体 agentId（如 'zhongshu'）→ 清除该 Agent 的所有会话（含 main；太子除外）
+            """
             agent_id = body.get('agentId', '').strip() if body else ''
             if not agent_id:
                 self.send_json({'ok': False, 'error': 'agentId 无效'}, 400)
@@ -3722,17 +3728,23 @@ class Handler(BaseHTTPRequestHandler):
             try:
                 from pathlib import Path as _Path
                 agents_dir = _Path('/root/.openclaw/agents')
+
+                # 判断是否为「含 main」清理模式
+                include_main = (agent_id == 'all-including-main') or (agent_id not in ('all',))
+
                 # 确定要清理的目标 Agent 列表
                 target_agents = []
-                if agent_id == 'all':
+                if agent_id in ('all', 'all-including-main'):
                     for d in sorted(agents_dir.iterdir()):
                         if d.is_dir() and (d / 'sessions' / 'sessions.json').exists():
                             target_agents.append(d.name)
                 else:
                     if (agents_dir / agent_id / 'sessions' / 'sessions.json').exists():
                         target_agents = [agent_id]
-                # 逐个 Agent 清理非 main 会话
+
+                # 逐个 Agent 清理会话
                 cleared = 0
+                skipped_main = 0
                 for aid in target_agents:
                     sessions_file = agents_dir / aid / 'sessions' / 'sessions.json'
                     try:
@@ -3745,9 +3757,17 @@ class Handler(BaseHTTPRequestHandler):
                     for skey, sval in sessions_data.items():
                         if not isinstance(sval, dict):
                             continue
-                        # 保留 main 会话
-                        if ':main' in skey.lower():
-                            continue
+                        is_main = ':main' in skey.lower()
+                        if is_main:
+                            if include_main:
+                                # 含 main 模式：仅保留太子的 main
+                                if aid == 'taizi':
+                                    skipped_main += 1
+                                    continue
+                            else:
+                                # 非 main 模式：保留所有 main
+                                skipped_main += 1
+                                continue
                         to_delete.append(skey)
                     for skey in to_delete:
                         # 删除物理文件
@@ -3766,9 +3786,11 @@ class Handler(BaseHTTPRequestHandler):
                             sessions_file.write_text(json.dumps(sessions_data, indent=2, ensure_ascii=False))
                         except Exception:
                             pass
+                mode_desc = '所有会话（保留太子主会话）' if include_main else '非 main 会话'
                 self.send_json({
                     'ok': True,
-                    'message': f'已清理 {cleared} 个非 main 会话（涉及 {len(target_agents)} 个 Agent）',
+                    'message': f'已清理 {cleared} 个{mode_desc}（涉及 {len(target_agents)} 个 Agent）'
+                              + (f'，跳过 {skipped_main} 个主会话' if skipped_main else ''),
                     'cleared': cleared,
                 })
             except Exception as e:

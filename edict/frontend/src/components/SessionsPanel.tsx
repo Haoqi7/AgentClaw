@@ -81,14 +81,21 @@ export default function SessionsPanel() {
   // Unique agents for filter tabs
   const agentIds = [...new Set(sessions.map(extractAgent))];
 
-  // 清空指定 Agent 的非 main 会话
+  // 清理会话（支持多种模式）
+  // agentId: 'all-including-main' | 'all' | 具体AgentId
   const clearAgentSessions = async (agentId: string) => {
     setClearingAgent(agentId);
     setShowAgentMenu(false);
     try {
       const r = await api.gatewayClearAgentSessions(agentId);
       if (r.ok) {
-        toast(`✅ 已清理 ${labelMap[agentId] || agentId} 的 ${r.cleared || 0} 个非主会话`, 'ok');
+        if (agentId === 'all-including-main') {
+          toast(`✅ ${r.message || `已清理 ${r.cleared || 0} 个会话（已保留太子主会话）`}`, 'ok');
+        } else if (agentId === 'all') {
+          toast(`✅ ${r.message || `已清理 ${r.cleared || 0} 个非主会话`}`, 'ok');
+        } else {
+          toast(`✅ 已清理 ${labelMap[agentId] || agentId} 的 ${r.cleared || 0} 个会话`, 'ok');
+        }
       } else {
         toast(`❌ ${r.error || '清理失败'}`, 'err');
       }
@@ -110,7 +117,7 @@ export default function SessionsPanel() {
             disabled={clearingAgent !== null}
             style={{ fontSize: 12, padding: '5px 14px', background: 'rgba(255,82,112,0.12)', color: 'var(--danger)', border: '1px solid rgba(255,82,112,0.25)', borderRadius: 6, cursor: 'pointer' }}
           >
-            {clearingAgent ? `⏳ 清理中...` : '🧹 清空Agent会话'}
+            {clearingAgent ? `⏳ 清理中...` : '🧹 清理会话'}
           </button>
           {showAgentMenu && (
             <div
@@ -121,7 +128,32 @@ export default function SessionsPanel() {
                 boxShadow: '0 4px 16px rgba(0,0,0,0.2)'
               }}
             >
-              <div style={{ fontSize: 11, color: 'var(--muted)', padding: '4px 8px', marginBottom: 4 }}>选择要清理的 Agent：</div>
+              <div style={{ fontSize: 11, color: 'var(--muted)', padding: '4px 8px', marginBottom: 4 }}>选择清理方式：</div>
+              <div
+                onClick={() => clearAgentSessions('all-including-main')}
+                style={{
+                  padding: '6px 10px', borderRadius: 6, cursor: 'pointer',
+                  fontSize: 12, color: 'var(--danger)', fontWeight: 600,
+                }}
+                onMouseEnter={(e) => (e.currentTarget.style.background = 'rgba(255,82,112,0.1)')}
+                onMouseLeave={(e) => (e.currentTarget.style.background = 'transparent')}
+              >
+                🧹 清空所有会话（保留太子）
+              </div>
+              <div
+                onClick={() => clearAgentSessions('all')}
+                style={{
+                  padding: '6px 10px', borderRadius: 6, cursor: 'pointer',
+                  fontSize: 12, color: 'var(--danger)',
+                }}
+                onMouseEnter={(e) => (e.currentTarget.style.background = 'rgba(255,82,112,0.1)')}
+                onMouseLeave={(e) => (e.currentTarget.style.background = 'transparent')}
+              >
+                🧹 清理非主会话（保留上下文）
+              </div>
+              <div style={{ borderTop: '1px solid var(--line)', marginTop: 4, paddingTop: 4 }}>
+                <div style={{ fontSize: 11, color: 'var(--muted)', padding: '4px 8px', marginBottom: 4 }}>按 Agent 清理（含主会话）：</div>
+              </div>
               {agentIds.slice(0, 12).map((id) => (
                 <div
                   key={id}
@@ -140,19 +172,7 @@ export default function SessionsPanel() {
                   </span>
                 </div>
               ))}
-              <div style={{ borderTop: '1px solid var(--line)', marginTop: 4, paddingTop: 4 }}>
-                <div
-                  onClick={() => clearAgentSessions('all')}
-                  style={{
-                    padding: '6px 10px', borderRadius: 6, cursor: 'pointer',
-                    fontSize: 12, color: 'var(--danger)', fontWeight: 600,
-                  }}
-                  onMouseEnter={(e) => (e.currentTarget.style.background = 'rgba(255,82,112,0.1)')}
-                  onMouseLeave={(e) => (e.currentTarget.style.background = 'transparent')}
-                >
-                  🧹 清空所有Agent
-                </div>
-              </div>
+
               <div
                 onClick={() => setShowAgentMenu(false)}
                 style={{ padding: '4px 10px', marginTop: 2 }}
@@ -163,7 +183,7 @@ export default function SessionsPanel() {
           )}
         </div>
         <span style={{ fontSize: 11, color: 'var(--muted)', marginLeft: 'auto' }}>
-          共 {sessions.length} 个会话 · 仅清理非主会话（保留上下文）
+          共 {sessions.length} 个会话 · 太子主会话始终保留
         </span>
       </div>
 
