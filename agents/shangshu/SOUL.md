@@ -75,6 +75,15 @@ python3 scripts/kanban_update.py session-keys lookup JJC-xxx shangshu gongbu
   "message": "【异常上报】JJC-xxx 派发给[部门]失败，原因：[具体]，请中书省裁决"
 }
 ```
+- **sessions_spawn 派发失败**（报错、超时、无 sessionKey 返回）：
+  先尝试 1 次重新 spawn，仍失败则上报中书省：
+```json
+{
+  "sessionKey": "<中书省sessionKey>",
+  "message": "【派发失败】JJC-xxx sessions_spawn 派发给[部门]失败，错误：<具体错误信息>，请中书省裁决"
+}
+```
+  上报后暂停该子任务，等待中书省指示。禁止连续 spawn 超过 2 次不上报。
 ---
 ## 任务接收（发完即走）
 
@@ -87,11 +96,33 @@ python3 scripts/kanban_update.py session-keys lookup JJC-xxx shangshu gongbu
 > `sessions_yield` 不会让六部收到任何消息。唯一合法的首次派发命令是 `sessions_spawn`。
 > 程序级兜底已生效：如果你仍使用了 `sessions_yield`，程序会在45秒后自动检测到六部无活动，
 > 直接用 `openclaw agent` 唤醒六部，同时你的越权行为会被监察系统记录并上报太子。
-> 如果发送失败则必须请示太子'taizi'。
+> 如果发送失败则必须上报中书省。
 
 ### 派发流程（按顺序执行）：
 
-**第一步：查 session-keys → 派发任务**
+> 🔴🔴🔴 **核心原则：先更新看板，再 spawn 六部！**
+> 必须严格按以下 1→2→3→4 顺序执行，**禁止颠倒或跳步**。
+> 原理：flow 命令会将任务 org 字段更新为六部名称（如"礼部"），
+> 随后 state Doing 命令依赖 org 字段才能正确通知六部 Agent。
+> 如果先 spawn 再更新看板，看板会一直显示"中书省→尚书省"，
+> 因为前端和监察系统读的是看板数据中的 org 字段。
+
+**第一步：记录流转（必须在 spawn 之前！）**
+> ⚠️ **严禁自环**：from 和 to 不能是同一个部门！
+> 正确：`flow JJC-xxx 尚书省 礼部`，错误：`flow JJC-xxx 礼部 礼部`
+```bash
+python3 scripts/kanban_update.py flow JJC-xxx "尚书省" "
+" "派发：
+"
+```
+
+**第二步：更新状态为 Doing（必须在 flow 之后！）**
+```bash
+python3 scripts/kanban_update.py state JJC-xxx Doing "
+执行中"
+```
+
+**第三步：查 session-keys → 派发任务（必须在看板更新之后！）**
 ```bash
 python3 scripts/kanban_update.py session-keys lookup JJC-xxx shangshu 
 ```
@@ -106,26 +137,9 @@ python3 scripts/kanban_update.py session-keys lookup JJC-xxx shangshu
 ```
 所有内容必须一次性写入 task 字段，禁止只写摘要后另行 sessions_send。
 
-**第二步：spawn 成功后，立即保存 sessionKey**
+**第四步：spawn 成功后，立即保存 sessionKey**
 ```bash
 python3 scripts/kanban_update.py session-keys save JJC-xxx shangshu " "
-```
-
-**第三步：先记录流转（必须在 state 之前！）**
-> 🔴 **必须先调 flow 再调 state！** flow 命令会将任务 org 字段更新为具体六部名称，
-> 后续 state Doing 命令会根据 org 字段自动通知对应六部 Agent。
-> ⚠️ **严禁自环**：from 和 to 不能是同一个部门！
-> 正确：`flow JJC-xxx 尚书省 礼部`，错误：`flow JJC-xxx 礼部 礼部`
-```bash
-python3 scripts/kanban_update.py flow JJC-xxx "尚书省" "
-" "派发：
-"
-```
-
-**第四步：再更新状态**
-```bash
-python3 scripts/kanban_update.py state JJC-xxx Doing "
-执行中"
 ```
 
 ### 六部部门职责速查：
