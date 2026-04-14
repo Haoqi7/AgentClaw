@@ -234,15 +234,18 @@ export default function AuditPanelEnhanced() {
   }, []);
   const closeDetail = useCallback(() => { setSelected(null); setActivityData(null); }, []);
 
-  // ── 停止监察（归档任务） ──
-  const handleStopMonitoring = useCallback(async (taskId: string, e: React.MouseEvent) => {
+  // ── 停止监察（排除监察，不影响看板） ──
+  const handleStopMonitoring = useCallback(async (taskId: string, taskTitle: string, e: React.MouseEvent) => {
     e.stopPropagation();
-    if (!confirm('停止监察将同时归档此任务，确定继续？')) return;
+    const input = prompt(`请输入任务名称「${taskTitle}」以确认停止监察：`);
+    if (!input || input.trim() !== taskTitle) {
+      if (input !== null) toast('任务名称不匹配，已取消', 'err');
+      return;
+    }
     try {
-      const r = await api.archiveTask(taskId, true);
+      const r = await api.auditExclude(taskId, 'exclude');
       if (r.ok) {
-        toast(`🛑 ${taskId} 已停止监察并归档`);
-        loadAll();
+        toast(`🛑 ${taskId} 已停止监察（不影响看板任务）`);
         loadAudit();
       } else {
         toast(r.error || '操作失败', 'err');
@@ -250,7 +253,7 @@ export default function AuditPanelEnhanced() {
     } catch {
       toast('服务器连接失败', 'err');
     }
-  }, [toast, loadAll, loadAudit]);
+  }, [toast, loadAudit]);
 
   const selTask = selected ? taskMap.get(selected.id) : null;
   const selViolations = useMemo(() => {
@@ -547,9 +550,9 @@ export default function AuditPanelEnhanced() {
 
                     {/* 底部元信息 */}
                     <div className="ec-footer" style={{ marginBottom: 8, paddingBottom: 0, borderBottom: 'none' }}>
-                      <button className="mini-act" onClick={(e) => handleStopMonitoring(w.task_id, e)}
+                      <button className="mini-act" onClick={(e) => handleStopMonitoring(w.task_id, w.title, e)}
                         style={{ fontSize: 10, padding: '1px 6px', marginLeft: 0, marginRight: 4 }}
-                        title="停止监察并归档此任务">🛑 停止监察</button>
+                        title="停止监察此任务（需输入任务名称确认，不影响看板）">🛑 停止监察</button>
                       <span className="hb">流转 {w.flow_count} 步</span>
                       <span className="hb" style={{ cursor: 'pointer' }} onClick={(e) => { e.stopPropagation(); setExpandedSessionCard(expandedSessionCard === w.task_id ? null : w.task_id); }}>
                         🔑 {w.session_key_count ?? (w.session_keys ? Object.keys(w.session_keys).length : 0)} 会话 {expandedSessionCard === w.task_id ? '▾' : '▸'}

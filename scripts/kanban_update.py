@@ -1454,7 +1454,7 @@ _VALID_TRANSITIONS = {
 }
 
 # 不需要通知 Agent 的状态转换集合（终态或内部状态）
-_NO_NOTIFY_STATES = {'Done', 'Cancelled'}
+_NO_NOTIFY_STATES = {'Done', 'Cancelled', 'Assigned'}
 
 # ═══════════════════════════════════════════════════════════════════════
 # 🔒 会话去重：冷却时间 + 最大通知次数
@@ -1563,6 +1563,12 @@ def cmd_state(task_id, new_state, now_text=None):
                 if notify_agent_id:
                     new_org_label = t.get('org', new_org_label)
                     log.info(f'🔗 V6修复: {task_id} {new_state}状态从org字段解析agent={notify_agent_id} (org={t.get("org","")})')
+            # 【V8 修复】尚书省重复通知：跳过程序通知尚书省
+            # 尚书省由中书省通过 LLM 层 sessions_spawn 唤醒（唯一的 LLM 层通知环节），
+            # 程序通知与 LLM 通知重复，导致尚书省收到两次通知，因此跳过程序通知。
+            if notify_agent_id == 'shangshu':
+                log.info(f'🔗 V8修复: {task_id} 跳过程序通知尚书省（由中书省LLM层sessions_spawn通知）')
+                notify_agent_id = ''
             # ═══════════════════════════════════════════════════════════════
             # 【V7 关键修复】Doing 状态通知冷却降级（断裂点②加强）
             # 
