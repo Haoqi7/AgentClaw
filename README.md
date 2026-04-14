@@ -191,8 +191,8 @@ chmod +x install.sh && ./install.sh
 # 以飞书为例，太子作为旨意入口
 openclaw channels add --type feishu --agent taizi
 ```
-
-太子会自动识别闲聊和任务指令，指令类消息提炼标题后转发中书省。
+- 太子会自动识别闲聊和任务指令，指令类消息提炼标题后转发中书省。
+- 可参考`openclaw.example.json`和`exec-approvals.json`来配置。
 
 ### 第 4 步：启动服务
 
