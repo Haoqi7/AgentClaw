@@ -1419,6 +1419,17 @@ def cmd_create(task_id, title, state, org, official, remark=None, current_sessio
     atomic_json_update(TASKS_FILE, modifier, [])
     _trigger_refresh()
 
+    # 【修复】create 时清除 _lastNotify，确保首次通知不被冷却拦截
+    try:
+        def _clear_notify_on_create(tasks):
+            t = find_task(tasks, task_id)
+            if t:
+                t['_lastNotify'] = {}
+            return tasks
+        atomic_json_update(TASKS_FILE, _clear_notify_on_create, [])
+    except Exception:
+        pass
+
     # 📨 通知初始状态的负责 Agent
     notify_agent_id = _resolve_agent_id(state) or _resolve_agent_id(actual_org)
     _notify_agent(
@@ -1454,7 +1465,7 @@ _VALID_TRANSITIONS = {
 }
 
 # 不需要通知 Agent 的状态转换集合（终态或内部状态）
-_NO_NOTIFY_STATES = {'Done', 'Cancelled', 'Assigned'}
+_NO_NOTIFY_STATES = {'Done', 'Cancelled'}  # 【修复】移除 Assigned：门下准奏后程序必须通知中书省
 
 # ═══════════════════════════════════════════════════════════════════════
 # 🔒 会话去重：冷却时间 + 最大通知次数
