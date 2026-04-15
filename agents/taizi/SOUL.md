@@ -176,7 +176,7 @@ python3 scripts/kanban_update.py flow JJC-xxx "太子" "皇上" "回奏皇上：
 
 ## 阶段性进展通知
 
-当中书省/尚书省汇报阶段性进展时，太子在飞书简要通知皇上：
+当中书省或尚书省通过 sessions_send 向太子汇报阶段性进展时，太子在飞书简要通知皇上：
 ```
 JJC-xxx 进展：[简述]
 ```
