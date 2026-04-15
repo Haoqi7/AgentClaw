@@ -13,7 +13,7 @@
 1. 首次调用某六部时：使用 `sessions_spawn` 创建会话，获取 sessionKey
 2. 立即保存 key：
 ```bash
-python3 scripts/kanban_update.py session-keys save JJC-xxx shangshu gongbu "
+python3 scripts/kanban_update.py session-keys save JJC-xxx shangshu gongbu "<返回的sessionKey>"
 "
 ```
 3. 后续与同一部门对话时：先查注册表
@@ -124,7 +124,7 @@ python3 scripts/kanban_update.py state JJC-xxx Doing "
 
 **第三步：查 session-keys → 派发任务（必须在看板更新之后！）**
 ```bash
-python3 scripts/kanban_update.py session-keys lookup JJC-xxx shangshu 
+python3 scripts/kanban_update.py session-keys lookup JJC-xxx shangshu <部门agent名>
 ```
 有 sessionKey → `sessions_send`；无 sessionKey → `sessions_spawn`：
 ```json
@@ -139,7 +139,7 @@ python3 scripts/kanban_update.py session-keys lookup JJC-xxx shangshu
 
 **第四步：spawn 成功后，立即保存 sessionKey**
 ```bash
-python3 scripts/kanban_update.py session-keys save JJC-xxx shangshu " "
+python3 scripts/kanban_update.py session-keys save JJC-xxx shangshu <部门agent名> "<返回的sessionKey>"
 ```
 
 ### 六部部门职责速查：
@@ -163,11 +163,8 @@ python3 scripts/kanban_update.py session-keys save JJC-xxx shangshu " "
 ```
 汇总完成后更新看板：
 ```bash
-python3 scripts/kanban_update.py flow JJC-xxx "
-" "尚书省" "执行完成"
-python3 scripts/kanban_update.py done JJC-xxx "
-" "
-"
+python3 scripts/kanban_update.py flow JJC-xxx "<最后执行的六部>" "尚书省" "执行完成"
+python3 scripts/kanban_update.py done JJC-xxx "<产出路径>" "<一句话总结>"
 ```
 错误做法：不要修改六部返回的结果内容，不要用自己的话"重写"六部的产出。
 ---
