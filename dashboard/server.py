@@ -1263,13 +1263,13 @@ _SUPERVISION_CONFIG = {
     # 三省：10分钟催办，15分钟超时上报太子
     'Zhongshu':  {'remind_sec': 600, 'timeout_sec': 900, 'label': '中书省', 'parent_agent': 'taizi'},
     'Menxia':    {'remind_sec': 600, 'timeout_sec': 900, 'label': '门下省', 'parent_agent': 'zhongshu'},
-    'Assigned':  {'remind_sec': 600, 'timeout_sec': 900, 'label': '尚书省', 'parent_agent': 'zhongshu'},
+    'Assigned':  {'remind_sec': 600, 'timeout_sec': 900, 'label': '尚书省', 'parent_agent': 'taizi'},
     # 六部/Next：5分钟催办，30分钟超时上报太子（原 timeout_sec=0 不会上报）
     'Doing':     {'remind_sec': 300, 'timeout_sec': 1800, 'label': '六部',   'parent_agent': 'shangshu'},
     'Next':      {'remind_sec': 300, 'timeout_sec': 1800, 'label': '六部',   'parent_agent': 'shangshu'},
     'Taizi':     {'remind_sec': 600, 'timeout_sec': 900, 'label': '太子',   'parent_agent': 'taizi'},
     'Pending':   {'remind_sec': 600, 'timeout_sec': 900, 'label': '中书省', 'parent_agent': 'taizi'},
-    'Review':    {'remind_sec': 300, 'timeout_sec': 600,  'label': '汇总审查', 'parent_agent': 'shangshu'},
+    'Review':    {'remind_sec': 300, 'timeout_sec': 600,  'label': '汇总审查', 'parent_agent': 'taizi'},
 }
 
 # 长期停滞二次通知间隔（秒）：超过 timeout_sec 后，每 N 秒重复通知太子
@@ -1290,7 +1290,7 @@ _AGENT_REMIND_TEMPLATES = {
         '已等待: {stalled_min} 分钟（超过10分钟阈值）\n\n'
         '中书省作为方案起草部门，请立即：\n'
         '1. 确认是否已收到太子转交的旨意\n'
-        '2. 如已收到，说明当前进展（分析/起草/提交门下审议/等门下回复/转尚书）\n'
+        '2. 如已收到，说明当前进展（分析/起草/提交门下审议/等待门下回复）\n'
         '3. 如未收到，说明情况以便太子协调\n\n'
         '⚠️ 看板已有此任务，请勿重复创建。'
     ),
@@ -1311,10 +1311,10 @@ _AGENT_REMIND_TEMPLATES = {
         '任务ID: {task_id}\n'
         '任务标题: {task_title}\n'
         '已等待: {stalled_min} 分钟（超过10分钟阈值）\n\n'
-        '中书省提醒：门下省已准奏，请尚书省立即：\n'
+        '太子调度提醒：门下省已准奏，请尚书省立即：\n'
         '1. 确认是否已收到执行请求\n'
         '2. 说明当前进展（分析方案/确定派发/已派发六部/汇总结果中）\n'
-        '3. 如未收到，说明情况以便中书省重新发送\n\n'
+        '3. 如未收到，说明情况以便太子协调处理\n\n'
         '⚠️ 看板已有此任务，请勿重复创建。'
     ),
     # 六部催办模板（由尚书省发出）

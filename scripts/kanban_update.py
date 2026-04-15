@@ -150,6 +150,7 @@ _STATE_AGENT_MAP = {
     # 门下省准奏后，程序直接通知尚书省（不再通过中书省中转）。
     # 中书省职责简化为：接旨→起草→提审→修改（不负责回奏和派发）。
     'Assigned': 'shangshu',
+    'Review': 'shangshu',  # 架构调整：Review→尚书省（汇总审查）
     'Pending': 'zhongshu',
     'Done': 'taizi',
 }
@@ -1683,7 +1684,7 @@ _VALID_TRANSITIONS = {
 }
 
 # 不需要通知 Agent 的状态转换集合（终态或内部状态）
-_NO_NOTIFY_STATES = {'Done', 'Cancelled'}  # 【修复】移除 Assigned：门下准奏后程序必须通知中书省
+_NO_NOTIFY_STATES = {'Done', 'Cancelled'}  # 【修复】移除 Assigned：门下准奏后程序必须通知尚书省
 
 # ═══════════════════════════════════════════════════════════════════════
 # 🔒 会话去重：冷却时间 + 最大通知次数
@@ -1792,8 +1793,7 @@ def cmd_state(task_id, new_state, now_text=None):
                 if notify_agent_id:
                     new_org_label = t.get('org', new_org_label)
                     log.info(f'🔗 V6修复: {task_id} {new_state}状态从org字段解析agent={notify_agent_id} (org={t.get("org","")})')
-            # 【架构调整】尚书省现在是 main agent，程序层通知尚书省是正确的
-            # 不再跳过尚书省的通知（旧 V8 修复已移除）
+            # 【架构调整】尚书省是 main agent，程序层正常通知尚书省
             # 【架构调整】Doing 状态跳过程序层对六部的通知
             # 六部由尚书省通过 sessions_spawn 通知（含完整子任务内容）。
             # 程序层不再发送通用通知给六部，避免重复通知。
@@ -1830,7 +1830,7 @@ def cmd_state(task_id, new_state, now_text=None):
         # 【V5 修复】程序级兜底：Doing 状态时，延迟检查六部是否被唤醒
         # 根因：尚书省→六部 完全依赖 LLM 层 sessions_spawn，如果尚书省用了
         # sessions_yield 或 LLM 推理失败，六部永远不会收到消息。
-        # 此处作为最后一道防线：60秒后检查六部是否有活动，若无则程序级唤醒。
+        # 此处作为最后一道防线：180秒后检查六部是否有活动，若无则程序级唤醒。
         if new_state == 'Doing' and t:
             _start_liubu_alive_check(task_id, t)
 
@@ -1861,7 +1861,8 @@ def _record_menxia_violation(task_id, from_dept, to_dept, detail):
         # 保持通知记录上限
         if len(audit["notifications"]) > 200:
             audit["notifications"] = audit["notifications"][-200:]
-        atomic_json_write(audit_file, audit)
+        # 使用 atomic_json_update 写入（atomic_json_write 未定义，此处修正）
+        atomic_json_update(audit_file, lambda _: audit, {"last_check": "", "violations": [], "notifications": []})
         log.info(f'📝 已记录门下省越权到通知记录: {task_id} 门下省→{to_dept}')
     except Exception as e:
         log.warning(f'📝 记录门下省越权失败: {e}')
@@ -1892,7 +1893,7 @@ def cmd_flow(task_id, from_dept, to_dept, remark):
         detail = (
             f"门下省越权流转被拦截：{task_id} 门下省→{to_dept}。"
             f"门下省只能向中书省流转（准奏或封驳），禁止直接向尚书省或六部发送流转。"
-            f"正确流程：门下省准奏 →中书省→尚书省→六部。"
+            f"正确流程：门下省准奏（state Assigned）→ 程序自动通知尚书省 → 尚书省 sessions_spawn 六部。"
         )
         _record_menxia_violation(task_id, from_dept, to_dept, detail)
         return
@@ -2157,17 +2158,10 @@ def cmd_done(task_id, output_path='', summary=''):
     log.info(f'✅ {task_id} 已完成')
 
     # ═══════════════════════════════════════════════════════════════════════
-    # 🔧 FIX: Done 后程序级通知太子（修复中书省回奏太子传递错会话的根因）
-    #
-    # 旧代码：cmd_done 只写 state='Done'，不通知任何人。
-    # 中书省 LLM 只能手动 sessions_send 给太子，但没有正确的 session_key，
-    # 导致太子收到消息的位置不对（或根本收不到）。
-    #
-    # 修复：Done 后由程序统一通知太子，走 _notify_agent 标准路径：
+    # Done 后程序自动通知太子（from_org=尚书省），走 _notify_agent 标准路径：
     #   1. lookup 太子的 session_key（任务创建时自动保存）
     #   2. 有 key → sessions_send 精准投递到太子正确会话
     #   3. 无 key → openclaw agent 唤醒（降级到 main session）
-    # 架构调整：尚书省汇总后标记 done，程序直接通知太子（不再经过中书省）。
     # ═══════════════════════════════════════════════════════════════════════
     try:
         tasks = load()
