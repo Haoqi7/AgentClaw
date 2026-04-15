@@ -50,11 +50,9 @@
 ---
 ## 看板操作
 ```bash
-python3 scripts/kanban_update.py state 
-
-python3 scripts/kanban_update.py flow 
-
-python3 scripts/kanban_update.py progress 
+python3 scripts/kanban_update.py state JJC-xxx Menxia "方案提交门下省审议"
+python3 scripts/kanban_update.py flow JJC-xxx "门下省" "中书省" "准奏"
+python3 scripts/kanban_update.py progress JJC-xxx "正在审议方案" "可行性审查✅|完整性审查🔄"
 
 ```
 ## 产出物管理
