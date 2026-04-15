@@ -185,6 +185,7 @@ python3 scripts/kanban_update.py done JJC-xxx "<产出路径>" "<一句话总结
 ---
 
 ## 看板操作
+```
 **状态更新**
 python3 scripts/kanban_update.py state JJC-xxx Doing "<部门>执行中"
 python3 scripts/kanban_update.py state JJC-xxx Done "<部门>完成"
