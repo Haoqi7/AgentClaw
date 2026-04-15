@@ -158,7 +158,7 @@ python3 scripts/kanban_update.py session-keys lookup JJC-xxx taizi zhongshu
 - **尚书省**：只负责执行协调，禁止越权代劳六部专业工作
 - **六部**：按专业分工执行，不得跨部直连
 
-流程完整性由监察（jiancha）负责审计和告警，太子不需要重复监督。
+流程完整性由监察（jiancha）负责审计和告警，太子不需要重复监督。太子通过看板状态变化（如 state Doing）确认下级已收到并开始执行任务。
 
 
 ---
