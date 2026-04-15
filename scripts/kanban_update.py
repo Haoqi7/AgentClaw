@@ -3,6 +3,11 @@
 看板任务更新工具 - 供各省部 Agent 调用
 
 本工具操作 data/tasks_source.json（JSON 看板模式）。
+如果您已部署 edict/backend（Postgres + Redis 事件总线模式），
+请使用 edict/backend API 端点代替本脚本，或运行迁移脚本：
+  python3 edict/migration/migrate_json_to_pg.py
+
+两种模式互相独立，数据不会自动同步。
 
 用法:
   # 新建任务（收旨时）
@@ -145,7 +150,6 @@ _STATE_AGENT_MAP = {
     # 门下省准奏后，程序直接通知尚书省（不再通过中书省中转）。
     # 中书省职责简化为：接旨→起草→提审→修改（不负责回奏和派发）。
     'Assigned': 'shangshu',
-    'Review': 'shangshu',  # 架构调整：Review→尚书省（汇总审查）
     'Pending': 'zhongshu',
     'Done': 'taizi',
 }
@@ -803,8 +807,8 @@ def _notify_agent(agent_id, task_id, from_org, to_org, title='', remark='', curr
         f"",
         f"📋 任务信息：",
         f"  · 任务ID：{task_id}",
-        f"  · 任务标题：{title}",
-        f"  · 流转路径：{from_org} → {to_org}",
+        f"  · 任务标题：{title or '(见详细任务内容)'}",
+        f"  · 流转路径：{from_org or '系统'} → {to_org}",
         f"  · 说明：{remark}",
     ]
     # 【V5 修复】通知中附带产出路径和进展摘要，解决门下省二次审核收不到文档内容的问题
@@ -1553,8 +1557,21 @@ def cmd_notify(task_id, agent_id, remark=''):
         log.warning(f'任务 {task_id} 不存在，无法通知')
         return
     task_title = t.get('title', '')
+    # 标题兜底：从 dispatch_plan 或 remark 推断
+    if not task_title:
+        _plan = t.get('dispatch_plan', {}) or {}
+        task_title = (_plan.get('title', '') or '')
+        if not task_title and (_plan.get('full_plan', '') or ''):
+            task_title = _plan['full_plan'].split('\n')[0][:60]
+        if not task_title:
+            task_title = (remark or '')[:50] or task_id
     current_org = t.get('org', '')
     from_org = STATE_ORG_MAP.get(t.get('state', ''), current_org)
+    # from_org 兜底
+    if not from_org or from_org == '未知':
+        _flow = t.get('flow_log', [])
+        if _flow:
+            from_org = _flow[-1].get('from', from_org)
     to_org = _AGENT_LABELS.get(agent_id, agent_id)
     _notify_agent(
         agent_id=agent_id,
@@ -1679,7 +1696,7 @@ _VALID_TRANSITIONS = {
 }
 
 # 不需要通知 Agent 的状态转换集合（终态或内部状态）
-_NO_NOTIFY_STATES = {'Done', 'Cancelled'}  # 【修复】移除 Assigned：门下准奏后程序必须通知尚书省
+_NO_NOTIFY_STATES = {'Done', 'Cancelled'}  # 【修复】移除 Assigned：门下准奏后程序必须通知中书省
 
 # ═══════════════════════════════════════════════════════════════════════
 # 🔒 会话去重：冷却时间 + 最大通知次数
@@ -1767,7 +1784,25 @@ def cmd_state(task_id, new_state, now_text=None):
             tasks = load()
             t = find_task(tasks, task_id)
             task_title = t.get('title', '') if t else ''
+            # 标题兜底：从 dispatch_plan 或 remark 推断
+            if not task_title and t:
+                _plan = t.get('dispatch_plan', {}) or {}
+                task_title = (_plan.get('title', '') or '')
+                if not task_title and (_plan.get('full_plan', '') or ''):
+                    task_title = _plan['full_plan'].split('\n')[0][:60]
+                if not task_title:
+                    task_title = (now_text or '')[:50] or task_id
             old_org_label = STATE_ORG_MAP.get(old_state[0], old_state[0] or '未知')
+            # from_org 兜底：从 flow_log 或 remark 推断
+            if old_org_label == '未知' and t:
+                _flow = t.get('flow_log', [])
+                if _flow:
+                    old_org_label = _flow[-1].get('from', '未知')
+                if old_org_label == '未知' and now_text:
+                    for _kw in ('门下省', '中书省', '太子', '皇上'):
+                        if _kw in now_text:
+                            old_org_label = _kw
+                            break
             new_org_label = STATE_ORG_MAP.get(new_state, new_state)
             # ═══════════════════════════════════════════════════════════════
             # 【V6 关键修复】Doing/Next 状态通知修复（断链点①+②根因）
@@ -1788,7 +1823,8 @@ def cmd_state(task_id, new_state, now_text=None):
                 if notify_agent_id:
                     new_org_label = t.get('org', new_org_label)
                     log.info(f'🔗 V6修复: {task_id} {new_state}状态从org字段解析agent={notify_agent_id} (org={t.get("org","")})')
-            # 【架构调整】尚书省是 main agent，程序层正常通知尚书省
+            # 【架构调整】尚书省现在是 main agent，程序层通知尚书省是正确的
+            # 不再跳过尚书省的通知（旧 V8 修复已移除）
             # 【架构调整】Doing 状态跳过程序层对六部的通知
             # 六部由尚书省通过 sessions_spawn 通知（含完整子任务内容）。
             # 程序层不再发送通用通知给六部，避免重复通知。
@@ -1825,7 +1861,7 @@ def cmd_state(task_id, new_state, now_text=None):
         # 【V5 修复】程序级兜底：Doing 状态时，延迟检查六部是否被唤醒
         # 根因：尚书省→六部 完全依赖 LLM 层 sessions_spawn，如果尚书省用了
         # sessions_yield 或 LLM 推理失败，六部永远不会收到消息。
-        # 此处作为最后一道防线：180秒后检查六部是否有活动，若无则程序级唤醒。
+        # 此处作为最后一道防线：60秒后检查六部是否有活动，若无则程序级唤醒。
         if new_state == 'Doing' and t:
             _start_liubu_alive_check(task_id, t)
 
@@ -1856,8 +1892,7 @@ def _record_menxia_violation(task_id, from_dept, to_dept, detail):
         # 保持通知记录上限
         if len(audit["notifications"]) > 200:
             audit["notifications"] = audit["notifications"][-200:]
-        # 使用 atomic_json_update 写入（atomic_json_write 未定义，此处修正）
-        atomic_json_update(audit_file, lambda _: audit, {"last_check": "", "violations": [], "notifications": []})
+        atomic_json_write(audit_file, audit)
         log.info(f'📝 已记录门下省越权到通知记录: {task_id} 门下省→{to_dept}')
     except Exception as e:
         log.warning(f'📝 记录门下省越权失败: {e}')
@@ -1888,7 +1923,7 @@ def cmd_flow(task_id, from_dept, to_dept, remark):
         detail = (
             f"门下省越权流转被拦截：{task_id} 门下省→{to_dept}。"
             f"门下省只能向中书省流转（准奏或封驳），禁止直接向尚书省或六部发送流转。"
-            f"正确流程：门下省准奏（state Assigned）→ 程序自动通知尚书省 → 尚书省 sessions_spawn 六部。"
+            f"正确流程：门下省准奏 →中书省→尚书省→六部。"
         )
         _record_menxia_violation(task_id, from_dept, to_dept, detail)
         return
@@ -2153,10 +2188,17 @@ def cmd_done(task_id, output_path='', summary=''):
     log.info(f'✅ {task_id} 已完成')
 
     # ═══════════════════════════════════════════════════════════════════════
-    # Done 后程序自动通知太子（from_org=尚书省），走 _notify_agent 标准路径：
+    # 🔧 FIX: Done 后程序级通知太子（修复中书省回奏太子传递错会话的根因）
+    #
+    # 旧代码：cmd_done 只写 state='Done'，不通知任何人。
+    # 中书省 LLM 只能手动 sessions_send 给太子，但没有正确的 session_key，
+    # 导致太子收到消息的位置不对（或根本收不到）。
+    #
+    # 修复：Done 后由程序统一通知太子，走 _notify_agent 标准路径：
     #   1. lookup 太子的 session_key（任务创建时自动保存）
     #   2. 有 key → sessions_send 精准投递到太子正确会话
     #   3. 无 key → openclaw agent 唤醒（降级到 main session）
+    # 架构调整：尚书省汇总后标记 done，程序直接通知太子（不再经过中书省）。
     # ═══════════════════════════════════════════════════════════════════════
     try:
         tasks = load()
