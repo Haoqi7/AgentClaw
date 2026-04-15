@@ -1280,10 +1280,6 @@ def cmd_session_keys_list(task_id):
 # 修复：提供程序级 next-id 命令，太子创建任务前先调用此命令获取可用序号。
 # ═══════════════════════════════════════════════════════════════════════
 
-# JJC 任务 ID 正则：JJC-YYYYMMDD-NNN
-_JJC_ID_PATTERN = re.compile(r'^JJC-(\d{8})-(\d{3})$')
-
-
 def cmd_next_id(prefix='JJC', date_str=None):
     """查询当天下一个可用的任务 ID（程序级自增，杜绝 LLM 编号不可靠的问题）。
 
