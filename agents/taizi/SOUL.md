@@ -156,9 +156,6 @@ python3 scripts/kanban_update.py session-keys lookup JJC-xxx taizi zhongshu
 
 流程完整性由监察（jiancha）负责审计和告警，太子不需要重复监督。
 
-### 3. 收到确认才算交接完毕
-- 所有部门收到任务后，必须回复上级：「已收到 JJC-xxx [任务标题]」
-- 上级部门只有在收到确认后，才能在看板中标记自己的步骤完成
 
 ---
 
