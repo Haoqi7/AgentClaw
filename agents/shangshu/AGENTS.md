@@ -194,7 +194,6 @@ python3 scripts/kanban_update.py session-keys save JJC-xxx shangshu <部门agent
 
 | 部门 | agent 名 | 职责 |
 |------|---------|------|
-| 太子 | taizi | 汇总 |
 | 中书省| zhongshu | 起草方案、提交审议、转交执行 | 
 | 工部 | gongbu | 部署运维/安全防御/漏洞扫描 |
 | 兵部 | bingbu | 功能开发/架构设计/代码实现 |
