@@ -373,12 +373,12 @@ build_frontend() {
 
   if ! command -v node &>/dev/null; then
     warn "未找到 node，跳过前端构建。看板将使用预构建版本（如果存在）"
-    warn "请安装 Node.js 18+ 后运行: cd edict/frontend && npm install && npm run build"
+    warn "请安装 Node.js 18+ 后运行: cd frontend && npm install && npm run build"
     return
   fi
 
-  if [ -f "$REPO_DIR/edict/frontend/package.json" ]; then
-    cd "$REPO_DIR/edict/frontend"
+  if [ -f "$REPO_DIR/frontend/package.json" ]; then
+    cd "$REPO_DIR/frontend"
     npm install --silent 2>/dev/null || npm install
     npm run build 2>/dev/null
     cd "$REPO_DIR"
@@ -388,7 +388,7 @@ build_frontend() {
       warn "前端构建可能失败，请手动检查"
     fi
   else
-    warn "未找到 edict/frontend/package.json，跳过前端构建"
+    warn "未找到 frontend/package.json，跳过前端构建"
   fi
 }
 

@@ -330,7 +330,7 @@ AgentClaw/
 │   ├── libu_hr/SOUL.md     #   吏部 — 人事管理
 │   ├── zaochao/SOUL.md     #   钦天监 — 新闻采集
 │   └── jiancha/SOUL.md     #   御史台 — 流程审计
-├── edict/frontend/          # React + TypeScript 前端
+├── frontend/                # React + TypeScript 前端
 │   └── src/components/      #   18 个组件
 ├── dashboard/               # 看板服务器 + API
 │   ├── server.py           #   主服务（Python HTTP）
@@ -354,7 +354,6 @@ AgentClaw/
 本项目基于以下开源项目衍生开发：
 
 - [OpenClaw](https://github.com/openclaw) — AI Agent 基础设施
-- [edict](https://github.com/cft0808/edict) — 多 Agent 编排原型
 - [OpenClawChineseTranslation](https://github.com/1186258278/OpenClawChineseTranslation) — 中文本地化
 
 严格遵守上游项目的开源许可证协议。

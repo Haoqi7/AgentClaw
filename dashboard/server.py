@@ -36,7 +36,7 @@ import io as _io
 log = logging.getLogger('server')
 logging.basicConfig(level=logging.INFO, format='%(asctime)s [%(name)s] %(message)s', datefmt='%H:%M:%S')
 
-CHANNELS_DIR = pathlib.Path(__file__).parent.parent / 'edict' / 'backend' / 'app' / 'channels'
+CHANNELS_DIR = pathlib.Path(__file__).parent / 'channels'
 # 修复：channels 模块为可选依赖，导入失败时降级为空实现，避免服务崩溃
 NOTIFICATION_CHANNELS = {}
 def get_channel(channel_type):
@@ -54,7 +54,7 @@ try:
     get_channel_info = _get_channel_info
     NOTIFICATION_CHANNELS = _CHANNELS
 except ImportError:
-    log.warning('⚠️ channels 模块未找到（edict/backend/app/channels/），多渠道通知功能不可用')
+    log.warning('⚠️ channels 模块未找到（dashboard/channels/），多渠道通知功能不可用')
 
 OCLAW_HOME = pathlib.Path.home() / '.openclaw'
 MAX_REQUEST_BODY = 1 * 1024 * 1024  # 1 MB
