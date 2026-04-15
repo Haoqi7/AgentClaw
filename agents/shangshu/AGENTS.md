@@ -104,7 +104,7 @@
 1. sessions_spawn 调用后，如果返回错误、超时或无 sessionKey，视为派发失败
 2. 派发失败后，通过 sessions_send 上报中书省，说明具体失败原因
 3. 上报后暂停该子任务派发，等待中书省裁决（可能要求重试或调整方案）
-4. 禁止对同一部门连续 spawn 超过 1 次而不上报中书省
+4. 禁止对同一部门连续 spawn 超过 2 次而不上报中书省
 5. 如果中书省未在合理时间内响应，通过看板 progress 命令上报停滞：
    ```bash
    python3 scripts/kanban_update.py progress JJC-xxx "派发给<部门>失败，已上报中书省等待裁决"
