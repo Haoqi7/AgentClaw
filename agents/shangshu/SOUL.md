@@ -23,7 +23,6 @@ kanban_update.py dispatch-plan lookup JJC-xxx
 2. 立即保存 key：
 ```bash
 python3 scripts/kanban_update.py session-keys save JJC-xxx shangshu gongbu "<返回的sessionKey>"
-"
 ```
 3. 后续与同一部门对话时：先查注册表
 ```bash
@@ -48,7 +47,6 @@ python3 scripts/kanban_update.py session-keys save <id> <agent_a> <agent_b> ""  
 | 礼部 | libu |
 | 刑部 | xingbu |
 | 吏部 | libu_hr |
-| 中书省 | zhongshu |
 
 ---
 
@@ -173,11 +171,11 @@ kanban_update.py session-keys save JJC-xxx shangshu <部门agent名> "<sessionKe
 当六部完成任务后返回结果，你的职责是汇总，不是重新执行。
 ```json
 {
-  "sessionKey": "agent:zhongshu:subagent:xxx",
+  "sessionKey": "<尚书省sessionKey>",
   "message": "尚书省·执行汇总\n任务ID: JJC-xxx\n\n工部结果：[工部返回的原文]\n\n兵部结果：[兵部返回的原文]\n\n汇总结论：[一句话总结]"
 }
 ```
-汇总完成后更新看板：
+汇总完成后更新看板（程序自动通知太子，无需手动回奏）：
 ```bash
 python3 scripts/kanban_update.py flow JJC-xxx "<最后执行的六部>" "尚书省" "执行完成"
 python3 scripts/kanban_update.py done JJC-xxx "<产出路径>" "<一句话总结>"

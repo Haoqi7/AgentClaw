@@ -2035,8 +2035,8 @@ def cmd_done(task_id, output_path='', summary=''):
     """标记任务完成（原子操作，含状态校验 + 流程完整性校验）
     
     旨意任务（JJC-开头）必须走完整回传链：
-      六部→尚书省→中书省→太子→皇上
-    flow_log 中必须包含完整的回传链才能标记 Done。
+      六部→尚书省→太子→皇上（架构调整：中书省不再参与回奏，由程序自动通知太子）
+    flow_log 中必须包含完整回传链才能标记 Done。
     非旨意任务不受此限制。
     """
     def modifier(tasks):
@@ -2064,26 +2064,20 @@ def cmd_done(task_id, output_path='', summary=''):
                     # 标准化名称：使用 _ORG_AGENT_MAP / _STATE_AGENT_MAP 转换
                     flow_pairs.add((f_raw, t_raw))
             
-            # 校验完整回传链：尚书省→中书省、中书省→太子、太子→皇上
+            # 【架构调整回传链校验】
+            # 旧链路：六部→尚书省→中书省→太子→皇上
+            # 新链路：六部→尚书省→太子→皇上（中书省不再参与回奏，程序自动通知太子）
             #
-            # ── BUG FIX #3: 原校验过于严格，只接受精确的部门名称匹配。
-            #    实际运行中，可能出现以下合理偏差：
-            #    1. 尚书省直接报告太子（跳过中书省），此时 flow_log 中有 尚书省→太子
-            #       而非 中书省→太子，但信息已传达至太子，不应阻塞 Done。
-            #    2. 太子只调用了 progress 而未调用 flow 来记录汇报皇上的流转。
-            #    修复策略：
-            #    - 接受尚书省→太子作为中书省→太子的等价替代路径
-            #    - 对于太子→皇上的缺失，改为记录警告但不阻塞 Done（因为太子可能在
-            #      其他渠道已向皇上汇报，且太子是皇上的直接代理，有自主汇报权限）
-            has_return_to_zhongshu = any(
-                f in ('尚书省', '尚书') and t in ('中书省', '中书')
-                for f, t in flow_pairs
-            )
+            # 校验要求：
+            #   1. 尚书省→太子（或 中书省→太子 作为兼容旧数据的等价路径）
+            #   2. 太子→皇上（仅警告不阻塞，太子有权在其他渠道汇报皇上）
+            #
+            # 自动补全：六部有产出 + 太子已收到汇报 → 自动补全缺失流转
             has_return_to_taizi = any(
                 f in ('中书省', '中书') and t in ('太子', '太子殿下')
                 for f, t in flow_pairs
             )
-            # 新增：尚书省直接报告太子也算完成回奏（等价路径）
+            # 尚书省直接报告太子（新架构主路径）
             has_shangshu_direct_to_taizi = any(
                 f in ('尚书省', '尚书') and t in ('太子', '太子殿下')
                 for f, t in flow_pairs
@@ -2094,12 +2088,10 @@ def cmd_done(task_id, output_path='', summary=''):
             )
             
             missing_steps = []
-            if not has_return_to_zhongshu:
-                missing_steps.append('尚书省→中书省')
-            # 修复：中书省→太子 或 尚书省直接→太子 均视为已回奏太子
+            # 新架构：尚书省→太子 或 中书省→太子（兼容旧数据）均视为已回奏太子
             if not has_return_to_taizi and not has_shangshu_direct_to_taizi:
-                missing_steps.append('中书省→太子（或尚书省→太子）')
-            # 修复：太子→皇上缺失时仅警告，不阻塞（太子有权直接汇报皇上）
+                missing_steps.append('尚书省→太子（或中书省→太子）')
+            # 太子→皇上缺失时仅警告，不阻塞（太子有权直接汇报皇上）
             if not has_report_to_huangshang:
                 log.warning(
                     f'⚠️ 旨意任务 {task_id} 尚未记录太子→皇上的回奏流转。'
@@ -2110,29 +2102,21 @@ def cmd_done(task_id, output_path='', summary=''):
             # ── 自动补全流转：六部有产出 + 太子已收到汇报 → 自动补全并允许完成 ──
             # 当以下两个条件同时满足时，认为任务实质上已完成：
             #   1. output 字段非空（六部有产出）
-            #   2. flow_log 中存在 中书省→太子 或 尚书省→太子（太子已收到汇报）
+            #   2. 太子已收到汇报（尚书省→太子 或 中书省→太子）
             # 此时自动补全缺失的回传流转记录，然后允许标记 Done。
             _has_output = bool((t.get('output', '') or output_path).strip())
             _has_taizi_reported = has_return_to_taizi or has_shangshu_direct_to_taizi
             if _has_output and _has_taizi_reported and missing_steps:
                 _auto_filled = []
                 _now = now_iso()
-                # 补全 尚书省→中书省
-                if not has_return_to_zhongshu:
+                # 补全 尚书省→太子（新架构主路径）
+                if not has_shangshu_direct_to_taizi:
                     t.setdefault('flow_log', []).append({
-                        'at': _now, 'from': '尚书省', 'to': '中书省',
-                        'remark': '[自动补全] 尚书省汇总六部成果返回中书省',
+                        'at': _now, 'from': '尚书省', 'to': '太子',
+                        'remark': '[自动补全] 尚书省汇总六部成果，程序通知太子',
                         'agent': 'system', 'agentLabel': '系统自动补全',
                     })
-                    _auto_filled.append('尚书省→中书省')
-                # 补全 中书省→太子（仅当尚书省也没有直报太子时）
-                if not has_return_to_taizi and not has_shangshu_direct_to_taizi:
-                    t.setdefault('flow_log', []).append({
-                        'at': _now, 'from': '中书省', 'to': '太子',
-                        'remark': '[自动补全] 中书省回奏太子',
-                        'agent': 'system', 'agentLabel': '系统自动补全',
-                    })
-                    _auto_filled.append('中书省→太子')
+                    _auto_filled.append('尚书省→太子')
                 # 补全 太子→皇上
                 if not has_report_to_huangshang:
                     t.setdefault('flow_log', []).append({
@@ -2151,7 +2135,7 @@ def cmd_done(task_id, output_path='', summary=''):
                 log.warning(
                     f'⚠️ 旨意任务 {task_id} 未完成回奏皇上，不允许标记 Done。'
                     f'缺失回传环节：{"、".join(missing_steps)}。'
-                    f'完整回传链路要求：尚书省→中书省→太子→皇上'
+                    f'完整回传链路要求：尚书省→太子→皇上'
                 )
                 return tasks
         t['state'] = 'Done'
@@ -2183,7 +2167,7 @@ def cmd_done(task_id, output_path='', summary=''):
     #   1. lookup 太子的 session_key（任务创建时自动保存）
     #   2. 有 key → sessions_send 精准投递到太子正确会话
     #   3. 无 key → openclaw agent 唤醒（降级到 main session）
-    # 中书省不再需要手动通知太子。
+    # 架构调整：尚书省汇总后标记 done，程序直接通知太子（不再经过中书省）。
     # ═══════════════════════════════════════════════════════════════════════
     try:
         tasks = load()
@@ -2194,7 +2178,7 @@ def cmd_done(task_id, output_path='', summary=''):
             _notify_agent(
                 agent_id='taizi',
                 task_id=task_id,
-                from_org='中书省',
+                from_org='尚书省',
                 to_org='太子',
                 title=task_title,
                 remark=f"任务已完成，请回奏皇上。产出路径：{task_output}" if task_output else "任务已完成，请回奏皇上",
@@ -2586,8 +2570,8 @@ if __name__ == '__main__':
         if len(args) < 3:
             print('[notify] 用法: notify <task_id> <agent_id> [--remark "说明"]', flush=True)
             sys.exit(1)
-        notify_agent = args[1]
-        notify_task = args[2]
+        notify_task = args[1]
+        notify_agent = args[2]
         notify_remark = ''
         i = 3
         while i < len(args):
