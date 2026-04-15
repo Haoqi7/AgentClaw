@@ -234,6 +234,9 @@
     "sessions": {
       "visibility": "all"
     },
+    "env": {
+    "TZ": "Asia/Shanghai"
+  },
     "agentToAgent": {
       "enabled": true
     }
