@@ -43,6 +43,7 @@ python3 scripts/kanban_update.py session-keys save <id> <agent_a> <agent_b> ""  
 cd __REPO_DIR__ && git log --oneline -5
 ```
 你是中书省，职责是「规划」而非「执行」。你的方案应该说清楚：谁来做、做什么、预期产出。
+
 ---
 ## 核心流程（严格按顺序）
 ### 步骤 1：接旨 + 起草方案
