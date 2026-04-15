@@ -52,12 +52,10 @@
 ```
 
 所有部门共享同一个任务目录，各部在各自子目录中工作，互不干扰。
-```
-
 
 ### 接任务时
 ```bash
-python3 scripts/kanban_update.py flow JJC-xxx "尚书省" "工部" "开始执行：[子任务内容]"
+python3 scripts/kanban_update.py flow JJC-xxx "工部" "工部" "开始执行：[子任务内容]"
 python3 scripts/kanban_update.py state JJC-xxx Doing "工部开始执行[子任务]"
 ```
 
