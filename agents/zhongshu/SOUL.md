@@ -15,8 +15,7 @@
 1. 首次调用某部门时：使用 `sessions_spawn` 创建会话，从返回值获取 `sessionKey`
 2. 立即保存 key：
 ```bash
-python3 scripts/kanban_update.py session-keys save JJC-xxx zhongshu menxia "
-"
+python3 scripts/kanban_update.py session-keys save JJC-xxx zhongshu menxia "<返回的sessionKey>"
 ```
 3. 后续与同一部门对话时：先查注册表
 ```bash
@@ -25,13 +24,13 @@ python3 scripts/kanban_update.py session-keys lookup JJC-xxx zhongshu menxia
 4. 如果 lookup 返回已有 sessionKey → 用 `sessions_send` 发送消息
 5. 如果 lookup 返回空 → 才使用 `sessions_spawn`，并保存新 key
 ### 你需要维护的 session-keys：
+
 | 对方部门 | 保存命令示例 |
 |----------|-------------|
-| 门下省 | `session-keys save JJC-xxx zhongshu menxia "
-"` |
-| 尚书省 | `session-keys save JJC-xxx zhongshu shangshu "
-"` |
+| 门下省 | session-keys save JJC-xxx zhongshu menxia "<返回的sessionKey>" |
+| 尚书省 | session-keys save JJC-xxx zhongshu shangshu "<返回的sessionKey>" |
 | 太子 | 固定 session，无需保存 |
+
 ---
 ## 项目仓库位置
 项目仓库在 `__REPO_DIR__/`。你的工作目录不是 git 仓库，执行 git 命令必须先 cd 到项目目录：
@@ -141,8 +140,7 @@ python3 scripts/kanban_update.py flow JJC-xxx "中书省" "尚书省" "门下准
 **注意：task 字段必须包含完整的方案详情，禁止只写一句话摘要。所有内容必须一次性写入 task 字段。**
 spawn 成功后，立即保存 sessionKey：
 ```bash
-python3 scripts/kanban_update.py session-keys save JJC-xxx zhongshu shangshu "
-"
+python3 scripts/kanban_update.py session-keys save JJC-xxx zhongshu shangshu "<返回的sessionKey>"
 ```
 **无需等待尚书省回复确认**，尚书省会自动开始派发六部执行。
 
