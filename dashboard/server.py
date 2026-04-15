@@ -2674,6 +2674,37 @@ _STATE_LABELS = {
 }
 
 
+def _build_shangshu_dispatch_msg(task_id, title, target_dept=''):
+    """构造尚书省派发消息，包含 dispatch_plan 中的完整方案。"""
+    msg_parts = [
+        f'📮 门下省已准奏，请派发执行',
+        f'任务ID: {task_id}',
+        f'旨意: {title}',
+    ]
+    if target_dept:
+        msg_parts.append(f'建议派发部门: {target_dept}')
+    msg_parts.append(f'⚠️ 看板已有此任务，请勿重复创建。')
+    msg_parts.append(f'请分析方案并通过 sessions_spawn 派发给六部执行。')
+
+    # 从 dispatch_plan 读取完整方案
+    try:
+        tasks = load_tasks()
+        t = next((t for t in tasks if t.get('id') == task_id), None)
+        if t:
+            plan = t.get('dispatch_plan', {})
+            full_plan = plan.get('full_plan', '')
+            if full_plan:
+                if len(full_plan) > 4000:
+                    full_plan = full_plan[:4000] + '\n...(方案过长，请通过 kanban_update.py dispatch-plan lookup 查看完整方案)'
+                msg_parts.append(f'\n📋 完整方案：\n{full_plan}')
+            else:
+                msg_parts.append(f'\n⚠️ 看板中未找到完整方案，请执行：kanban_update.py dispatch-plan lookup {task_id}')
+    except Exception:
+        pass
+
+    return '\n'.join(msg_parts)
+
+
 def dispatch_for_state(task_id, task, new_state, trigger='state-transition'):
     """推进/审批后自动派发对应 Agent（后台异步，不阻塞响应）。"""
     agent_id = _STATE_AGENT_MAP.get(new_state)
@@ -2689,6 +2720,32 @@ def dispatch_for_state(task_id, task, new_state, trigger='state-transition'):
         # Issue #1 fix: 当无法确定具体六部 agent 时，记录详细日志帮助排查
         log.warning(f'⚠️ {task_id} 新状态 {new_state} 无法确定目标 Agent（org={task.get("org","")}, targetDept={task.get("targetDept","")}），跳过自动派发。尚书省需在旨意中明确指定 targetDept。')
         return
+
+    # 【R1 尚书省空闲检测】
+    # 尚书省是 main agent，同一时间只能处理一个任务。
+    # 如果尚书省已有活跃任务（Assigned/Doing/Review 状态），延迟/排队不并发通知。
+    if agent_id == 'shangshu':
+        try:
+            all_tasks = load_tasks()
+            shangshu_active = [
+                t for t in all_tasks
+                if t.get('id') != task_id
+                and t.get('state') in ('Assigned', 'Doing', 'Review')
+                and t.get('org') == '尚书省'
+                and not t.get('archived')
+            ]
+            if shangshu_active:
+                active_ids = [t.get('id', '') for t in shangshu_active]
+                log.info(f'⏳ {task_id} 尚书省正在处理其他任务（{active_ids}），排队等待')
+                _update_task_scheduler(task_id, lambda t, s: s.update({
+                    'lastDispatchAt': now_iso(),
+                    'lastDispatchStatus': 'queued-shangshu-busy',
+                    'lastDispatchAgent': agent_id,
+                    'lastDispatchTrigger': trigger,
+                }))
+                return
+        except Exception as e:
+            log.warning(f'尚书省空闲检测异常: {e}')
 
     _update_task_scheduler(task_id, lambda t, s: (
         s.update({
@@ -2726,14 +2783,7 @@ def dispatch_for_state(task_id, task, new_state, trigger='state-transition'):
             f'⚠️ 看板已有此任务，请勿重复创建。\n'
             f'请审议中书省方案，给出准奏或封驳意见。'
         ),
-        'shangshu': (
-            f'📮 门下省已准奏，请派发执行\n'
-            f'任务ID: {task_id}\n'
-            f'旨意: {title}\n'
-            f'{"建议派发部门: " + target_dept if target_dept else ""}\n'
-            f'⚠️ 看板已有此任务，请勿重复创建。\n'
-            f'请分析方案并派发给六部执行。'
-        ),
+        'shangshu': _build_shangshu_dispatch_msg(task_id, title, target_dept),
     }
     msg = _msgs.get(agent_id, (
         f'📌 请处理任务\n'

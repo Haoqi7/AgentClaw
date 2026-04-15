@@ -145,20 +145,12 @@ _STATE_AGENT_MAP = {
     'Taizi': 'taizi',
     'Zhongshu': 'zhongshu',
     'Menxia': 'menxia',
-    # V3 修复：Assigned → zhongshu（不是 shangshu！）
-    # 根因：旧代码将 Assigned 从映射表移除，导致门下省准奏后 state→Assigned 时
-    # _resolve_agent_id('Assigned') 返回空 → _notify_agent() 直接退出 → 无人被唤醒
-    # 中书省此时已休眠，不会主动醒来转交尚书省 → 流程卡死！
-    # 修复后：门下省准奏 → state=Assigned → 程序唤醒中书省 → 中书省转交尚书省
-    # 注意：映射到 zhongshu 而非 shangshu，因为按三省六部流程，
-    # 门下省准奏后应先回到中书省，由中书省审查后转交尚书省派发。
-    #尚书省由中书省通过 LLM 层 sessions_spawn 唤醒（唯一的 LLM 层通知环节）。
-    'Assigned': 'zhongshu',
-    # 'Review': 'shangshu',  # 已移除：Review 状态由尚书省自行触发，无需程序通知
+    # 架构调整：Assigned → shangshu
+    # 根因：尚书省从 subagent 改为 main agent，可以独立 sessions_spawn 六部。
+    # 门下省准奏后，程序直接通知尚书省（不再通过中书省中转）。
+    # 中书省职责简化为：接旨→起草→提审→修改（不负责回奏和派发）。
+    'Assigned': 'shangshu',
     'Pending': 'zhongshu',
-    # V4 修复：Done → taizi（任务完成时程序自动通知太子，避免中书省 LLM 手动发 message
-    # 导致飞书 "Unknown target taizi" 报错。飞书渠道需要真实 chatId，不认识 agent_id。
-    # 修复后：中书省标记 Done → 程序唤醒太子 → 太子回奏皇上，中书省无需手动通知。）
     'Done': 'taizi',
 }
 
@@ -206,9 +198,10 @@ _AGENT_NOTIFY_PROFILES = {
         'role_hint': '你是中书省，负责接收太子转交的皇上旨意，起草执行方案',
         'action_items': (
             '1. 接旨 → 分析需求，起草执行方案\n'
-            '2. 提交门下省审议（必须！）→ 等待准奏/封驳\n'
-            '3. 门下省准奏后 → 立即转尚书省执行（必须，最易遗漏！）\n'
-            '4. 尚书省返回结果 → 更新看板done → 通过太子回奏皇上'
+            '2. 将方案存入看板（dispatch-plan save）\n'
+            '3. 提交门下省审议（kanban state Menxia）→ 等待准奏/封驳\n'
+            '4. 如封驳 → 修改方案 → 重新 dispatch-plan save + state Menxia\n'
+            '5. 准奏后无需操作！程序自动通知尚书省派发'
         ),
         'confirm_fmt': '已收到 {task_id} {title}，中书省开始分析旨意起草方案',
         'deadline': '10分钟内确认并开始分析',
@@ -227,12 +220,14 @@ _AGENT_NOTIFY_PROFILES = {
     },
     # ── 尚书省：执行调度，六部协调 ──
     'shangshu': {
-        'role_hint': '你是尚书省，负责接收准奏方案后派发六部执行并汇总结果',
+        'role_hint': '你是尚书省（main agent），负责接收准奏方案后通过 sessions_spawn 派发六部执行并汇总结果',
         'action_items': (
-            '1. 直接开始分析方案（无需回复"已收到"）\n'
-            '2. 分析方案 → 确定派发对象（工部/兵部/户部/礼部/刑部/吏部）\n'
-            '3. 派发六部并等待各部执行结果\n'
-            '4. 汇总六部成果 → 返回中书省'
+            '1. 阅读下方详细任务内容中的方案\n'
+            '2. 解析子任务，确定每个子任务的执行部门\n'
+            '3. 对每个部门：flow → dispatch-plan assign → state Doing → sessions_spawn\n'
+            '4. 等待六部回报，汇总结果\n'
+            '5. kanban done JJC-xxx\n'
+            '⚠️ 禁止自己执行六部的工作！必须用 sessions_spawn 派发！'
         ),
         'confirm_fmt': '已收到 {task_id} {title}，尚书省开始分析方案确定派发对象',
         'deadline': '10分钟内确认并开始分析',
@@ -505,18 +500,14 @@ def _trigger_refresh():
 
 
 def _start_liubu_alive_check(task_id, task):
-    """【V5 修复】程序级兜底：进入 Doing 状态后 60 秒检查六部是否被唤醒。
+    """【架构调整】六部兜底检查：180 秒后检查六部是否被尚书省 sessions_spawn 唤醒。
 
-    根因：尚书省→六部 的通知完全依赖尚书省 LLM 层 sessions_spawn。
-    如果尚书省用了 sessions_yield（不触发目标Agent推理），
-    或者 LLM 推理失败，六部永远不会收到消息。
-    pipeline_watchdog 的断链检测需要 3.5 分钟才能触发，太慢了。
-
-    此函数作为最后一道防线：
-    1. 后台等待 60 秒
-    2. 检查六部是否有任何活动迹象（progress_log 新增、flow_log 回复）
-    3. 如果六部零活动 → 程序级 openclaw agent 直接唤醒六部
-    4. 同时通知尚书省"六部未响应，已程序级兜底唤醒"
+    架构变更：
+    - 尚书省现在是 main agent，通过 sessions_spawn 派发六部
+    - 程序层 Doing 状态不再通知六部
+    - 此函数作为兜底：180 秒后检查六部是否有活动
+    - 走 _notify_agent 统一冷却路径（通过 notify 子命令）
+    - 消息从 dispatch_plan 读取子任务内容
     """
     org = task.get('org', '')
     agent_id = _ORG_AGENT_MAP.get(org, '')
@@ -535,55 +526,68 @@ def _start_liubu_alive_check(task_id, task):
     agent_label_escaped = json.dumps(agent_label)
     progress_count_escaped = str(progress_count)
     flow_count_escaped = str(flow_count)
+    kanban_script = json.dumps(str(_BASE / 'scripts' / 'kanban_update.py'))
 
-    # 【V7 修复】将等待时间从60秒缩短到45秒
-    # 根因：60秒等待太长，六部在空转浪费近1分钟。45秒足够覆盖
-    # openclaw agent 启动延迟（~15-20秒），同时不会因过快误判。
     watchdog_script = f'''#!/usr/bin/env python3
 import json, pathlib, subprocess, sys, time
-time.sleep(45)
+
+ALIVE_CHECK_DELAY = 180  # 从 45s 改为 180s（给尚书省足够时间 sessions_spawn）
+
+time.sleep(ALIVE_CHECK_DELAY)
+
 TASKS_FILE = pathlib.Path({tasks_file_escaped})
+KANBAN_SCRIPT = {kanban_script}
+
 try:
     with open(TASKS_FILE, "r", encoding="utf-8") as f:
         tasks = json.load(f)
 except Exception:
     sys.exit(0)
+
 task = next((t for t in tasks if t.get("id") == {task_id_escaped}), None)
 if not task or task.get("state") != "Doing":
     sys.exit(0)
+
 new_progress = len(task.get("progress_log", []))
 new_flow = len(task.get("flow_log", []))
-# 六部有新增进展或回复 → 正常
 if new_progress > {progress_count_escaped} or new_flow > {flow_count_escaped}:
     sys.exit(0)
-# 六部零活动 → 程序级兜底唤醒
+
+# 六部零活动 → 检查 _lastNotify 是否已有成功通知
 agent_id = {agent_id_escaped}
-agent_label = {agent_label_escaped}
-msg = (
-    "🔔 程序级兜底唤醒\\n"
-    "任务ID: {task_id_escaped}\\n"
-    "标题: {title_escaped}\\n"
-    "原因: 进入 Doing 状态 45 秒后六部无任何活动，"
-    "尚书省可能未正确使用 sessions_spawn 通知六部（或使用了 sessions_yield）。\\n"
-    "请立即执行任务，完成后使用 kanban 流转记录回复尚书省。\\n"
-    "⚠️ 禁止使用 sessions_yield！必须用 sessions_spawn 派发！"
+last_notify = task.get("_lastNotify", {{}}).get(agent_id, {{}})
+if last_notify.get("done"):
+    # 已有成功通知记录，检查是否在合理时间内
+    last_at = last_notify.get("at", "")
+    if last_at:
+        try:
+            from datetime import datetime, timezone, timedelta
+            _BJT = timezone(timedelta(hours=8))
+            last_dt = datetime.fromisoformat(last_at.replace("Z", "+00:00"))
+            now_dt = datetime.now(_BJT)
+            elapsed = (now_dt - last_dt).total_seconds()
+            if elapsed < 600:  # 10 分钟内有成功通知，跳过兜底
+                print(f"[兜底] {{agent_id}} 已有成功通知（{{elapsed:.0f}}秒前），跳过")
+                sys.exit(0)
+        except Exception:
+            pass
+
+# 走 _notify_agent 统一冷却路径（通过 notify 子命令）
+print(f"[兜底] 六部 {{agent_id}} 180秒无活动，通过 notify 子命令发送兜底通知")
+result = subprocess.run(
+    ["python3", KANBAN_SCRIPT, "notify", {task_id_escaped}, agent_id,
+     "--remark", "兜底通知：180秒无活动，尚书省可能未sessions_spawn"],
+    capture_output=True, text=True, timeout=130,
 )
-try:
-    result = subprocess.run(
-        ["openclaw", "agent", "--agent", agent_id, "-m", msg, "--timeout", "120"],
-        capture_output=True, text=True, timeout=130,
-    )
-    if result.returncode == 0:
-        print(f"[兜底唤醒] 已程序级唤醒 {{agent_label}} ({{agent_id}}) | 任务 {{task_id}}")
-    else:
-        print(f"[兜底唤醒] 唤醒 {{agent_label}} 失败: rc={{result.returncode}}")
-except Exception as e:
-    print(f"[兜底唤醒] 唤醒 {{agent_label}} 异常: {{e}}")
+if result.returncode == 0:
+    print(f"[兜底唤醒] 已通过 notify 通知 {{agent_id}} | 任务 {{task_id}}")
+else:
+    print(f"[兜底唤醒] notify 通知 {{agent_id}} 失败: {{result.stderr[:200] if result.stderr else result.stdout[:200]}}")
 '''
     try:
         subprocess.Popen(['python3', '-c', watchdog_script],
                          stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-        log.info(f'🛡️ 已启动六部兜底检查 | {task_id} → {agent_label} ({agent_id}) | 45秒后检查')
+        log.info(f'🛡️ 已启动六部兜底检查 | {task_id} → {agent_label} ({agent_id}) | 180秒后检查')
     except Exception as e:
         log.warning(f'🛡️ 启动六部兜底检查失败: {e}')
 
@@ -829,6 +833,30 @@ def _notify_agent(agent_id, task_id, from_org, to_org, title='', remark='', curr
             if _liubu_replies:
                 _last_reply = _liubu_replies[-1]
                 parts.append(f"  · 六部最新回复：{_last_reply.get('to', '')}←{_last_reply.get('from', '')} - {(_last_reply.get('remark', '') or '')[:80]}")
+    except Exception:
+        pass
+    # 【B1/B2 修复】从 dispatch_plan 读取详细任务内容填入消息
+    try:
+        tasks = load()
+        t = find_task(tasks, task_id)
+        if t:
+            plan = t.get('dispatch_plan', {})
+            _dispatch_content = ''
+            if agent_id == 'menxia':
+                # 门下省：读取完整方案
+                _dispatch_content = plan.get('full_plan', '')
+            elif agent_id == 'shangshu':
+                # 尚书省：读取完整方案
+                _dispatch_content = plan.get('full_plan', '')
+            elif agent_id in ('libu', 'hubu', 'bingbu', 'xingbu', 'gongbu', 'libu_hr'):
+                # 六部：读取该部门的子任务
+                _assignment = plan.get('assignments', {}).get(agent_id, {})
+                _dispatch_content = _assignment.get('task', '')
+            if _dispatch_content:
+                # 截断过长的内容，避免消息超限
+                if len(_dispatch_content) > 3000:
+                    _dispatch_content = _dispatch_content[:3000] + '\n...(内容过长，请通过 dispatch-plan lookup 查看完整内容)'
+                parts.append(f"\n📋 详细任务内容：\n{_dispatch_content}")
     except Exception:
         pass
 
@@ -1428,6 +1456,121 @@ def _is_valid_task_title(title):
     return True, ''
 
 
+def cmd_dispatch_plan(task_id, action, sub_args):
+    """dispatch-plan 子命令：存储/查询/清除任务的派发方案
+    
+    用法:
+      kanban_update.py dispatch-plan save JJC-xxx "<完整方案>"
+      kanban_update.py dispatch-plan assign JJC-xxx libu "<子任务内容>"
+      kanban_update.py dispatch-plan lookup JJC-xxx [agent_id]
+      kanban_update.py dispatch-plan clear JJC-xxx
+    """
+    if action == 'save':
+        if len(sub_args) < 1:
+            print('[dispatch-plan] 用法: dispatch-plan save <task_id> "<完整方案>"', flush=True)
+            return
+        plan_content = sub_args[0]
+        def _save_plan(tasks):
+            t = find_task(tasks, task_id)
+            if not t:
+                log.error(f'任务 {task_id} 不存在')
+                return tasks
+            t.setdefault('dispatch_plan', {})
+            t['dispatch_plan']['full_plan'] = plan_content
+            t['dispatch_plan']['assigned_at'] = now_iso()
+            t['updatedAt'] = now_iso()
+            return tasks
+        atomic_json_update(TASKS_FILE, _save_plan, [])
+        _trigger_refresh()
+        log.info(f'✅ dispatch-plan save: {task_id} 方案已存储（{len(plan_content)}字）')
+    
+    elif action == 'assign':
+        if len(sub_args) < 2:
+            print('[dispatch-plan] 用法: dispatch-plan assign <task_id> <agent_id> "<子任务内容>"', flush=True)
+            return
+        target_agent = sub_args[0]
+        task_content = sub_args[1]
+        def _assign_plan(tasks):
+            t = find_task(tasks, task_id)
+            if not t:
+                log.error(f'任务 {task_id} 不存在')
+                return tasks
+            t.setdefault('dispatch_plan', {})
+            t['dispatch_plan'].setdefault('assignments', {})[target_agent] = {
+                'task': task_content,
+                'assigned_at': now_iso(),
+                'session_key': None,
+            }
+            t['updatedAt'] = now_iso()
+            return tasks
+        atomic_json_update(TASKS_FILE, _assign_plan, [])
+        _trigger_refresh()
+        log.info(f'✅ dispatch-plan assign: {task_id} → {target_agent} 子任务已存储（{len(task_content)}字）')
+    
+    elif action == 'lookup':
+        tasks = load()
+        t = find_task(tasks, task_id)
+        if not t:
+            print(json.dumps({'ok': False, 'error': f'任务 {task_id} 不存在'}, ensure_ascii=False), flush=True)
+            return
+        plan = t.get('dispatch_plan', {})
+        if len(sub_args) >= 1 and sub_args[0]:
+            # 查询特定部门的子任务
+            target_agent = sub_args[0]
+            assignment = plan.get('assignments', {}).get(target_agent, {})
+            if assignment:
+                print(assignment.get('task', ''), flush=True)
+            else:
+                print(json.dumps({'ok': False, 'error': f'未找到 {target_agent} 的子任务'}, ensure_ascii=False), flush=True)
+        else:
+            # 查询完整方案
+            full_plan = plan.get('full_plan', '')
+            if full_plan:
+                print(full_plan, flush=True)
+            else:
+                print(json.dumps({'ok': False, 'error': '未找到完整方案'}, ensure_ascii=False), flush=True)
+    
+    elif action == 'clear':
+        def _clear_plan(tasks):
+            t = find_task(tasks, task_id)
+            if t:
+                t.pop('dispatch_plan', None)
+            return tasks
+        atomic_json_update(TASKS_FILE, _clear_plan, [])
+        log.info(f'✅ dispatch-plan clear: {task_id} 方案已清除')
+    
+    else:
+        print('[dispatch-plan] 子命令: save | assign | lookup | clear', flush=True)
+
+
+def cmd_notify(task_id, agent_id, remark=''):
+    """notify 子命令：只通知不改变 state/flow/hooks，走 _notify_agent 统一冷却路径。
+    
+    用法:
+      kanban_update.py notify JJC-xxx libu --remark "兜底通知"
+    
+    供 alive_check 和外部脚本使用，确保所有通知走统一的冷却/去重路径。
+    """
+    tasks = load()
+    t = find_task(tasks, task_id)
+    if not t:
+        log.warning(f'任务 {task_id} 不存在，无法通知')
+        return
+    task_title = t.get('title', '')
+    current_org = t.get('org', '')
+    from_org = STATE_ORG_MAP.get(t.get('state', ''), current_org)
+    to_org = _AGENT_LABELS.get(agent_id, agent_id)
+    _notify_agent(
+        agent_id=agent_id,
+        task_id=task_id,
+        from_org=from_org,
+        to_org=to_org,
+        title=task_title,
+        remark=remark or '程序通知',
+    )
+    log.info(f'📢 notify: {task_id} → {agent_id} | {remark}')
+
+
 def cmd_create(task_id, title, state, org, official, remark=None, current_session_key=None, huangshang_chat_id=None):
     """新建任务（收旨时立即调用）
     
@@ -1649,36 +1792,17 @@ def cmd_state(task_id, new_state, now_text=None):
                 if notify_agent_id:
                     new_org_label = t.get('org', new_org_label)
                     log.info(f'🔗 V6修复: {task_id} {new_state}状态从org字段解析agent={notify_agent_id} (org={t.get("org","")})')
-            # 【V8 修复】尚书省重复通知：跳过程序通知尚书省
-            # 尚书省由中书省通过 LLM 层 sessions_spawn 唤醒（唯一的 LLM 层通知环节），
-            # 程序通知与 LLM 通知重复，导致尚书省收到两次通知，因此跳过程序通知。
-            if notify_agent_id == 'shangshu':
-                log.info(f'🔗 V8修复: {task_id} 跳过程序通知尚书省（由中书省LLM层sessions_spawn通知）')
-                notify_agent_id = ''
-            # ═══════════════════════════════════════════════════════════════
-            # 【V7 关键修复】Doing 状态通知冷却降级（断裂点②加强）
-            # 
-            # 根因：_NOTIFY_COOLDOWN_SEC=90 秒的冷却期会阻止断裂点②的兜底通知。
-            # 场景：尚书省用 yield 派发 → 六部收不到 → 程序45秒后兜底唤醒 → 
-            # 但如果90秒内已经对同一Agent发过一次通知（比如初始化时），
-            # 兜底唤醒会被冷却去重拦截，六部仍然收不到消息。
-            # 
-            # 修复：Doing 状态的通知使用更短的冷却期（30秒），
-            # 确保兜底通知能突破冷却去重。同时清除该Agent的 _lastNotify
-            # 中的 done 标记，强制允许重新通知。
-            # ═══════════════════════════════════════════════════════════════
+            # 【架构调整】尚书省现在是 main agent，程序层通知尚书省是正确的
+            # 不再跳过尚书省的通知（旧 V8 修复已移除）
+            # 【架构调整】Doing 状态跳过程序层对六部的通知
+            # 六部由尚书省通过 sessions_spawn 通知（含完整子任务内容）。
+            # 程序层不再发送通用通知给六部，避免重复通知。
+            # alive_check（180秒兜底）作为最后防线保留。
             if new_state == 'Doing' and notify_agent_id and t:
-                # 清除该 Agent 的 lastNotify done 标记，允许重新通知
-                try:
-                    def _clear_notify_for_critical(tasks):
-                        tt = find_task(tasks, task_id)
-                        if tt and notify_agent_id in tt.get('_lastNotify', {}):
-                            tt['_lastNotify'][notify_agent_id]['done'] = False
-                            log.info(f'🔓 V7修复: {task_id} 清除 {notify_agent_id} 的通知完成标记，允许重新通知（Doing状态关键通知）')
-                        return tasks
-                    atomic_json_update(TASKS_FILE, _clear_notify_for_critical, [])
-                except Exception as e:
-                    log.warning(f'🔓 V7修复: 清除通知标记失败: {e}')
+                _LIU_BU_AGENT_IDS = ('libu', 'hubu', 'bingbu', 'xingbu', 'gongbu', 'libu_hr')
+                if notify_agent_id in _LIU_BU_AGENT_IDS:
+                    log.info(f'🔗 架构调整: {task_id} Doing状态跳过程序层通知六部 {notify_agent_id}，依赖尚书省 sessions_spawn')
+                    notify_agent_id = ''
             _notify_agent(
                 agent_id=notify_agent_id,
                 task_id=task_id,
@@ -2327,7 +2451,7 @@ def cmd_huangshang_send(task_id, message):
 
 _CMD_MIN_ARGS = {
     'create': 6, 'state': 3, 'flow': 5, 'done': 2, 'block': 3, 'todo': 4, 'progress': 3,
-    'huangshang-send': 3, 'huangshang-chat-id': 2,
+    'huangshang-send': 3, 'huangshang-chat-id': 2, 'notify': 3,
 }
 
 if __name__ == '__main__':
@@ -2446,6 +2570,33 @@ if __name__ == '__main__':
         cmd_huangshang_chat_id(args[1])
     elif cmd == 'huangshang-send':
         cmd_huangshang_send(args[1], args[2])
+    elif cmd == 'dispatch-plan':
+        if len(args) < 3:
+            print('[dispatch-plan] 子命令: save | assign | lookup | clear', flush=True)
+            sys.exit(1)
+        sub_action = args[1]
+        dp_task_id = args[2]
+        dp_sub_args = []
+        i = 3
+        while i < len(args):
+            dp_sub_args.append(args[i])
+            i += 1
+        cmd_dispatch_plan(dp_task_id, sub_action, dp_sub_args)
+    elif cmd == 'notify':
+        if len(args) < 3:
+            print('[notify] 用法: notify <task_id> <agent_id> [--remark "说明"]', flush=True)
+            sys.exit(1)
+        notify_agent = args[1]
+        notify_task = args[2]
+        notify_remark = ''
+        i = 3
+        while i < len(args):
+            if args[i] == '--remark' and i + 1 < len(args):
+                notify_remark = args[i + 1]
+                i += 2
+            else:
+                i += 1
+        cmd_notify(notify_task, notify_agent, notify_remark)
     else:
         print(__doc__)
         sys.exit(1)
