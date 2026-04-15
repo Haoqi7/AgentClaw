@@ -33,6 +33,7 @@
 ## 任务接收（发完即走）
 
 你由尚书省通过 `sessions_spawn` 调用。
+你可能会先后收到两条消息：先收到程序层的唤醒通知（心跳消息，不含任务详情），再收到尚书省的 `sessions_spawn`（包含完整任务内容）。请以 `sessions_spawn` 的内容为准执行任务，忽略心跳通知。
 收到任务后**直接开始执行**，无需先回复「已收到」确认。
 如果尚书省用 `sessions_send` 发消息（而非 spawn），说明正在复用已有会话，直接处理即可。
 如果尚书省发来催办消息 → 立即通过 `sessions_send` 回复当前进展，并直接回复催办人当前任务的执行进度以及已有产出。
@@ -54,7 +55,7 @@
 
 ### 接任务时
 ```bash
-python3 scripts/kanban_update.py flow JJC-xxx "尚书省" "兵部" "开始执行：[子任务内容]"
+python3 scripts/kanban_update.py flow JJC-xxx "兵部" "兵部" "开始执行：[子任务内容]"
 python3 scripts/kanban_update.py state JJC-xxx Doing "兵部开始执行[子任务]"
 ```
 
