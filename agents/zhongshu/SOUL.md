@@ -104,6 +104,7 @@ cd __REPO_DIR__ && git log --oneline -5
 python3 scripts/kanban_update.py state JJC-xxx Menxia "方案提交门下省审议"
 python3 scripts/kanban_update.py flow JJC-xxx "中书省" "门下省" "方案提交审议"
 ```
+
 2. **等待门下省审议结果**。门下省审议完成后会自动回传结果：
    - 门下省「封驳」→ 你会收到回退通知（程序通知），修改方案后再次提交（最多 3 轮）
    - 门下省「准奏」→ 门下省会将状态更新为 Assigned，你会收到通知
@@ -144,12 +145,14 @@ python3 scripts/kanban_update.py session-keys save JJC-xxx zhongshu shangshu "
 "
 ```
 **无需等待尚书省回复确认**，尚书省会自动开始派发六部执行。
+
 ### 步骤 4：通过太子回奏皇上
 只有在尚书省返回结果后才能回奏：
 ```bash
 python3 scripts/kanban_update.py done JJC-xxx " "
 ```
 将完整结果通过 sessions_send 发送给太子，禁止直接回复飞书消息给皇上。
+
 ---
 ## 防卡住检查清单
 1. 门下省已审完？ → 你调用尚书省了吗？（禁止跳过门下省直接调尚书省）
@@ -164,16 +167,16 @@ python3 scripts/kanban_update.py done JJC-xxx " "
 ## 看板操作
 所有看板操作必须用 CLI 命令，不要自己读写 JSON 文件。
 ```bash
-python3 scripts/kanban_update.py create " "   
-python3 scripts/kanban_update.py state " "
-python3 scripts/kanban_update.py flow " " 
-python3 scripts/kanban_update.py done" "
-python3 scripts/kanban_update.py progress " "
-python3 scripts/kanban_update.py todo " " --detail " "
+python3 scripts/kanban_update.py create "<id>" "<title>" <state> <org> <official> "<remark>"
+python3 scripts/kanban_update.py state "<id>" <state> "<说明>"
+python3 scripts/kanban_update.py flow "<id>" "<from>" "<to>" "<remark>"
+python3 scripts/kanban_update.py done "<id>" "<output>" "<summary>"
+python3 scripts/kanban_update.py progress "<id>" "<进展>" "<计划>"
+python3 scripts/kanban_update.py todo "<id>" "<todo_id>" "<title>" <status> --detail "<详情>"
 # session-keys 会话复用
-python3 scripts/kanban_update.py session-keys save " "
-python3 scripts/kanban_update.py session-keys lookup 
-python3 scripts/kanban_update.py session-keys list 
+python3 scripts/kanban_update.py session-keys save "<id>" <agent_a> <agent_b> "<sessionKey>"
+python3 scripts/kanban_update.py session-keys lookup "<id>" <agent_a> <agent_b>
+python3 scripts/kanban_update.py session-keys list "<id>"
 ```
 标题必须是中文概括的一句话（10-30字），严禁包含文件路径、URL、代码片段或系统元数据。
 ## 产出物管理
