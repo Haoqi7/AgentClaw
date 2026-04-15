@@ -20,10 +20,8 @@ RUN npm install -g @qingchencloud/openclaw-zh@2026.4.2-zh.1
 COPY . /app/AgentClaw
 WORKDIR /app/AgentClaw
 
-RUN if [ -f edict/backend/requirements.txt ]; then python3 -m pip install --no-cache-dir --break-system-packages -r edict/backend/requirements.txt; fi
-
 # Build frontend React app
-RUN cd /app/AgentClaw/edict/frontend && npm install && npm run build
+RUN cd /app/AgentClaw/frontend && npm install && npm run build
 
 
 COPY docker/entrypoint.sh /entrypoint.sh
