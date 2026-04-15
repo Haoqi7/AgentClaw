@@ -1271,6 +1271,78 @@ def cmd_session_keys_list(task_id):
         print(json.dumps({'ok': False, 'error': str(e)}, ensure_ascii=False), flush=True)
 
 
+# ═══════════════════════════════════════════════════════════════════════
+# 🆔 任务 ID 自增查询命令（解决太子创建任务编号始终为001的问题）
+#
+# 根因：太子 LLM 无法可靠读取 tasks_source.json 获取当天已有任务 ID，
+# 导致每次创建任务都默认使用 JJC-YYYYMMDD-001，覆盖进行中的任务。
+#
+# 修复：提供程序级 next-id 命令，太子创建任务前先调用此命令获取可用序号。
+# ═══════════════════════════════════════════════════════════════════════
+
+# JJC 任务 ID 正则：JJC-YYYYMMDD-NNN
+_JJC_ID_PATTERN = re.compile(r'^JJC-(\d{8})-(\d{3})$')
+
+
+def cmd_next_id(prefix='JJC', date_str=None):
+    """查询当天下一个可用的任务 ID（程序级自增，杜绝 LLM 编号不可靠的问题）。
+
+    用法:
+      python3 kanban_update.py next-id
+      python3 kanban_update.py next-id JJC
+      python3 kanban_update.py next-id JJC 20260415
+
+    返回格式（JSON）:
+      {"ok": true, "next_id": "JJC-20260415-003", "date": "20260415", "seq": 3, "existing_today": ["JJC-20260415-001", "JJC-20260415-002"]}
+
+    原理：
+      1. 读取 tasks_source.json 中所有任务 ID
+      2. 用正则匹配当天所有 JJC-YYYYMMDD-NNN 格式的 ID
+      3. 找出最大 NNN，+1 返回
+      4. 如果当天无任务，返回 001
+    """
+    try:
+        # 计算当天日期（北京时间）
+        _BJT = datetime.timezone(datetime.timedelta(hours=8))
+        if date_str and re.match(r'^\d{8}$', date_str):
+            today = date_str
+        else:
+            today = datetime.datetime.now(_BJT).strftime('%Y%m%d')
+
+        prefix = (prefix or 'JJC').strip().upper()
+        prefix_pattern = re.compile(rf'^{re.escape(prefix)}-(\d{{8}})-(\d{{3}})$')
+
+        tasks = load()
+        max_seq = 0
+        existing_today = []
+
+        for t in tasks:
+            tid = (t.get('id') or '').strip()
+            m = prefix_pattern.match(tid)
+            if m:
+                task_date = m.group(1)
+                seq = int(m.group(2))
+                if task_date == today:
+                    max_seq = max(max_seq, seq)
+                    existing_today.append(tid)
+
+        next_seq = max_seq + 1
+        next_id = f'{prefix}-{today}-{next_seq:03d}'
+
+        result = {
+            'ok': True,
+            'next_id': next_id,
+            'date': today,
+            'seq': next_seq,
+            'existing_today': existing_today,
+        }
+        log.info(f'🔢 next-id: {next_id} (当天已有 {len(existing_today)} 个任务, 最大序号 {max_seq})')
+        print(json.dumps(result, ensure_ascii=False, indent=2), flush=True)
+    except Exception as e:
+        log.error(f'next-id 失败: {e}')
+        print(json.dumps({'ok': False, 'error': str(e)}, ensure_ascii=False), flush=True)
+
+
 # 旨意标题最低要求
 _MIN_TITLE_LEN = 6
 _JUNK_TITLES = {
@@ -1387,11 +1459,18 @@ def cmd_create(task_id, title, state, org, official, remark=None, current_sessio
     def modifier(tasks):
         existing = next((t for t in tasks if t.get('id') == task_id), None)
         if existing:
+            # 【V9 修复】非终态任务禁止覆盖，防止太子重复 ID 覆盖进行中的任务
+            # 根因：太子 LLM 无法可靠获取当天已有任务序号，每次都默认用 001，
+            # 导致前一个进行中的任务被静默覆盖，看板上消失。
+            # 修复后：非终态（非 Done/Cancelled）重复 ID 直接拒绝创建，
+            # 提示太子先调用 next-id 命令获取正确序号。
             if existing.get('state') in ('Done', 'Cancelled'):
                 log.warning(f'⚠️ 任务 {task_id} 已完结 (state={existing["state"]})，不可覆盖')
                 return tasks
-            if existing.get('state') not in (None, '', 'Inbox', 'Pending'):
-                log.warning(f'任务 {task_id} 已存在 (state={existing["state"]})，将被覆盖')
+            # 非终态重复 ID → 拒绝覆盖（安全兜底）
+            log.warning(f'⚠️ 拒绝创建：任务 {task_id} 已存在 (state={existing["state"]})，禁止覆盖进行中的任务')
+            print(f'[看板] 拒绝创建：任务 {task_id} 已存在且状态为 {existing["state"]}，请先调用 next-id 命令获取正确的任务序号', flush=True)
+            return tasks
         tasks = [t for t in tasks if t.get('id') != task_id]
         # 构建初始 flow_log：皇上→太子（旨意到达太子）
         init_flow = [{"at": now_iso(), "from": "皇上", "to": "太子", "remark": clean_remark}]
@@ -2261,6 +2340,12 @@ if __name__ == '__main__':
         print(__doc__)
         sys.exit(0)
     cmd = args[0]
+    # 【V9 新增】next-id 命令：获取下一个可用任务序号
+    if cmd == 'next-id':
+        _prefix = args[1] if len(args) > 1 else 'JJC'
+        _date = args[2] if len(args) > 2 else None
+        cmd_next_id(prefix=_prefix, date_str=_date)
+        sys.exit(0)
     if cmd in _CMD_MIN_ARGS and len(args) < _CMD_MIN_ARGS[cmd]:
         print(f'错误："{cmd}" 命令至少需要 {_CMD_MIN_ARGS[cmd]} 个参数，实际 {len(args)} 个')
         print(__doc__)

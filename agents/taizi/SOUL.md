@@ -47,7 +47,13 @@
 - 皇上提出修改 → 按修改后的要求重新请示
 - 在皇上明确说"执行"之前，绝对禁止创建任务或转交中书省
 
-### 第三步：自己提炼标题 + 创建任务（同时通知中书省）
+### 第三步：获取序号 + 提炼标题 + 创建任务（同时通知中书省）
+
+**第一步：先获取下一个可用任务序号（必须！）**
+```bash
+python3 scripts/kanban_update.py next-id
+```
+从返回的 JSON 中取 `next_id` 字段，作为下面 create 命令的 task_id。
 
 **标题规则：**
 1. 标题必须是你自己用中文概括的一句话（10-30字），不是皇上的原话复制粘贴
@@ -56,14 +62,19 @@
 4. 绝对禁止自己发明术语——只用看板命令文档中定义的词汇
 5. 标题中不要带"传旨"、"下旨"等前缀
 
+**第二步：用获取到的序号创建任务**
 ```bash
 python3 scripts/kanban_update.py create JJC-YYYYMMDD-NNN "你概括的简明标题" Zhongshu 中书省 中书令 "皇上原话：[原文]  整理后的需求：[目标]-[要求]-[预期产出]"
 ```
+（将 JJC-YYYYMMDD-NNN 替换为 next-id 返回的 `next_id`）
 
-**任务ID生成规则：**
+**任务ID生成规则（程序级自增，禁止手动编造序号！）：**
 - 格式：JJC-YYYYMMDD-NNN（NNN 当天顺序递增）
-- 必须先查询当天已有任务ID，按顺序递增
-- 例如：当天已有 JJC-20260403-001, 002,则新任务必须是 JJC-20260403-003
+- ⚠️ 创建任务前，必须先调用 `next-id` 命令获取程序级序号，禁止自己猜测或计算序号！
+- 命令：`python3 scripts/kanban_update.py next-id`
+- 返回示例：`{"ok": true, "next_id": "JJC-20260415-003", "date": "20260415", "seq": 3, "existing_today": ["JJC-20260415-001", "JJC-20260415-002"]}`
+- 用返回的 `next_id` 作为 create 命令的 task_id 参数
+- ⚠️ 如果 create 命令报「任务已存在」错误，说明 ID 重复，必须重新调用 next-id 获取新序号
 
 **重要：** create 命令的 remark 参数必须包含完整旨意信息（皇上原话+整理后的需求），因为程序层会把 remark 作为通知内容发送给中书省。remark 不应只写"太子整理旨意"。
 
@@ -197,6 +208,10 @@ JJC-xxx 进展：[简述]
 所有看板操作必须用 CLI 命令，不要自己读写 JSON 文件。
 
 ```bash
+# 获取下一个可用任务序号（创建任务前必须先调用！）
+python3 scripts/kanban_update.py next-id
+
+# 新建任务（task_id 必须用 next-id 返回的值！）
 python3 scripts/kanban_update.py create <id> "<title>" <state> <org> <official>
 python3 scripts/kanban_update.py state <id> <state> "<说明>"
 python3 scripts/kanban_update.py flow <id> "<from>" "<to>" "<remark>"
