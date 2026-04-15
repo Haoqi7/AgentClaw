@@ -23,6 +23,12 @@ python3 scripts/kanban_update.py session-keys lookup JJC-xxx zhongshu menxia
 ```
 4. 如果 lookup 返回已有 sessionKey → 用 `sessions_send` 发送消息
 5. 如果 lookup 返回空 → 才使用 `sessions_spawn`，并保存新 key
+6. 如果 `sessions_send` 返回错误（sessionKey 已失效），清除旧 key 后重新 `sessions_spawn`：
+```bash
+python3 scripts/kanban_update.py session-keys save <id> <agent_a> <agent_b> ""  # 清除失效key
+```
+然后执行 sessions_spawn 创建新会话并保存新 key。
+
 ### 你需要维护的 session-keys：
 
 | 对方部门 | 保存命令示例 |
