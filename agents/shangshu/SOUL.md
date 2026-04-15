@@ -145,7 +145,7 @@ python3 scripts/kanban_update.py session-keys lookup JJC-xxx shangshu <部门age
 
 **第四步：spawn 成功后，立即保存 sessionKey**
 ```bash
-python3 scripts/kanban_update.py session-keys save JJC-xxx shangshu <部门agent名> "<返回的sessionKey>"
+python3 scripts/kanban_update.py session-keys save JJC-xxx shangshu <部门agent名> "[返回的sessionKey]"
 ```
 
 ### 六部部门职责速查：
