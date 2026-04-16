@@ -490,11 +490,31 @@ def load():
     return atomic_json_read(TASKS_FILE, [])
 
 
-def _trigger_refresh():
-    """异步触发 live_status 刷新，不阻塞调用方。"""
+# ── 防抖刷新 live_status（3秒内多次触发只执行一次）──
+_refresh_timer = None
+_refresh_lock = threading.Lock()
+_REFRESH_DEBOUNCE_SEC = 3
+
+
+def _do_refresh():
+    """实际执行 live_status 刷新。"""
     try:
         subprocess.Popen(['python3', str(REFRESH_SCRIPT)],
                          stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    except Exception:
+        pass
+
+
+def _trigger_refresh():
+    """异步触发 live_status 刷新（3秒防抖），不阻塞调用方。"""
+    global _refresh_timer
+    try:
+        with _refresh_lock:
+            if _refresh_timer is not None:
+                _refresh_timer.cancel()
+            _refresh_timer = threading.Timer(_REFRESH_DEBOUNCE_SEC, _do_refresh)
+            _refresh_timer.daemon = True
+            _refresh_timer.start()
     except Exception:
         pass
 
