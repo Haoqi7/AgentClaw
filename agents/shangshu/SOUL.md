@@ -197,6 +197,7 @@ python3 scripts/kanban_update.py session-keys lookup JJC-xxx shangshu gongbu
 python3 scripts/kanban_update.py session-keys list JJC-xxx
 
 ```
+
 ## 产出物管理
 任务产出物统一存放于 `/root/.openclaw/outputs/{任务ID}/` 目录下。
 尚书省负责六部调度与执行监督，相关文件（调度指令、执行状态汇总、督工报告等）请保存到该任务目录下以你的部门名称命名的子目录中。
