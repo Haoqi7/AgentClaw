@@ -3,11 +3,6 @@
 看板任务更新工具 - 供各省部 Agent 调用
 
 本工具操作 data/tasks_source.json（JSON 看板模式）。
-如果您已部署 edict/backend（Postgres + Redis 事件总线模式），
-请使用 edict/backend API 端点代替本脚本，或运行迁移脚本：
-  python3 edict/migration/migrate_json_to_pg.py
-
-两种模式互相独立，数据不会自动同步。
 
 用法:
   # 新建任务（收旨时）
@@ -1720,6 +1715,44 @@ _NOTIFY_COOLDOWN_SEC = 90       # 同一任务+同一Agent冷却时间（秒）-
 _NOTIFY_COOLDOWN_ASYNC_SEC = 30  # 异步待确认的冷却时间（秒）- 异步路径更短，允许快速重试
 
 
+def _ensure_scheduler_field(task):
+    """【F2 修复】确保任务有完整的 _scheduler 字段（与 server.py _ensure_scheduler 对齐）。
+
+    通过 CLI（kanban_update.py）修改状态的任务没有经过 server.py，
+    因此缺少 _scheduler 字段，导致后续监察/调度逻辑无法正确识别调度元信息。
+    此函数在 cmd_state 状态转换成功后调用，初始化标准字段。
+    """
+    sched = task.setdefault('_scheduler', {})
+    if not isinstance(sched, dict):
+        sched = {}
+        task['_scheduler'] = sched
+    sched.setdefault('enabled', True)
+    sched.setdefault('stallThresholdSec', 600)
+    sched.setdefault('maxRetry', 2)
+    sched.setdefault('retryCount', 0)
+    sched.setdefault('escalationLevel', 0)
+    sched.setdefault('autoRollback', True)
+    if not sched.get('lastProgressAt'):
+        sched['lastProgressAt'] = task.get('updatedAt') or now_iso()
+    if 'stallSince' not in sched:
+        sched['stallSince'] = None
+    if 'lastDispatchStatus' not in sched:
+        sched['lastDispatchStatus'] = 'idle'
+    if 'remindedAt' not in sched:
+        sched['remindedAt'] = None
+    if 'timeoutReportedAt' not in sched:
+        sched['timeoutReportedAt'] = None
+    if 'snapshot' not in sched:
+        sched['snapshot'] = {
+            'state': task.get('state', ''),
+            'org': task.get('org', ''),
+            'now': task.get('now', ''),
+            'savedAt': now_iso(),
+            'note': 'cli-init',
+        }
+    return sched
+
+
 def cmd_state(task_id, new_state, now_text=None):
     """更新任务状态（原子操作，含流转合法性校验 + 会话去重）"""
     old_state = [None]
@@ -1762,6 +1795,9 @@ def cmd_state(task_id, new_state, now_text=None):
         if now_text:
             t['now'] = now_text
         t['updatedAt'] = now_iso()
+
+        # 【F2 修复】初始化 _scheduler 字段，确保 CLI 修改的任务与 server.py 路径一致
+        _ensure_scheduler_field(t)
         
         # ═══════════════════════════════════════════════════════════════
         # ⚠️ 不再清除 _lastNotify[target_agent]！

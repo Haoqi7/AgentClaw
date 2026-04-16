@@ -146,7 +146,7 @@ AgentClaw 将中国古代的「三省六部制」映射为多 Agent 协作架构
 | **前端** | React 18 + TypeScript 5.6 + Vite 6 + Tailwind CSS + Zustand |
 | **后端** | Python 3.10+（零依赖 HTTP Server）/ FastAPI（可选增强模式）|
 | **Agent 运行时** | [OpenClaw](https://github.com/openclaw) — AI Agent 基础设施 |
-| **数据库** | JSON 文件（零配置）/ PostgreSQL + Redis（可选）|
+| **数据库** | JSON 文件（零配置）|
 | **消息渠道** | 飞书 · Telegram · Slack · Discord · 企业微信 · Webhook |
 | **部署** | Docker Compose 一键部署 / 裸机脚本安装 |
 

@@ -2004,6 +2004,46 @@ def handle_scheduler_scan(threshold_sec=600):
         if rollback_task and state not in _TERMINAL_STATES:
             dispatch_for_state(task_id, rollback_task, state, trigger='taizi-auto-rollback')
 
+    # ── F1 修复：queued-shangshu-busy 重试 ──
+    # 尚书省忙碌时任务被标记为 queued-shangshu-busy，但原逻辑只恢复 'queued'，
+    # 导致这些任务永久卡住。超过 120 秒后自动重试派发。
+    _QUEUED_SHANGSHU_BUSY_TIMEOUT = 120
+    _now_dt = datetime.datetime.now(datetime.timezone.utc)
+    pending_busy_retries = []
+    for task in tasks:
+        task_id = task.get('id', '')
+        state = task.get('state', '')
+        if not task_id or state in _TERMINAL_STATES or task.get('archived'):
+            continue
+        sched = task.get('_scheduler') or {}
+        if sched.get('lastDispatchStatus') != 'queued-shangshu-busy':
+            continue
+        last_dispatch = sched.get('lastDispatchAt', '')
+        if not last_dispatch:
+            continue
+        last_dt = _parse_iso(last_dispatch)
+        if not last_dt:
+            continue
+        busy_sec = int((_now_dt - last_dt).total_seconds())
+        if busy_sec < _QUEUED_SHANGSHU_BUSY_TIMEOUT:
+            continue
+        log.info(f'🔄 F1重试: {task_id} 尚书省排队超时{busy_sec}秒，重新派发')
+        sched['lastDispatchStatus'] = 'retry-queued'
+        sched['lastDispatchTrigger'] = 'scheduler-retry-queued'
+        task['updatedAt'] = now_iso()
+        changed = True
+        actions.append({'taskId': task_id, 'action': 'retry-queued-busy', 'busySec': busy_sec})
+        pending_busy_retries.append((task_id, state))
+
+    if changed:
+        save_tasks(tasks)
+
+    # 处理 F1 产生的重试（独立列表，不影响之前的 pending_retries）
+    for task_id, state in pending_busy_retries:
+        retry_task = next((t for t in tasks if t.get('id') == task_id), None)
+        if retry_task:
+            dispatch_for_state(task_id, retry_task, state, trigger='scheduler-retry-queued')
+
     return {
         'ok': True,
         'thresholdSec': threshold_sec,

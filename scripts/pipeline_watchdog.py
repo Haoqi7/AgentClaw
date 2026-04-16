@@ -35,6 +35,10 @@ import datetime
 import os
 import threading
 
+# ── F3 修复：唤醒去重集合（防止多任务并行时同一 Agent 被重复唤醒）──
+_WAKING_AGENTS = set()  # 正在唤醒中的 Agent ID
+_WAKE_LOCK = threading.Lock()
+
 # 平台兼容：Windows 使用 msvcrt，Linux/macOS 使用 fcntl
 _IS_WINDOWS = os.name == 'nt'
 if _IS_WINDOWS:
@@ -58,7 +62,7 @@ OCLAW_HOME = pathlib.Path.home() / ".openclaw"
 # 【V5 修复】BREAK_TIMEOUT 从 90s → 210s（3.5 分钟）
 # 根因：openclaw agent 启动 + Gateway 连接 + Agent 上下文加载 + LLM 推理
 # 整个链路实测需要 2-3 分钟。旧值 90s 导致监察在 Agent 还没收到消息时就误报越权。
-BREAK_TIMEOUT_SEC = 210  # 3.5 分钟无回应判定为断链（覆盖 sessions_spawn 投递延迟）
+BREAK_TIMEOUT_SEC = 300  # 5 分钟无回应判定为断链（与太子巡检 180s 拉开差距，避免同时触发）
 RECENT_DONE_MINUTES = 10  # 最近 N 分钟内完成的任务也需检查（防止速通逃逸）
 AUTO_ARCHIVE_MINUTES = 5  # Done 超过 N 分钟自动归档
 
@@ -75,10 +79,10 @@ EXTREME_STALL_THRESHOLD = 20 * 60  # 20分钟无任何更新视为极端停滞
 # 多任务并行时，中书省等关键节点需要处理多个任务，断链超时应适当放宽
 # 避免因 Agent 正在处理其他任务而误判为断链
 MULTITASK_BREAK_TIMEOUT = {     # 断链超时（秒）— 按活跃任务数阶梯递增
-    1: 210,   # 单任务：210s（3.5分钟，覆盖 spawn 延迟）
-    2: 270,   # 双任务：270s（+60s）
-    3: 330,   # 三任务：330s（+120s）
-    4: 390,   # 四任务：390s（+180s，上限）
+    1: 300,   # 单任务：300s（5分钟，与太子巡检 180s 拉开差距）
+    2: 360,   # 双任务：360s（+60s）
+    3: 420,   # 三任务：420s（+120s）
+    4: 480,   # 四任务：480s（+180s，上限）
 }
 MULTITASK_ACTIVITY_GRACE = {   # 看板活动宽限期（秒）— 第3层断链检测
     1: 300,   # 单任务：300s（5分钟，给 Agent 充足响应时间）
@@ -146,6 +150,33 @@ def load_watchdog_config():
         log(f"加载 watchdog_config.json 失败，使用默认值: {_e}")
 
 # ── 日志工具 ──────────────────────────────────────────────────────
+def _parse_to_bjt(time_str):
+    """将任意格式的 ISO 时间字符串统一转换为北京时间 datetime 对象。
+    
+    【F5 修复】统一时间比较到 UTC+8，消除时区混乱导致的误判。
+    
+    处理以下格式：
+    - "2026-01-01T12:00:00+08:00" → 直接使用
+    - "2026-01-01T12:00:00Z"      → UTC 转为 BJT (+8h)
+    - "2026-01-01T12:00:00"       → 视为 BJT（无时区）
+    - "2026-01-01T12:00:00+00:00" → UTC 转为 BJT (+8h)
+    """
+    if not time_str:
+        return None
+    s = time_str.strip().replace('Z', '+00:00')
+    try:
+        dt = datetime.datetime.fromisoformat(s)
+    except Exception:
+        return None
+    if dt.tzinfo is None:
+        # 无时区 → 视为北京时间
+        dt = dt.replace(tzinfo=_BJT)
+    elif dt.tzinfo != _BJT:
+        # 有时区但不是 BJT → 转换为 BJT
+        dt = dt.astimezone(_BJT)
+    return dt
+
+
 def log(msg):
     ts = datetime.datetime.now(_BJT).strftime("%H:%M:%S")
     print(f"[{ts}] [监察] {msg}", flush=True)
@@ -446,6 +477,112 @@ def save_audit(audit):
     atomic_json_write(AUDIT_FILE, audit)
 
 
+# ── F8 修复：审计文件写入降级机制 ──
+_AUDIT_PENDING_FILE = DATA_DIR / "pipeline_audit.pending.json"
+
+
+def save_audit_with_fallback(audit):
+    """【F8 修复】带降级的审计日志写入。
+
+    先尝试正常写入 pipeline_audit.json，若失败则缓存到 pipeline_audit.pending.json，
+    下次 main() 入口时合并。防止文件锁竞争或磁盘异常导致审计数据丢失。
+    """
+    try:
+        # 先尝试读取当前文件内容做校验
+        try:
+            existing = atomic_json_read(AUDIT_FILE, {"last_check": "", "violations": [], "notifications": []})
+            if not isinstance(existing, dict) or "violations" not in existing:
+                raise ValueError("audit data corrupted")
+        except Exception:
+            existing = {"last_check": "", "violations": [], "notifications": []}
+
+        # 写入
+        atomic_json_write(AUDIT_FILE, audit)
+        # 写入成功后，清理 pending 文件
+        _clear_audit_pending()
+        return True
+    except Exception as e:
+        log(f"F8: 审计文件写入失败，降级到 pending: {e}")
+        _mark_audit_pending(audit)
+        return False
+
+
+def _mark_audit_pending(audit_data):
+    """将审计数据缓存到 pending 文件（原子写入 + 文件锁）"""
+    try:
+        _PENDING_LOCK_PATH = pathlib.Path(str(_AUDIT_PENDING_FILE) + '.lock')
+        lock_f = open(_PENDING_LOCK_PATH, 'a')
+        try:
+            _lock_file(lock_f, exclusive=True)
+            tmp_path = pathlib.Path(str(_AUDIT_PENDING_FILE) + '.tmp')
+            tmp_path.write_text(
+                json.dumps(audit_data, ensure_ascii=False, indent=2),
+                encoding='utf-8',
+            )
+            os.replace(str(tmp_path), str(_AUDIT_PENDING_FILE))
+        finally:
+            _unlock_file(lock_f)
+            lock_f.close()
+        log("F8: 审计数据已写入 pending 文件")
+    except Exception as e:
+        log(f"F8: pending 文件写入也失败: {e}")
+
+
+def _clear_audit_pending():
+    """清理 pending 文件（写入成功后调用）"""
+    try:
+        if _AUDIT_PENDING_FILE.exists():
+            _AUDIT_PENDING_FILE.unlink()
+            lock_path = pathlib.Path(str(_AUDIT_PENDING_FILE) + '.lock')
+            if lock_path.exists():
+                lock_path.unlink()
+    except Exception:
+        pass
+
+
+def _recover_audit_pending():
+    """从 pending 文件恢复审计数据，合并到主审计文件。
+
+    在 main() 入口处调用，确保上次因写入失败而缓存的数据不丢失。
+    """
+    if not _AUDIT_PENDING_FILE.exists():
+        return
+    try:
+        pending_data = atomic_json_read(_AUDIT_PENDING_FILE, None)
+        if not pending_data or not isinstance(pending_data, dict):
+            _clear_audit_pending()
+            return
+        # 读取当前审计数据
+        audit = load_audit()
+        # 合并 pending 数据（去重合并 violations 和 notifications）
+        for key in ("violations", "notifications"):
+            pending_items = pending_data.get(key, [])
+            existing_items = audit.get(key, [])
+            existing_keys = set()
+            for item in existing_items:
+                if key == "violations":
+                    existing_keys.add((item.get("task_id", ""), item.get("type", ""), item.get("flow_index", -1), item.get("detail", "")))
+                else:
+                    existing_keys.add((item.get("sent_at", "") or item.get("at", ""), item.get("type", ""), item.get("detail", "")))
+            for item in pending_items:
+                if key == "violations":
+                    item_key = (item.get("task_id", ""), item.get("type", ""), item.get("flow_index", -1), item.get("detail", ""))
+                else:
+                    item_key = (item.get("sent_at", "") or item.get("at", ""), item.get("type", ""), item.get("detail", ""))
+                if item_key not in existing_keys:
+                    audit.setdefault(key, []).append(item)
+                    existing_keys.add(item_key)
+        # 合并 last_check（取较新的）
+        pending_check = pending_data.get("last_check", "")
+        if pending_check and pending_check > audit.get("last_check", ""):
+            audit["last_check"] = pending_check
+        save_audit(audit)
+        _clear_audit_pending()
+        log("F8: 从 pending 文件恢复审计数据成功")
+    except Exception as e:
+        log(f"F8: pending 文件恢复失败: {e}")
+
+
 def load_exclude_list():
     """读取手动排除的任务 ID 列表"""
     try:
@@ -495,9 +632,19 @@ def wake_agent(agent_id, reason=""):
     """唤醒指定 Agent。返回 (success, detail)。
 
     【修复】改用 Popen 非阻塞，避免阻塞 watchdog 主循环 130 秒导致 Gateway 过载。
+    【F3 修复】增加唤醒去重，防止多任务断链时同一 Agent 被重复唤醒。
     """
     if agent_id in ("huangshang", "皇上"):
         return False, "不唤醒皇上"
+
+    # F3: 检查是否已在唤醒中
+    with _WAKE_LOCK:
+        if agent_id in _WAKING_AGENTS:
+            label = ID_TO_LABEL.get(agent_id, agent_id)
+            log(f"{label} ({agent_id}) 已在唤醒中，跳过本轮")
+            return False, "已在唤醒中，跳过"
+        _WAKING_AGENTS.add(agent_id)
+
     label = ID_TO_LABEL.get(agent_id, agent_id)
     msg = (
         f"🔔 监察心跳通知\n"
@@ -534,9 +681,16 @@ def wake_agent(agent_id, reason=""):
                     pass
             else:
                 log(f"{label} ({agent_id}) 唤醒后已活跃")
+            # F3: 唤醒完成（无论成功失败），从集合中移除
+            with _WAKE_LOCK:
+                _WAKING_AGENTS.discard(agent_id)
+
         threading.Thread(target=_verify_and_retry, daemon=True).start()
         return True, f"已发送唤醒请求给 {label} [Popen 非阻塞]"
     except Exception as e:
+        # F3: 异常时也要移除
+        with _WAKE_LOCK:
+            _WAKING_AGENTS.discard(agent_id)
         log(f"唤醒 {label} ({agent_id}) 异常: {e}")
         return False, str(e)[:200]
 
@@ -850,10 +1004,12 @@ def check_liubu_execution_evidence(task_id, flow_log, session_keys=None,
         # 【V6 修复】时间宽限期：派发后 210 秒内不判违规
         # 根因：openclaw agent 启动 + Gateway连接 + Agent上下文加载 + LLM推理
         # 整个链路需要 2-3 分钟。旧代码不考虑时间，派发后立即检测导致误报。
-        _LIUBU_EVIDENCE_GRACE_SEC = 210  # 3.5分钟宽限期
+        _LIUBU_EVIDENCE_GRACE_SEC = 300  # 5分钟宽限期（与 BREAK_TIMEOUT_SEC 一致）
         if dispatch_time:
             try:
-                _dt = datetime.datetime.fromisoformat(dispatch_time.replace("Z", "+00:00"))
+                _dt = _parse_to_bjt(dispatch_time)
+                if _dt is None:
+                    continue
                 _elapsed = (datetime.datetime.now(_BJT) - _dt).total_seconds()
                 if _elapsed < _LIUBU_EVIDENCE_GRACE_SEC:
                     # 派发时间太短，六部可能还在启动中，暂不判定
@@ -934,6 +1090,21 @@ for _aid, _dept in ID_TO_DEPT.items():
         _ORG_TO_AGENT_ID[_aid] = _aid
 
 
+def _get_effective_dispatch_time(task):
+    """【F2 修复】获取任务的有效派发时间。
+
+    优先使用 _scheduler.lastProgressAt（太子调度记录的进展时间），
+    若缺失则回退到 task.updatedAt（看板最后刷新时间）。
+    这解决了通过 CLI（kanban_update.py）创建/修改的任务没有 _scheduler 字段时，
+    check_broken_chain 等函数无法获取有效时间基准的问题。
+    """
+    sched = task.get("_scheduler") or {}
+    t = sched.get("lastProgressAt") or task.get("updatedAt", "")
+    if not t:
+        return None
+    return _parse_to_bjt(t)
+
+
 def check_broken_chain(task_id, flow_log, task_state="",
                         progress_log=None, task_updated_at="",
                         break_timeout=None, review_grace=None,
@@ -969,9 +1140,8 @@ def check_broken_chain(task_id, flow_log, task_state="",
     grace_period = _grace.get(task_state, 0) or _grace.get(dept_to, 0)
 
     # 解析最后一条 flow 的时间
-    try:
-        last_at = datetime.datetime.fromisoformat(last_at_str.replace("Z", "+00:00"))
-    except Exception:
+    last_at = _parse_to_bjt(last_at_str)
+    if last_at is None:
         return None
 
     now = datetime.datetime.now(_BJT)
@@ -991,7 +1161,9 @@ def check_broken_chain(task_id, flow_log, task_state="",
         entry_at_str = entry.get("at", "")
         if entry_from == last_to and entry_at_str:
             try:
-                entry_at = datetime.datetime.fromisoformat(entry_at_str.replace("Z", "+00:00"))
+                entry_at = _parse_to_bjt(entry_at_str)
+                if entry_at is None:
+                    continue
                 if entry_at > last_at:
                     target_has_response = True
                     break
@@ -1021,7 +1193,9 @@ def check_broken_chain(task_id, flow_log, task_state="",
             # 以 p_agent 作为主匹配条件（实际写入者），p_org 不再单独用于判定活跃
             if p_agent == last_to:
                 try:
-                    p_at = datetime.datetime.fromisoformat(p_at_str.replace("Z", "+00:00"))
+                    p_at = _parse_to_bjt(p_at_str)
+                    if p_at is None:
+                        continue
                     if p_at > last_at:
                         return None  # 目标部门自身有进展记录，正在工作中
                 except Exception:
@@ -1046,10 +1220,9 @@ def check_broken_chain(task_id, flow_log, task_state="",
         )
     if task_updated_at:
         try:
-            upd_str = task_updated_at.replace("Z", "+00:00").replace("+08:00", "")
-            upd_at = datetime.datetime.fromisoformat(upd_str)
-            if upd_at.tzinfo is None:
-                upd_at = upd_at.replace(tzinfo=datetime.timezone(datetime.timedelta(hours=8)))
+            upd_at = _parse_to_bjt(task_updated_at)
+            if upd_at is None:
+                pass
             if upd_at > last_at:
                 upd_elapsed = (now - upd_at).total_seconds()
                 if upd_elapsed < _ACTIVITY_GRACE_SEC:
@@ -1328,9 +1501,9 @@ def check_extreme_stall(task_id, flow_log, task_state, updated_at_str, stall_thr
     if not updated_at_str:
         return None
     try:
-        dt = datetime.datetime.fromisoformat(updated_at_str.replace("Z", "+00:00").replace("+08:00", ""))
-        if dt.tzinfo is None:
-            dt = dt.replace(tzinfo=datetime.timezone(datetime.timedelta(hours=8)))
+        dt = _parse_to_bjt(updated_at_str)
+        if dt is None:
+            return None
         now = datetime.datetime.now(_BJT)
         elapsed = (now - dt).total_seconds()
         if elapsed >= _threshold:
@@ -1628,6 +1801,9 @@ def main():
 
 def _main_inner():
     """watchdog 主逻辑（在单实例锁保护下运行）。"""
+    # ── F8 修复：恢复上次因写入失败而缓存的审计数据 ──
+    _recover_audit_pending()
+
     # ── 加载自适应配置 ──
     load_watchdog_config()
 
@@ -1773,10 +1949,13 @@ def _main_inner():
     # ── 自适应行为：根据历史稳定性动态调整检测参数 ──
     _adaptive_enabled = _cfg.get("adaptive_enabled", True)
     _stability_score = 1.0  # 默认完全稳定
+    _adaptive_mode = "high"  # 自适应模式：high=高稳定 / medium=冷启动 / low=低稳定
     if _adaptive_enabled:
         _stability_window = _cfg.get("stability_window", 20)
         _history = audit.get("check_history", [])
-        if len(_history) >= 5:
+        _history_count = len(_history)
+        if _history_count >= _stability_window:
+            # 数据充足：正常计算稳定性评分
             recent = _history[-_stability_window:]
             clean = sum(1 for h in recent if h.get("violations", 0) == 0)
             _stability_score = clean / len(recent)
@@ -1786,6 +1965,16 @@ def _main_inner():
                 _boost = _cfg.get("adaptive_grace_boost_sec", 60)
                 _break_timeout += _boost
                 log(f"高稳定性模式：断链超时 +{_boost}s → {_break_timeout}s")
+                _adaptive_mode = "high"
+            else:
+                _adaptive_mode = "low"
+        else:
+            # F7 修复：冷启动期（数据不足 stability_window 轮），走中稳定性模式
+            # 冷启动期只通知严重违规（越权/断链/极端停滞），轻微违规只记录不通知
+            _adaptive_mode = "medium"
+            log(f"冷启动期：已积累 {_history_count}/{_stability_window} 轮数据，走中稳定性模式（只通知严重违规）")
+    else:
+        _adaptive_mode = "low"
 
     # ── 去重：构建已有违规 key 集合，避免每轮重复写入相同违规 ──
     existing_violation_keys = set()
@@ -2401,7 +2590,7 @@ def _main_inner():
         detail=f"检查完成，{len(active)} 个检查任务，{len(watched_tasks)} 个活跃，发现 {len(new_violations)} 项问题",
     ))
 
-    save_audit(audit)
+    save_audit_with_fallback(audit)
 
     active_count = len(active)
     watched_count = len(watched_tasks)
@@ -2420,6 +2609,6 @@ if __name__ == "__main__":
             now_iso = datetime.datetime.now(_BJT).isoformat()
             audit["last_check"] = now_iso
             audit["error"] = str(e)[:500]
-            save_audit(audit)
+            save_audit_with_fallback(audit)
         except Exception:
             pass
