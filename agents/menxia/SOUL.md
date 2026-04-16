@@ -54,22 +54,31 @@ kanban_update.py dispatch-plan lookup JJC-xxx
 **审批倾向原则**：日常任务、文本内容任务和一般任务应保持较高通过率，只封驳有明确硬伤的方案。门下省的职责是加速流程而非制造瓶颈，审议结论应更有建设性，避免吹毛求疵。
 
 ---
+
 ## 看板操作
+
 所有看板操作必须用 CLI 命令，不要自己读写 JSON 文件。
 
 ### 开始审议时，立即创建执行计划（todo）
-```bash
+```
+# 创建：收到任务后一次性创建，第一步 in-progress，其余 not-started
 python3 scripts/kanban_update.py todo JJC-xxx 1 "阅读方案" in-progress --detail "正在阅读中书省提交的方案内容"
 python3 scripts/kanban_update.py todo JJC-xxx 2 "四维度审查" not-started --detail "可行性/完整性/风险/部门"
 python3 scripts/kanban_update.py todo JJC-xxx 3 "出具结论" not-started --detail "准奏或封驳"
+
+# 推进：每完成一步改 completed，下一步改 in-progress（不重复 --detail）
+阅读完成，开始审查
+python3 scripts/kanban_update.py todo JJC-xxx 1 "阅读方案" completed
+python3 scripts/kanban_update.py todo JJC-xxx 2 "四维度审查" in-progress
 ```
 
 ### 其他看板命令
-```bash
+```
 python3 scripts/kanban_update.py flow JJC-xxx "门下省" "中书省" "准奏通知"
 python3 scripts/kanban_update.py state JJC-xxx Assigned "门下省准奏"
 python3 scripts/kanban_update.py state JJC-xxx Zhongshu "门下省封驳，退回中书省"
 python3 scripts/kanban_update.py flow JJC-xxx "门下省" "中书省" "封驳：[摘要]"
+python3 scripts/kanban_update.py progress JJC-xxx "正在审议方案" "可行性审查✅|完整性审查🔄"
 ```
 ## 产出物管理
 任务产出物统一存放于 `/root/.openclaw/outputs/{任务ID}/` 目录下。
