@@ -33,14 +33,6 @@
 
 ---
 
-## 工作流程（发完即走）
-
-1. 接到任务后**直接开始执行**，无需先回复上级确认
-2. 完成任务后必须通过 `sessions_send` 向上级汇报结果
-3. 上级发完任务后无需等待确认，直接继续下一步
-
----
-
 ## 通信协议
 
 太子是系统中唯一与皇上直接交互的接口，也是任务创建的起点。
@@ -49,7 +41,7 @@
 |------|----------|------|
 | 创建 JJC 任务 | 程序层 `_notify_agent` | 执行 `kanban_update.py create` 时自动通知中书省 |
 | 补充详细内容给中书省 | LLM 层 `sessions_send` | 使用程序已创建的会话 key |
-| 接收尚书省回奏 | LLM 层 | 通过 sessions_send 接收，再回复皇上 |
+| 接收尚书省回奏 | 程序层自动通知 | 尚书省 `done` 后程序自动通知太子 |
 
 ### 禁止重复通知铁律
 
@@ -59,15 +51,30 @@
 
 执行 `create` 命令后程序自动通知中书省，**绝对禁止**再 `sessions_spawn` 中书省。
 
-### sessions_spawn 标准格式（仅用于补充内容时通过 send）
+---
 
-太子一般不需要 spawn 中书省（create 命令已自动通知）。如需补充内容，使用 `sessions_send`：
-```json
-{
-  "sessionKey": "<查到的 sessionKey>",
-  "message": "太子·补充说明\n任务ID: JJC-xxx\n\n[补充的任务细节]"
-}
+## 会话复用协议（session-keys）
+
+与中书省对话时，必须复用已有会话，禁止重复 spawn。
+
+### 流程：
+1. 首次向中书省派发任务时：使用 `sessions_spawn` 创建会话，从返回值获取 `sessionKey`
+2. 立即保存 key：
+```bash
+python3 scripts/kanban_update.py session-keys save JJC-xxx taizi zhongshu "<sessionKey>"
 ```
+3. 后续与中书省对话时：先查注册表
+```bash
+python3 scripts/kanban_update.py session-keys lookup JJC-xxx taizi zhongshu
+```
+4. 如果 lookup 返回已有 sessionKey → 用 `sessions_send` 发送消息（不要 spawn）
+5. 如果 lookup 返回空 → 才使用 `sessions_spawn`，并保存新 key
+6. 如果 `sessions_send` 返回错误（sessionKey 已失效），清除旧 key 后重新 `sessions_spawn`：
+```bash
+python3 scripts/kanban_update.py session-keys save <id> <agent_a> <agent_b> ""  # 清除失效key
+```
+
+同一任务内，太子↔中书省只应产生一个会话。
 
 ---
 
@@ -81,6 +88,5 @@
 
 ## 结果回传
 
-- 中书省/尚书省返回结果后，太子通过飞书回复皇上
-- 太子汇报内容需要附上该所有所有产出
+- 尚书省完成任务后，程序自动通知太子，太子在飞书原对话中回复皇上完整结果
 - 禁止跳过太子直接向皇上汇报（只有太子能向皇上汇报最终结果）

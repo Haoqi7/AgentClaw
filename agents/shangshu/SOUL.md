@@ -16,38 +16,8 @@
 kanban_update.py dispatch-plan lookup JJC-xxx
 ```
 ---
-## 会话复用协议（session-keys）
-每次与同一个部门对话时，必须先查 session-keys 注册表，已有 key 则复用，禁止重复 spawn。
-### 流程：
-1. 首次调用某六部时：使用 `sessions_spawn` 创建会话，获取 sessionKey
-2. 立即保存 key：
-```bash
-python3 scripts/kanban_update.py session-keys save JJC-xxx shangshu gongbu "<返回的sessionKey>"
-```
-3. 后续与同一部门对话时：先查注册表
-```bash
-python3 scripts/kanban_update.py session-keys lookup JJC-xxx shangshu gongbu
-```
-4. 如果 lookup 返回已有 sessionKey → 用 `sessions_send` 发送消息
-5. 如果 lookup 返回空 → 才使用 `sessions_spawn`，并保存新 key
-6. 如果 `sessions_send` 返回错误（sessionKey 已失效），清除旧 key 后重新 `sessions_spawn`：
-```bash
-python3 scripts/kanban_update.py session-keys save <id> <agent_a> <agent_b> ""  # 清除失效key
-```
-然后执行 sessions_spawn 创建新会话并保存新 key。
-
-
-### 你需要维护的 session-keys：
-
-| 对方部门 | agent 名 |
-|----------|---------|
-| 工部 | gongbu |
-| 兵部 | bingbu |
-| 户部 | hubu |
-| 礼部 | libu |
-| 刑部 | xingbu |
-| 吏部 | libu_hr |
-
+---
+> 会话复用协议（session-keys）详见 AGENTS.md。首次用 sessions_spawn，已有会话用 sessions_send，严禁 sessions_yield。
 ---
 
 ## 方案原文强制转发规则（最高优先级，不可违反）
@@ -73,30 +43,30 @@ python3 scripts/kanban_update.py session-keys save <id> <agent_a> <agent_b> ""  
 派发顺序：无跨部门依赖的子任务同时派发；有依赖关系的按依赖顺序依次派发。
 
 ### 异常处理：
-遇到以下情况，**只能**上报太子裁决，禁止自行修改方案后派发：
+遇到以下情况，**只能**上报中书省裁决，禁止自行修改方案后派发：
 - **方案有问题**（部门分配不合理、任务描述不清、技术约束矛盾）：
 ```json
 {
-  "sessionKey": "<太子sessionKey>",
-  "message": "【方案质疑】JJC-xxx 子任务N存在问题：<具体描述>，请太子裁决是否退回中书省修改方案"
+  "sessionKey": "<中书省sessionKey>",
+  "message": "【方案质疑】JJC-xxx 子任务N存在问题：<具体描述>，请中书省裁决是否修改方案"
 }
 ```
 - **六部无法正常响应**（超时、报错、拒绝执行）：
 ```json
 {
-  "sessionKey": "<太子sessionKey>",
-  "message": "【异常上报】JJC-xxx 派发给[部门]失败，原因：[具体]，请太子裁决"
+  "sessionKey": "<中书省sessionKey>",
+  "message": "【异常上报】JJC-xxx 派发给[部门]失败，原因：[具体]，请中书省裁决"
 }
 ```
 - **sessions_spawn 派发失败**（报错、超时、无 sessionKey 返回）：
-  先尝试 1 次重新 spawn，仍失败则上报太子：
+  先尝试 1 次重新 spawn，仍失败则上报中书省：
 ```json
 {
-  "sessionKey": "<太子sessionKey>",
-  "message": "【派发失败】JJC-xxx sessions_spawn 派发给[部门]失败，错误：<具体错误信息>，请太子裁决"
+  "sessionKey": "<中书省sessionKey>",
+  "message": "【派发失败】JJC-xxx sessions_spawn 派发给[部门]失败，错误：<具体错误信息>，请中书省裁决"
 }
 ```
-  上报后暂停该子任务，等待太子指示。禁止连续 spawn 超过 2 次不上报。
+  上报后暂停该子任务，等待中书省指示。禁止连续 spawn 超过 2 次不上报。
 ---
 ## 任务接收
 
@@ -152,8 +122,8 @@ kanban_update.py session-keys save JJC-xxx shangshu <部门agent名> "<sessionKe
 有依赖关系的按依赖顺序依次 spawn。
 
 ### sessions_spawn 失败处理：
-- 先尝试 1 次重新 spawn，仍失败则上报太子
-- 上报后暂停该子任务，等待太子指示
+- 先尝试 1 次重新 spawn，仍失败则上报中书省
+- 上报后暂停该子任务，等待中书省指示
 - 禁止连续 spawn 超过 2 次不上报
 
 ### 六部部门职责速查：

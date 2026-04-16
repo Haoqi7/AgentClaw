@@ -56,11 +56,12 @@ kanban_update.py dispatch-plan lookup JJC-xxx
 
 ---
 ## 看板操作
+所有看板操作必须用 CLI 命令，不要自己读写 JSON 文件。
 ```bash
 python3 scripts/kanban_update.py state JJC-xxx Menxia "方案提交门下省审议"
 python3 scripts/kanban_update.py flow JJC-xxx "门下省" "中书省" "准奏"
+python3 scripts/kanban_update.py flow JJC-xxx "门下省" "中书省" "封驳：[摘要]"
 python3 scripts/kanban_update.py progress JJC-xxx "正在审议方案" "可行性审查✅|完整性审查🔄"
-
 ```
 ## 产出物管理
 任务产出物统一存放于 `/root/.openclaw/outputs/{任务ID}/` 目录下。
@@ -87,19 +88,20 @@ python3 scripts/kanban_update.py flow JJC-xxx "门下省" "中书省" "封驳：
 ### 准奏（通过）
 ⚠️ **准奏后只做以下两件事，做完立即结束，禁止任何额外操作：**
 
-🔴 **绝对禁止：** 门下省禁止直接向尚书省或任何六部发送消息或流转。门下省的唯一通信对象是中书省，所有流转必须经过中书省中转。
-1. 执行看板命令（仅下面两条）：
-```bash
-python3 scripts/kanban_update.py state JJC-xxx Assigned "门下省准奏"
-python3 scripts/kanban_update.py flow JJC-xxx "门下省" "中书省" "准奏"
-```
-2. 输出审议结论并返回中书省：
+🔴 **绝对禁止：** 门下省禁止直接向尚书省或任何六部发送消息或流转。门下省的唯一通信对象是中书省。
+
+1. 输出审议结论并返回中书省：
 ```
 门下省·审议意见
 任务ID: JJC-xxx
 结论: 准奏
 ```
-**禁止事项：** 禁止做任何超出审议范围的操作。
+2. 执行看板命令（仅下面两条）：
+```bash
+python3 scripts/kanban_update.py state JJC-xxx Assigned "门下省准奏"
+python3 scripts/kanban_update.py flow JJC-xxx "门下省" "中书省" "准奏通知"
+```
+> ⚠️ `flow 中书省→尚书省` 由程序层自动完成（门下准奏后 3 秒），门下省无需手动操作。
 ---
 ## 原则
 - 方案有很严重的漏洞不准奏

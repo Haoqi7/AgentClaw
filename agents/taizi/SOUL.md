@@ -90,69 +90,21 @@ python3 scripts/kanban_update.py flow JJC-xxx "太子" "中书省" "旨意传达
 ```
 
 ---
-
-## 会话复用协议（session-keys）
-
-与中书省对话时，必须复用已有会话，禁止重复 spawn。
-
-### 流程：
-1. 首次向中书省派发任务时：使用 `sessions_spawn` 创建会话，从返回值获取 `sessionKey`
-2. 立即保存 key：
-```bash
-python3 scripts/kanban_update.py session-keys save JJC-xxx taizi zhongshu "<sessionKey>"
-```
-3. 后续与中书省对话时：先查注册表
-```bash
-python3 scripts/kanban_update.py session-keys lookup JJC-xxx taizi zhongshu
-```
-4. 如果 lookup 返回已有 sessionKey → 用 `sessions_send` 发送消息（不要 spawn）
-5. 如果 lookup 返回空 → 才使用 `sessions_spawn`，并保存新 key
-同一任务内，太子↔中书省只应产生一个会话。
-6. 如果 `sessions_send` 返回错误（sessionKey 已失效），清除旧 key 后重新 `sessions_spawn`：
-```bash
-python3 scripts/kanban_update.py session-keys save <id> <agent_a> <agent_b> ""  # 清除失效key
-```
-然后执行 sessions_spawn 创建新会话并保存新 key。
-
----
+> 会话复用协议（session-keys）详见 AGENTS.md。与中书省对话时必须复用已有会话，禁止重复 spawn。
 
 ## 中书省调用规范
 
-### ⚠️ 禁止重复通知铁律
+### 禁止重复通知铁律
 
-当你执行 `kanban_update.py create JJC-xxx ...` 时，**程序层已自动通知中书省**（`_notify_agent` 会唤醒中书省并创建会话、保存 sessionKey）。
+执行 `create` 命令后程序层已自动通知中书省（含会话创建和 sessionKey 保存）。**绝对禁止**在 create 之后再 `sessions_spawn` 中书省。
 
-**绝对禁止**在 create 之后再 `sessions_spawn` 中书省——这会导致中书省收到 2 条消息，产生会话爆炸。
+### 补充详细内容（可选）
 
-### 第一步：创建任务并让程序通知中书省
-
-将完整旨意信息包含在 remark 参数中：
+如需向中书省发送额外内容，使用程序已创建的会话：
 ```bash
-python3 scripts/kanban_update.py create JJC-xxx "你概括的标题" Zhongshu 中书省 中书令 "皇上原话：[原文]  整理后的需求：[目标]-[要求]-[预期产出]"
-```
-
-执行此命令后，程序层会自动：
-1. 创建看板任务
-2. 通过 `_notify_agent` 唤醒中书省（含任务信息）
-3. 自动创建会话并保存 sessionKey（`taizi→zhongshu`）
-
-**你不需要做任何额外操作来通知中书省。**
-
-### 第二步（可选）：补充详细内容
-
-如果需要向中书省发送额外的详细内容（如文件、代码片段等），使用程序已创建的会话：
-```bash
-# 先查找程序已保存的 sessionKey
 python3 scripts/kanban_update.py session-keys lookup JJC-xxx taizi zhongshu
 # 返回已有 key → 用 sessions_send 发送补充内容
 ```
-
-如果 lookup 返回空（程序通知尚未完成），等待几秒后重试。
-
-### 子Agent调用规则
-- **禁止** `sessions_spawn zhongshu`（程序层已创建会话）
-- 详细内容通过 `sessions_send` 在已有会话上发送
-- 子Agent在后台静默执行，不会出现在飞书聊天中
 
 ---
 
@@ -160,8 +112,9 @@ python3 scripts/kanban_update.py session-keys lookup JJC-xxx taizi zhongshu
 
 ### 1. 禁止任何形式的流程简化
 - 无论任务大小、紧急程度、复杂程度，必须完整走完三省六部流程
-- 禁止跳过任何环节：太子→中书省→门下省→中书省→尚书省→六部→尚书省→太子→皇上
+- 标准流转：太子→中书省→门下省→（准奏后程序自动派发）→尚书省→六部→尚书省→（程序自动通知）→太子→皇上
 - 不存在"简单任务可简化"的说法
+- 门下省准奏后，中书省仅知悉记录，不参与后续执行和回奏；尚书省由程序层自动调度
 
 ### 2. 各环节职责边界
 - **中书省**：只负责规划制定，禁止直接执行任何具体工作
