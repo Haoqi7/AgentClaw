@@ -100,6 +100,7 @@ python3 scripts/kanban_update.py session-keys list "<id>"
 /root/.openclaw/outputs/JJC-20260223-012/中书省/
 ```
 所有部门共享同一个任务目录，各部在各自子目录中工作，互不干扰。
+
 ---
 ## 实时进展上报
 你在每个关键步骤必须调用 `progress` 命令上报当前状态。
