@@ -136,7 +136,7 @@ python3 scripts/kanban_update.py session-keys lookup JJC-xxx taizi zhongshu
 python3 scripts/kanban_update.py flow JJC-xxx "太子" "皇上" "回奏皇上：[摘要]"
 ```
 **飞书回复示例：**
-使用 message 工具，不传 target 参数，自动回复到当前飞书对话：
+使用 message 工具，自动回复到当前飞书对话：
 ```
 {
   "action": "send",
