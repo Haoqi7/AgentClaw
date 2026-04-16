@@ -2145,7 +2145,7 @@ def _collect_message_text(msg):
     return ''.join(parts)
 
 
-def _parse_activity_entry(item):
+def _parse_activity_entry(item, agent_id=''):
     """将 session jsonl 的 message 统一解析成看板活动条目。"""
     msg = item.get('message') or {}
     role = str(msg.get('role', '')).strip().lower()
@@ -2167,7 +2167,7 @@ def _parse_activity_entry(item):
                 })
         if not (text or thinking or tool_calls):
             return None
-        entry = {'at': ts, 'kind': 'assistant'}
+        entry = {'at': ts, 'kind': 'assistant', 'agent': agent_id}
         if text:
             entry['text'] = text[:300]
         if thinking:
@@ -2196,6 +2196,7 @@ def _parse_activity_entry(item):
         entry = {
             'at': ts,
             'kind': 'tool_result',
+            'agent': agent_id,
             'tool': msg.get('toolName', msg.get('name', '')),
             'exitCode': code,
             'output': output,
@@ -2213,7 +2214,7 @@ def _parse_activity_entry(item):
                 break
         if not text:
             return None
-        return {'at': ts, 'kind': 'user', 'text': text[:200]}
+        return {'at': ts, 'kind': 'user', 'agent': agent_id, 'text': text[:200]}
 
     return None
 
@@ -2253,7 +2254,7 @@ def get_agent_activity(agent_id, limit=30, task_id=None):
             # task_id 过滤：只保留提及 task_id 的条目
             if task_id and task_id not in all_text:
                 continue
-            entry = _parse_activity_entry(item)
+            entry = _parse_activity_entry(item, agent_id)
             if entry:
                 entries.append(entry)
 
@@ -2366,7 +2367,7 @@ def get_agent_activity_by_keywords(agent_id, keywords, limit=20):
             item = json.loads(ln)
         except Exception:
             continue
-        entry = _parse_activity_entry(item)
+        entry = _parse_activity_entry(item, agent_id)
         if entry:
             entries.append(entry)
 
@@ -2414,14 +2415,14 @@ def get_agent_latest_segment(agent_id, limit=20):
             item = json.loads(ln)
         except Exception:
             continue
-        entry = _parse_activity_entry(item)
+        entry = _parse_activity_entry(item, agent_id)
         if entry:
             entries.append(entry)
 
     return entries[-limit:]
 
 
-def _compute_phase_durations(flow_log):
+def _compute_phase_durations(flow_log, task_state=''):
     """从 flow_log 计算每个阶段的停留时长。"""
     if not flow_log or len(flow_log) < 1:
         return []
@@ -2433,6 +2434,10 @@ def _compute_phase_durations(flow_log):
         # 下一阶段的起始时间就是本阶段的结束时间
         if i + 1 < len(flow_log):
             end_at = flow_log[i + 1].get('at', '')
+            ongoing = False
+        elif task_state in ('Done', 'Cancelled'):
+            # 终态任务：最后一条流转不再计时
+            end_at = start_at
             ongoing = False
         else:
             end_at = now_iso()
@@ -2701,7 +2706,7 @@ def get_task_activity(task_id):
         log.warning(f'Session JSONL 融合失败 (task={task_id}): {e}')
 
     # ── 阶段耗时统计 ──
-    phase_durations = _compute_phase_durations(flow_log)
+    phase_durations = _compute_phase_durations(flow_log, state)
 
     # ── Todos 汇总 ──
     todos_summary = _compute_todos_summary(todos)
