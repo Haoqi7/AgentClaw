@@ -744,7 +744,7 @@ def _async_spawn_and_save_key(agent_id, message, task_id, from_id, to_label):
     threading.Thread(target=_wait_and_record, daemon=True).start()
 
 
-def _notify_agent(agent_id, task_id, from_org, to_org, title='', remark='', current_session_key=None, _retry=0):
+def _notify_agent(agent_id, task_id, from_org, to_org, title='', remark='', current_session_key=None, brief=False, _retry=0):
     """通知目标 Agent 有新任务/流转（含 Session Key 复用机制 — 程序层核心保障）。
 
     修改说明（发完即走）：首次通知改为全异步，不再阻塞等待 Agent 回复确认。
@@ -819,81 +819,64 @@ def _notify_agent(agent_id, task_id, from_org, to_org, title='', remark='', curr
     confirm_fmt = profile.get('confirm_fmt', '已收到 {task_id} {title}').format(task_id=task_id, title=title)
     deadline = profile.get('deadline', '10分钟内确认')
 
-    # 组装针对性通知消息
-    parts = [
-        f"📢 任务通知 → {to_label} - {task_id}",
-        f"",
-        f"📌 {role_hint}",
-        f"",
-        f"📋 任务信息：",
-        f"  · 任务ID：{task_id}",
-        f"  · 任务标题：{title or '(见详细任务内容)'}",
-        f"  · 流转路径：{from_org or '系统'} → {to_org}",
-        f"  · 说明：{remark}",
-    ]
-    # 【V5 修复】通知中附带产出路径和进展摘要，解决门下省二次审核收不到文档内容的问题
-    try:
-        tasks = load()
-        t = find_task(tasks, task_id)
-        if t:
-            _output = (t.get('output', '') or '').strip()
-            if _output:
-                parts.append(f"  · 产出路径：{_output}")
-            # 附带最近一条进展（让接收方快速了解上下文）
-            _progress = t.get('progress_log', [])
-            if _progress:
-                _last_p = _progress[-1] if _progress else {}
-                _last_text = (_last_p.get('text', '') or _last_p.get('now', '') or '').strip()
-                if _last_text:
-                    parts.append(f"  · 最新进展：{_last_text[:100]}")
-            # 附带六部执行摘要（flow_log 中六部的最近回复）
-            _flow = t.get('flow_log', [])
-            _liubu_agent_ids = ('libu', 'hubu', 'bingbu', 'xingbu', 'gongbu', 'libu_hr')
-            _liubu_replies = [e for e in _flow if (e.get('from', '') or '').strip().lower() in _liubu_agent_ids]
-            if _liubu_replies:
-                _last_reply = _liubu_replies[-1]
-                parts.append(f"  · 六部最新回复：{_last_reply.get('to', '')}←{_last_reply.get('from', '')} - {(_last_reply.get('remark', '') or '')[:80]}")
-            # 附带最近一条 flow_log（让接收方了解上游流转上下文，如封驳理由）
-            if _flow:
-                _last_flow = _flow[-1]
-                _flow_remark = (_last_flow.get('remark', '') or '').strip()
-                if _flow_remark:
-                    parts.append(f"  · 最近流转：{_last_flow.get('from', '')}→{_last_flow.get('to', '')} - {_flow_remark[:120]}")
-    except Exception:
-        pass
-    # 【B1/B2 修复】从 dispatch_plan 读取详细任务内容填入消息
-    try:
-        tasks = load()
-        t = find_task(tasks, task_id)
-        if t:
-            plan = t.get('dispatch_plan', {})
-            _dispatch_content = ''
-            if agent_id == 'menxia':
-                # 门下省：读取完整方案
-                _dispatch_content = plan.get('full_plan', '')
-            elif agent_id == 'shangshu':
-                # 尚书省：读取完整方案
-                _dispatch_content = plan.get('full_plan', '')
-            elif agent_id in ('libu', 'hubu', 'bingbu', 'xingbu', 'gongbu', 'libu_hr'):
-                # 六部：读取该部门的子任务
-                _assignment = plan.get('assignments', {}).get(agent_id, {})
-                _dispatch_content = _assignment.get('task', '')
-            if _dispatch_content:
-                # 截断过长的内容，避免消息超限
-                if len(_dispatch_content) > 3000:
-                    _dispatch_content = _dispatch_content[:3000] + '\n...(内容过长，请通过 dispatch-plan lookup 查看完整内容)'
-                parts.append(f"\n📋 详细任务内容：\n{_dispatch_content}")
-    except Exception:
-        pass
+    # ── brief 模式：极简通知（准奏→中书省等无需操作的场景） ──
+    if brief:
+        message = f'📢 {task_id} 门下省已准奏「{title or task_id}」，你无需操作。程序已派发尚书省。'
+    else:
+        # 组装针对性通知消息
+        parts = [
+            f"📢 任务通知 → {to_label} - {task_id}",
+            f"",
+            f"📌 {role_hint}",
+            f"",
+            f"📋 任务信息：",
+            f"  · 任务ID：{task_id}",
+            f"  · 任务标题：{title or '(见详细任务内容)'}",
+            f"  · 说明：{remark}",
+        ]
+        # 附带产出路径（仅任务有产出时）
+        try:
+            tasks = load()
+            t = find_task(tasks, task_id)
+            if t:
+                _output = (t.get('output', '') or '').strip()
+                if _output:
+                    parts.append(f"  · 产出路径：{_output}")
+        except Exception:
+            pass
+        # 【B1/B2 修复】从 dispatch_plan 读取详细任务内容填入消息
+        try:
+            tasks = load()
+            t = find_task(tasks, task_id)
+            if t:
+                plan = t.get('dispatch_plan', {})
+                _dispatch_content = ''
+                if agent_id == 'menxia':
+                    # 门下省：读取完整方案
+                    _dispatch_content = plan.get('full_plan', '')
+                elif agent_id == 'shangshu':
+                    # 尚书省：读取完整方案
+                    _dispatch_content = plan.get('full_plan', '')
+                elif agent_id in ('libu', 'hubu', 'bingbu', 'xingbu', 'gongbu', 'libu_hr'):
+                    # 六部：读取该部门的子任务
+                    _assignment = plan.get('assignments', {}).get(agent_id, {})
+                    _dispatch_content = _assignment.get('task', '')
+                if _dispatch_content:
+                    # 截断过长的内容，避免消息超限
+                    if len(_dispatch_content) > 3000:
+                        _dispatch_content = _dispatch_content[:3000] + '\n...(内容过长，请通过 dispatch-plan lookup 查看完整内容)'
+                    parts.append(f"\n📋 详细任务内容：\n{_dispatch_content}")
+        except Exception:
+            pass
 
-    if action_items:
+        if action_items:
+            parts.append(f"")
+            parts.append(f"🚀 你需要做的：")
+            parts.append(action_items)
         parts.append(f"")
-        parts.append(f"🚀 你需要做的：")
-        parts.append(action_items)
-    parts.append(f"")
-    parts.append(f"请立即开始处理，无需回复确认！")
+        parts.append(f"请立即开始处理，无需回复确认！")
 
-    message = '\n'.join(parts)
+        message = '\n'.join(parts)
 
     # ── 🔑 Session Key 复用机制：优先 send，首次 spawn ──
     # 解析发送方 agent_id（用于 session_keys pair 查找）
@@ -1860,6 +1843,18 @@ def cmd_state(task_id, new_state, now_text=None):
                 if notify_agent_id in _LIU_BU_AGENT_IDS:
                     log.info(f'🔗 架构调整: {task_id} Doing状态跳过程序层通知六部 {notify_agent_id}，依赖尚书省 sessions_spawn')
                     notify_agent_id = ''
+            # 准奏场景：覆盖尚书省通知的说明
+            if old_state[0] == 'Menxia' and new_state == 'Assigned':
+                now_text = '门下和中书省准奏'
+            # 封驳场景：从 flow_log 提取门下省封驳理由拼入 remark
+            if old_state[0] == 'Menxia' and new_state == 'Zhongshu' and t:
+                _flow_log = t.get('flow_log', [])
+                for _entry in reversed(_flow_log):
+                    _from = (_entry.get('from', '') or '').strip()
+                    _remark_text = (_entry.get('remark', '') or '').strip()
+                    if '门下' in _from and '封驳' in _remark_text:
+                        now_text = _remark_text
+                        break
             _notify_agent(
                 agent_id=notify_agent_id,
                 task_id=task_id,
@@ -1873,14 +1868,15 @@ def cmd_state(task_id, new_state, now_text=None):
         # 🔧 Fix: Menxia→Assigned 准奏后补充通知中书省 + 自动写flow
         # ═══════════════════════════════════════════════════════════════
         if old_state[0] == 'Menxia' and new_state == 'Assigned' and t:
-            # 1. 通知中书省「门下已准奏」
+            # 1. 极简通知中书省「门下已准奏」
             _notify_agent(
                 agent_id='zhongshu',
                 task_id=task_id,
                 from_org='门下省',
                 to_org='中书省',
                 title=task_title,
-                remark='门下省已准奏你的方案，程序将自动派发尚书省执行。你无需操作，请知悉记录。',
+                remark='门下省已准奏',
+                brief=True,
             )
             log.info(f'📢 准奏通知中书省: {task_id}')
             # 2. 自动写 中书省→尚书省 flow_log（中书→门下 由中书LLM手动写）
