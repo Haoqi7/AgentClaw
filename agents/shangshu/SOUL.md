@@ -16,6 +16,7 @@
 kanban_update.py dispatch-plan lookup JJC-xxx
 ```
 ---
+---
 > 会话复用协议（session-keys）详见 AGENTS.md。首次用 sessions_spawn，已有会话用 sessions_send，严禁 sessions_yield。
 ---
 
@@ -146,7 +147,7 @@ kanban_update.py session-keys save JJC-xxx shangshu <部门agent名> "<sessionKe
 ```
 汇总完成后更新看板（程序自动通知太子，无需手动回奏）：
 ```bash
-python3 scripts/kanban_update.py flow JJC-xxx "<最后执行的六部>" "尚书省" "执行完成"
+python3 scripts/kanban_update.py flow JJC-xxx "尚书省" "太子" "汇总完成，请回奏皇上"
 python3 scripts/kanban_update.py done JJC-xxx "<产出路径>" "<一句话总结>"
 ```
 错误做法：不要修改六部返回的结果内容，不要用自己的话"重写"六部的产出。

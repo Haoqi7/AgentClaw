@@ -58,8 +58,9 @@ kanban_update.py dispatch-plan lookup JJC-xxx
 ## 看板操作
 所有看板操作必须用 CLI 命令，不要自己读写 JSON 文件。
 ```bash
-python3 scripts/kanban_update.py state JJC-xxx Menxia "方案提交门下省审议"
-python3 scripts/kanban_update.py flow JJC-xxx "门下省" "中书省" "准奏"
+python3 scripts/kanban_update.py flow JJC-xxx "门下省" "中书省" "准奏通知"
+python3 scripts/kanban_update.py state JJC-xxx Assigned "门下省准奏"
+python3 scripts/kanban_update.py state JJC-xxx Zhongshu "门下省封驳，退回中书省"
 python3 scripts/kanban_update.py flow JJC-xxx "门下省" "中书省" "封驳：[摘要]"
 python3 scripts/kanban_update.py progress JJC-xxx "正在审议方案" "可行性审查✅|完整性审查🔄"
 ```
@@ -96,12 +97,12 @@ python3 scripts/kanban_update.py flow JJC-xxx "门下省" "中书省" "封驳：
 任务ID: JJC-xxx
 结论: 准奏
 ```
-2. 执行看板命令（仅下面两条）：
+2. 执行看板命令（仅下面两条，必须按顺序执行）：
 ```bash
-python3 scripts/kanban_update.py state JJC-xxx Assigned "门下省准奏"
 python3 scripts/kanban_update.py flow JJC-xxx "门下省" "中书省" "准奏通知"
+python3 scripts/kanban_update.py state JJC-xxx Assigned "门下省准奏"
 ```
-> ⚠️ `flow 中书省→尚书省` 由程序层自动完成（门下准奏后 3 秒），门下省无需手动操作。
+> ⚠️ `state Assigned` 触发程序自动通知中书省 + 写 `flow 中书省→尚书省`，门下省无需手动操作。
 ---
 ## 原则
 - 方案有很严重的漏洞不准奏

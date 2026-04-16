@@ -116,6 +116,7 @@ python3 scripts/kanban_update.py session-keys save <id> <agent_a> <agent_b> ""  
 
 ## 结果回传
 
-- 六部结果通过 `sessions_send` 汇总后，执行 `done` 命令，程序自动通知太子
+- 六部结果通过 `sessions_send` 汇总后，先写 `flow 尚书省→太子`，再执行 `done` 命令
+- `done` 后程序自动通知太子回奏皇上（无需手动 sessions_send 太子）
 - 禁止修改六部返回的结果内容
 - 禁止擅自向皇上汇报

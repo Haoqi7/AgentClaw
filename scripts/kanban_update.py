@@ -853,6 +853,12 @@ def _notify_agent(agent_id, task_id, from_org, to_org, title='', remark='', curr
             if _liubu_replies:
                 _last_reply = _liubu_replies[-1]
                 parts.append(f"  · 六部最新回复：{_last_reply.get('to', '')}←{_last_reply.get('from', '')} - {(_last_reply.get('remark', '') or '')[:80]}")
+            # 附带最近一条 flow_log（让接收方了解上游流转上下文，如封驳理由）
+            if _flow:
+                _last_flow = _flow[-1]
+                _flow_remark = (_last_flow.get('remark', '') or '').strip()
+                if _flow_remark:
+                    parts.append(f"  · 最近流转：{_last_flow.get('from', '')}→{_last_flow.get('to', '')} - {_flow_remark[:120]}")
     except Exception:
         pass
     # 【B1/B2 修复】从 dispatch_plan 读取详细任务内容填入消息
@@ -1863,6 +1869,37 @@ def cmd_state(task_id, new_state, now_text=None):
                 remark=now_text or f"状态已变更为 {new_org_label}",
             )
 
+        # ═══════════════════════════════════════════════════════════════
+        # 🔧 Fix: Menxia→Assigned 准奏后补充通知中书省 + 自动写flow
+        # ═══════════════════════════════════════════════════════════════
+        if old_state[0] == 'Menxia' and new_state == 'Assigned' and t:
+            # 1. 通知中书省「门下已准奏」
+            _notify_agent(
+                agent_id='zhongshu',
+                task_id=task_id,
+                from_org='门下省',
+                to_org='中书省',
+                title=task_title,
+                remark='门下省已准奏你的方案，程序将自动派发尚书省执行。你无需操作，请知悉记录。',
+            )
+            log.info(f'📢 准奏通知中书省: {task_id}')
+            # 2. 自动写 中书省→尚书省 flow_log（中书→门下 由中书LLM手动写）
+            def _append_shangshu_flow(tasks):
+                _t = find_task(tasks, task_id)
+                if _t:
+                    _t.setdefault('flow_log', []).append({
+                        'at': now_iso(),
+                        'from': '中书省',
+                        'to': '尚书省',
+                        'remark': '📋 准奏转交：门下省已准奏，转交尚书省派发执行',
+                        'agent': 'system', 'agentLabel': '程序自动写入',
+                    })
+                    _t['updatedAt'] = now_iso()
+                return tasks
+            atomic_json_update(TASKS_FILE, _append_shangshu_flow, [])
+            _trigger_refresh()
+            log.info(f'📋 自动写入flow: {task_id} 中书省→尚书省')
+
         # 📨 状态回退时，不再额外通知原部门
         # 旧逻辑：封驳时同时通知中书省和门下省 → 门下省收到"退回"通知后再次处理 → 循环
         # 新逻辑：只通知新状态的负责 Agent（上方已处理），不额外通知回退源
@@ -2150,35 +2187,32 @@ def cmd_done(task_id, output_path='', summary=''):
                     f'建议太子后续调用 flow 命令补录：flow {task_id} 太子 皇上 回奏皇上'
                 )
             
-            # ── 自动补全流转：六部有产出 + 太子已收到汇报 → 自动补全并允许完成 ──
-            # 当以下两个条件同时满足时，认为任务实质上已完成：
-            #   1. output 字段非空（六部有产出）
-            #   2. 太子已收到汇报（尚书省→太子 或 中书省→太子）
-            # 此时自动补全缺失的回传流转记录，然后允许标记 Done。
+            # ── 自动补全流转 ──
+            # 尚书省调用 done 本身即代表汇总完成，程序自动补全缺失的回传流转记录。
+            # 调用 done 时尚书省→太子 可能缺失（LLM 忘记写），此处兜底补写。
             _has_output = bool((t.get('output', '') or output_path).strip())
-            _has_taizi_reported = has_return_to_taizi or has_shangshu_direct_to_taizi
-            if _has_output and _has_taizi_reported and missing_steps:
+            if missing_steps:
                 _auto_filled = []
                 _now = now_iso()
-                # 补全 尚书省→太子（新架构主路径）
-                if not has_shangshu_direct_to_taizi:
+                # 补全 尚书省→太子（调用 done 即代表尚书省已汇总）
+                if not has_shangshu_direct_to_taizi and not has_return_to_taizi:
                     t.setdefault('flow_log', []).append({
                         'at': _now, 'from': '尚书省', 'to': '太子',
-                        'remark': '[自动补全] 尚书省汇总六部成果，程序通知太子',
-                        'agent': 'system', 'agentLabel': '系统自动补全',
+                        'remark': '📋 尚书省汇总完成，程序通知太子回奏皇上',
+                        'agent': 'system', 'agentLabel': '程序自动补全',
                     })
                     _auto_filled.append('尚书省→太子')
                 # 补全 太子→皇上
                 if not has_report_to_huangshang:
                     t.setdefault('flow_log', []).append({
                         'at': _now, 'from': '太子', 'to': '皇上',
-                        'remark': '[自动补全] 太子汇报皇上（六部已有产出且太子已收到汇报，系统自动补全回奏环节）',
-                        'agent': 'system', 'agentLabel': '系统自动补全',
+                        'remark': '📋 太子汇报皇上（程序自动补全回奏环节）',
+                        'agent': 'system', 'agentLabel': '程序自动补全',
                     })
                     _auto_filled.append('太子→皇上')
                 log.info(
                     f'🔧 旨意任务 {task_id} 自动补全流转：{"、".join(_auto_filled)} '
-                    f'（条件：output 非空 + 太子已收到汇报）'
+                    f'（条件：尚书省调用 done）'
                 )
                 missing_steps = []
 

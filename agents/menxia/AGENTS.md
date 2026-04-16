@@ -84,6 +84,7 @@
 
 ## 结果回传
 
-- 审议结果通过看板 `state` 命令回传中书省（封驳→`state Zhongshu`，准奏→`state Assigned`）
-- 准奏时门下省记录一条 flow_log：门下省→中书省（准奏通知）
-- 门下省只能向中书省发送消息，禁止向其他部门发送消息
+- 审议结果通过看板命令回传中书省（封驳→`state Zhongshu`，准奏→`flow` + `state Assigned`）
+- 准奏时门下省先写 `flow 门下省→中书省（准奏通知）`，再执行 `state Assigned`
+- `state Assigned` 触发程序自动通知中书省 + 写 `flow 中书省→尚书省`，无需门下省操作
+- 门下省禁止向任何非中书省的部门发送消息

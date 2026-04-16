@@ -44,24 +44,30 @@ kanban_update.py dispatch-plan save JJC-xxx "<完整方案内容>"
 
 ### 步骤 2：提交门下省审议
 ```bash
-kanban_update.py state JJC-xxx Menxia
+python3 scripts/kanban_update.py flow JJC-xxx "中书省" "门下省" "提交方案审议"
+python3 scripts/kanban_update.py state JJC-xxx Menxia
 ```
+→ 先写流转记录，再更新状态
 → 程序层自动通知门下省（消息中包含完整方案）
-→ 等待门下省审议结果（封驳→修改后重新提交，最多3轮；准奏→无需操作）
+→ 等待门下省审议结果（封驳→修改后重新提交，最多3轮；准奏→程序自动通知中书省）
 
-**重要：门下准奏后，程序自动通知尚书省，中书省无需操作！**
+**重要：门下准奏后，程序自动通知尚书省并写 flow_log（中书省→尚书省），中书省无需操作！**
 
 ### 门下省准奏通知
-当收到「📢 门下省准奏通知」时：
+当收到「📢 门下省已准奏你的方案」时：
 - 仅知悉记录即可，无需任何操作
 - **禁止**执行任何派发操作
 - **禁止**联系尚书省或六部
-- 程序将自动派发尚书省执行（3秒后）
+- 程序已自动写 flow_log（中书省→尚书省）并派发尚书省执行
 
 ### 如封驳：修改方案 → 重新提交
 1. 修改方案内容
 2. 重新 `dispatch-plan save JJC-xxx "<修改后的方案>"`
-3. 重新 `state Menxia`
+3. 重新写流转 + 状态：
+```bash
+python3 scripts/kanban_update.py flow JJC-xxx "中书省" "门下省" "修改后重新提交审议"
+python3 scripts/kanban_update.py state JJC-xxx Menxia
+```
 
 ### ⚠️ 注意事项
 - **中书省不再负责派发尚书省**（程序在门下准奏后自动派发尚书省）
@@ -100,7 +106,6 @@ python3 scripts/kanban_update.py session-keys list "<id>"
 /root/.openclaw/outputs/JJC-20260223-012/中书省/
 ```
 所有部门共享同一个任务目录，各部在各自子目录中工作，互不干扰。
-
 ---
 ## 实时进展上报
 你在每个关键步骤必须调用 `progress` 命令上报当前状态。
