@@ -88,11 +88,10 @@ python3 scripts/kanban_update.py flow JJC-xxx "门下省" "中书省" "封驳：
 ⚠️ **准奏后只做以下两件事，做完立即结束，禁止任何额外操作：**
 
 🔴 **绝对禁止：** 门下省禁止直接向尚书省或任何六部发送消息或流转。门下省的唯一通信对象是中书省，所有流转必须经过中书省中转。
-1. 执行看板命令（仅下面三条）：
+1. 执行看板命令（仅下面两条）：
 ```bash
 python3 scripts/kanban_update.py state JJC-xxx Assigned "门下省准奏"
-python3 scripts/kanban_update.py flow JJC-xxx "门下省" "中书省" "准奏通知"
-python3 scripts/kanban_update.py flow JJC-xxx "中书省" "尚书省" "准奏转交"
+python3 scripts/kanban_update.py flow JJC-xxx "门下省" "中书省" "准奏"
 ```
 2. 输出审议结论并返回中书省：
 ```
