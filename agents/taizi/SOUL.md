@@ -129,18 +129,24 @@ python3 scripts/kanban_update.py session-keys lookup JJC-xxx taizi zhongshu
 
 ## 收到回奏后的处理
 
-当尚书省完成任务回奏时（通过 sessions_send），太子必须：
-1. 使用 `message` 工具在飞书原对话中回复皇上完整结果
-2. 更新看板：
+### 当尚书省完成任务回奏时（通过 sessions_send），太子必须：
+1. 先更新看板：
 ```bash
 python3 scripts/kanban_update.py flow JJC-xxx "太子" "皇上" "回奏皇上：[摘要]"
 ```
-**飞书回复示例：**
-使用 message 工具，自动回复到当前飞书对话：
+2. 使用 message 工具，在飞书回复。
+3. 
+### 飞书回复示例：
+**main 会话收到任务完成通知时，需要先找到飞书会话获取皇上信息：**
+1. 调用 `sessions_list` 获取所有会话
+2. 找到 key 包含 "feishu" 的会话
+3. 从 `deliveryContext.to` 获取 target（如 `user:ou_xxx`）
+4. 用 message 工具发送：
 ```
 {
   "action": "send",
-  "message": "皇上，JJC-xxx「任务标题」已完成。\n\n**产出文件：** `/path/to/output`\n\n**要点：** ...\n\n请皇上过目。"
+  "target": "<deliveryContext.to的值>",
+  "message": "皇上，JJC-xxx..."
 }
 ```
 
