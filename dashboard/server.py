@@ -195,13 +195,25 @@ def cors_headers(h):
                     origin = req_origin
                     break
             else:
-                # Origin 与 Host 不匹配，拒绝
-                return
+                # 代理端口匹配：Origin hostname == Host hostname（不同端口，同一机器）
+                origin_host = ''
+                try:
+                    _m = re.match(r'https?://([^:/]+)', req_origin)
+                    if _m:
+                        origin_host = _m.group(1)
+                except Exception:
+                    pass
+                host_host = host_hdr.split(':')[0] if ':' in host_hdr else host_hdr
+                if origin_host and host_host and origin_host == host_host:
+                    origin = req_origin
+                else:
+                    # Origin 与 Host 不匹配，拒绝
+                    return
         else:
             return
     h.send_header('Access-Control-Allow-Origin', origin)
     h.send_header('Access-Control-Allow-Methods', 'GET, POST, OPTIONS')
-    h.send_header('Access-Control-Allow-Headers', 'Content-Type')
+    h.send_header('Access-Control-Allow-Headers', 'Content-Type, Authorization')
 
 
 # Issue #6#5: API Token 认证（复用 Gateway auth.token 保护 POST 端点）
@@ -265,29 +277,42 @@ def _check_api_auth(handler):
 
     同源请求（前端由本看板服务提供）自动放行，无需携带 token。
     外部请求（如 curl / 第三方集成）需要 Bearer token。
+    支持反向代理场景：Origin/Host 端口与服务器端口不同时自动放行。
     """
     token = _load_api_token()
     if not token:
         return True  # 未配置 token，跳过认证
-    # 同源放行：前端由本服务提供（端口 7891），Origin 匹配则信任
+    # 同源放行：前端由本服务提供，Origin 匹配则信任
     origin = handler.headers.get('Origin', '')
     referer = handler.headers.get('Referer', '')
     host = handler.headers.get('Host', '')
-    port = getattr(_check_api_auth, '_port', 7891)  # main() 设置
-    import re as _re
-    _port_pat = _re.compile(rf':({port})(/|$)')
+    server_port = getattr(_check_api_auth, '_port', 7891)  # main() 设置
+
+    # 1. 直接访问：Origin/Host 包含服务器端口
+    _port_pat = re.compile(rf':({server_port})(/|$)')
     for src in (origin, referer):
         if src and _port_pat.search(src):
             return True
-    # Fix Docker 部署：Host 匹配服务器端口即可放行（不再限制 localhost）
-    # 场景：Docker 外部访问时 Host 为 external-ip:7891
     if host:
-        _host_port_pat = _re.compile(rf':({port})(/|$)')
-        if _host_port_pat.search(host):
+        if _port_pat.search(host):
             return True
-    # 兼容旧逻辑：无 Origin 且 Host 为 localhost
-    if not origin and host and (host == f'127.0.0.1:{port}' or host == f'localhost:{port}'):
+    # 2. 反向代理场景：Origin hostname == Host hostname（端口可能不同）
+    # 例如：Origin http://10.147.20.138:7892，Host 10.147.20.138:7892
+    if origin and host:
+        origin_host = ''
+        try:
+            _m = re.match(r'https?://([^:/]+)', origin)
+            if _m:
+                origin_host = _m.group(1)
+        except Exception:
+            pass
+        host_host = host.split(':')[0] if ':' in host else host
+        if origin_host and host_host and origin_host == host_host:
+            return True
+    # 3. 兼容旧逻辑：无 Origin 且 Host 为 localhost
+    if not origin and host and (host == f'127.0.0.1:{server_port}' or host == f'localhost:{server_port}'):
         return True
+    # 4. Bearer token 兜底
     auth_header = handler.headers.get('Authorization', '')
     if auth_header == f'Bearer {token}':
         return True
@@ -352,20 +377,39 @@ def load_tasks():
     return atomic_json_read(task_data_dir / 'tasks_source.json', [])
 
 
+# ── 防抖刷新 live_status（3秒内多次 save_tasks 只触发一次刷新）──
+_refresh_timer = None
+_refresh_lock = threading.Lock()
+_REFRESH_DEBOUNCE_SEC = 3
+
+
+def _do_refresh_live(script):
+    """实际执行 live_status 刷新。"""
+    try:
+        subprocess.run(['python3', str(script)], timeout=30)
+    except Exception as e:
+        log.warning(f'refresh_live_data.py 触发失败: {e}')
+
+
 def save_tasks(tasks):
     task_data_dir = get_task_data_dir()
     atomic_json_write(task_data_dir / 'tasks_source.json', tasks)
-    # Trigger refresh (异步，不阻塞，避免僵尸进程)
+    # 防抖刷新：3秒内多次 save_tasks 只触发最后一次
+    global _refresh_timer
     script = task_data_dir.parent / 'scripts' / 'refresh_live_data.py'
     if not script.exists():
         script = SCRIPTS / 'refresh_live_data.py'
 
-    def _refresh():
-        try:
-            subprocess.run(['python3', str(script)], timeout=30)
-        except Exception as e:
-            log.warning(f'refresh_live_data.py 触发失败: {e}')
-    threading.Thread(target=_refresh, daemon=True).start()
+    def _schedule_refresh():
+        global _refresh_timer
+        with _refresh_lock:
+            if _refresh_timer is not None:
+                _refresh_timer.cancel()
+            _refresh_timer = threading.Timer(_REFRESH_DEBOUNCE_SEC, _do_refresh_live, args=(script,))
+            _refresh_timer.daemon = True
+            _refresh_timer.start()
+
+    _schedule_refresh()
 
 
 def handle_task_action(task_id, action, reason):
@@ -923,7 +967,12 @@ def handle_create_task(title, org='中书省', official='中书令', priority='n
 
 
 def handle_review_action(task_id, action, comment=''):
-    """门下省御批：准奏/封驳。"""
+    """门下省御批：准奏/封驳。
+
+    准奏流程（两阶段派发）：
+    1. 立即：flow_log 记录「门下省→中书省」（准奏通知），异步通知中书省知悉
+    2. 3秒后：flow_log 追加「中书省→尚书省」（准奏转交），程序派发尚书省
+    """
     tasks = load_tasks()
     task = next((t for t in tasks if t.get('id') == task_id), None)
     if not task:
@@ -937,9 +986,9 @@ def handle_review_action(task_id, action, comment=''):
     if action == 'approve':
         if task['state'] == 'Menxia':
             task['state'] = 'Assigned'
-            task['now'] = '门下省准奏，移交尚书省派发'
-            remark = f'✅ 准奏：{comment or "门下省审议通过"}'
-            to_dept = '尚书省'
+            task['now'] = '门下省准奏，已通知中书省，移交尚书省派发'
+            remark = f'✅ 准奏通知：{comment or "门下省审议通过，中书省知悉记录"}'
+            to_dept = '中书省'
         else:  # Review
             task['state'] = 'Done'
             task['now'] = '御批通过，任务完成'
@@ -955,6 +1004,7 @@ def handle_review_action(task_id, action, comment=''):
     else:
         return {'ok': False, 'error': f'未知操作: {action}'}
 
+    # 追加第1条 flow_log（立即写入）
     task.setdefault('flow_log', []).append({
         'at': now_iso(),
         'from': '门下省' if task.get('state') != 'Done' else '皇上',
@@ -962,12 +1012,60 @@ def handle_review_action(task_id, action, comment=''):
         'remark': remark
     })
     _scheduler_mark_progress(task, f'审议动作 {action} -> {task.get("state")}')
-    # Issue #3: 标记为太子手动操作（用户从看板点击审议），监察跳过此类任务
     task['_scheduler']['_taiziManual'] = True
     task['updatedAt'] = now_iso()
     save_tasks(tasks)
 
-    # 🚀 审批后自动派发对应 Agent
+    if action == 'approve' and task.get('state') == 'Assigned':
+        # ═══════════════════════════════════════════════════════════════
+        # 两阶段准奏派发
+        # ═══════════════════════════════════════════════════════════════
+        _title = task.get('title', '(无标题)')
+
+        # 1a. 异步通知中书省（fire-and-forget，仅告知，无需回复）
+        def _notify_zhongshu():
+            try:
+                _msg = (
+                    f'📢 门下省准奏通知\n\n'
+                    f'任务ID: {task_id}\n'
+                    f'旨意: {_title}\n'
+                    f'门下省已准奏，程序将自动派发尚书省。\n\n'
+                    f'你无需操作，请知悉记录。禁止执行任何派发操作，禁止联系尚书省或六部。'
+                )
+                subprocess.run(
+                    ['openclaw', 'agent', '--agent', 'zhongshu', '-m', _msg, '--timeout', '60'],
+                    capture_output=True, text=True, timeout=70
+                )
+            except Exception as e:
+                log.warning(f'通知中书省失败（不影响流程）: {e}')
+        threading.Thread(target=_notify_zhongshu, daemon=True).start()
+
+        # 1b. 3秒后：追加第2条 flow_log + 派发尚书省
+        def _delayed_dispatch():
+            try:
+                _tasks = load_tasks()
+                _t = next((t for t in _tasks if t.get('id') == task_id), None)
+                if not _t or _t.get('state') != 'Assigned':
+                    log.warning(f'{task_id} 3秒后状态已变更（{_t.get("state") if _t else "不存在"}），取消延迟派发')
+                    return
+                # 追加第2条 flow_log：中书省 → 尚书省
+                _t.setdefault('flow_log', []).append({
+                    'at': now_iso(),
+                    'from': '中书省',
+                    'to': '尚书省',
+                    'remark': '📋 准奏转交：门下省已准奏，转交尚书省派发执行'
+                })
+                _t['updatedAt'] = now_iso()
+                save_tasks(_tasks)
+                log.info(f'{task_id} flow_log 已追加：中书省→尚书省，开始派发尚书省')
+                dispatch_for_state(task_id, _t, 'Assigned')
+            except Exception as e:
+                log.error(f'{task_id} 延迟派发失败: {e}')
+        threading.Timer(3.0, _delayed_dispatch).start()
+
+        return {'ok': True, 'message': f'{task_id} 已准奏，已通知中书省，即将派发尚书省'}
+
+    # 封驳/审查通过路径：按原逻辑派发
     new_state = task['state']
     if new_state not in ('Done',):
         dispatch_for_state(task_id, task, new_state)
@@ -2677,7 +2775,7 @@ _STATE_LABELS = {
 def _build_shangshu_dispatch_msg(task_id, title, target_dept=''):
     """构造尚书省派发消息，包含 dispatch_plan 中的完整方案。"""
     msg_parts = [
-        f'📮 门下省已准奏，请派发执行',
+        f'📮 门下省已准奏（中书省已确认），请派发执行',
         f'任务ID: {task_id}',
         f'旨意: {title}',
     ]
