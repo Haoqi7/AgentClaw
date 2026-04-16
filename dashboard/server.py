@@ -1774,6 +1774,16 @@ def handle_scheduler_scan(threshold_sec=600):
             sched['stallSince'] = now_iso()
             changed = True
 
+        # ── 跳过不应自动介入的任务 ──
+        # 1. 太子手动操作的任务（准奏/叫停/恢复等）
+        # 2. 派发已成功（lastDispatchStatus=success），说明 Agent 已收到任务
+        # 3. 派发正在进行中（lastDispatchStatus=queued/dispatching）
+        _dispatch_status = sched.get('lastDispatchStatus', '')
+        if sched.get('_taiziManual'):
+            continue
+        if _dispatch_status in ('success', 'queued', 'dispatching', 'gateway-offline'):
+            continue
+
         retry_count = int(sched.get('retryCount') or 0)
         max_retry = max(0, int(sched.get('maxRetry') or 1))
         level = int(sched.get('escalationLevel') or 0)
