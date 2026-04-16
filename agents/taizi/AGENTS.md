@@ -90,3 +90,17 @@ python3 scripts/kanban_update.py session-keys save <id> <agent_a> <agent_b> ""  
 
 - 尚书省完成任务后，程序自动通知太子，太子使用 message 工具在飞书原对话中回复皇上完整结果
 - 禁止跳过太子直接向皇上汇报（只有太子能向皇上汇报最终结果）
+
+### **飞书回复方式：**
+**main 会话收到任务完成通知时，需要先找到飞书会话获取皇上信息：**
+1. 调用 `sessions_list` 获取所有会话
+2. 找到 key 包含 "feishu" 的会话
+3. 从 `deliveryContext.to` 获取 target（如 `user:ou_xxx`）
+4. 用 message 工具发送：
+```
+{
+  "action": "send",
+  "target": "<deliveryContext.to的值>",
+  "message": "皇上，JJC-xxx..."
+}
+```
