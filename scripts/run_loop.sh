@@ -95,8 +95,6 @@ while true; do
   safe_run "$SCRIPT_DIR/sync_agent_config.py"
   safe_run "$SCRIPT_DIR/apply_model_changes.py"
   safe_run "$SCRIPT_DIR/sync_officials_stats.py"
-  # 周期结束时再执行一次，拾取本轮期间产生的新数据
-  safe_run "$SCRIPT_DIR/refresh_live_data.py"
 
   # 定期巡检：检测卡住的任务并自动重试
   SCAN_COUNTER=$((SCAN_COUNTER + INTERVAL))
