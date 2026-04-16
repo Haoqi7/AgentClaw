@@ -862,6 +862,8 @@ def _notify_agent(agent_id, task_id, from_org, to_org, title='', remark='', curr
                     _assignment = plan.get('assignments', {}).get(agent_id, {})
                     _dispatch_content = _assignment.get('task', '')
                 if _dispatch_content:
+                    # 修复：将字面量 \n 转换为真正换行符
+                    _dispatch_content = _dispatch_content.replace('\\n', '\n')
                     # 截断过长的内容，避免消息超限
                     if len(_dispatch_content) > 3000:
                         _dispatch_content = _dispatch_content[:3000] + '\n...(内容过长，请通过 dispatch-plan lookup 查看完整内容)'
