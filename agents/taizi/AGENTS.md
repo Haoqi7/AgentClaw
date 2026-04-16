@@ -88,5 +88,5 @@ python3 scripts/kanban_update.py session-keys save <id> <agent_a> <agent_b> ""  
 
 ## 结果回传
 
-- 尚书省完成任务后，程序自动通知太子，太子在飞书原对话中回复皇上完整结果
+- 尚书省完成任务后，程序自动通知太子，太子使用 message 工具在飞书原对话中回复皇上完整结果
 - 禁止跳过太子直接向皇上汇报（只有太子能向皇上汇报最终结果）
