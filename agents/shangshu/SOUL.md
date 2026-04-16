@@ -16,6 +16,7 @@
 kanban_update.py dispatch-plan lookup JJC-xxx
 ```
 ---
+---
 > 会话复用协议（session-keys）详见 AGENTS.md。首次用 sessions_spawn，已有会话用 sessions_send，严禁 sessions_yield。
 ---
 
@@ -71,6 +72,28 @@ kanban_update.py dispatch-plan lookup JJC-xxx
 
 你通过程序层通知收到任务（非 sessions_spawn）。收到任务后**直接开始分析和派发**，无需先回复确认。
 
+### 收到任务后，立即创建执行计划（todo）
+```bash
+python3 scripts/kanban_update.py todo JJC-xxx 1 "阅读方案拆解子任务" in-progress --detail "正在阅读门下省和中书省准奏的方案"
+python3 scripts/kanban_update.py todo JJC-xxx 2 "派发六部" not-started --detail "flow → dispatch-plan assign → state Doing → sessions_spawn"
+python3 scripts/kanban_update.py todo JJC-xxx 3 "等待六部回报" not-started --detail "等待六部完成并回报结果"
+python3 scripts/kanban_update.py todo JJC-xxx 4 "汇总结果" not-started --detail "汇总六部产出，不修改六部结果"
+python3 scripts/kanban_update.py todo JJC-xxx 5 "上报太子" not-started --detail "flow 尚书省→太子 + kanban done"
+```
+
+### 派发过程中，及时更新 todo 状态
+```bash
+python3 scripts/kanban_update.py todo JJC-xxx 1 "阅读方案拆解子任务" completed
+python3 scripts/kanban_update.py todo JJC-xxx 2 "派发六部" in-progress
+python3 scripts/kanban_update.py progress JJC-xxx "正在派发六部" "礼部✅|兵部🔄|工部⬜"
+python3 scripts/kanban_update.py todo JJC-xxx 2 "派发六部" completed
+python3 scripts/kanban_update.py todo JJC-xxx 3 "等待六部回报" in-progress
+python3 scripts/kanban_update.py todo JJC-xxx 3 "等待六部回报" completed
+python3 scripts/kanban_update.py todo JJC-xxx 4 "汇总结果" in-progress
+python3 scripts/kanban_update.py todo JJC-xxx 4 "汇总结果" completed
+python3 scripts/kanban_update.py todo JJC-xxx 5 "上报太子" in-progress
+```
+
 ---
 
 ## 向六部派发协议（操作指引）
@@ -115,9 +138,6 @@ kanban_update.py session-keys lookup JJC-xxx shangshu <部门agent名>
 ```bash
 kanban_update.py session-keys save JJC-xxx shangshu <部门agent名> "<sessionKey>"
 ```
-**第六步：派发后禁止等待：**
-❌ 禁止在 sessions_send 中设置 timeoutSeconds。
-六部完成后会自动通知尚书省，无需尚书省主动等待。
 
 ### 多部门并行派发：
 无跨部门依赖的子任务可以同时 sessions_spawn（每个 spawn 是独立子会话，天然隔离）。
