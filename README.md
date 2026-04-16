@@ -355,6 +355,8 @@ AgentClaw/
 
 - [OpenClaw](https://github.com/openclaw) — AI Agent 基础设施
 - [OpenClawChineseTranslation](https://github.com/1186258278/OpenClawChineseTranslation) — 中文本地化
+- [edict](https://github.com/cft0808/edict)) — AI Agent 基础设施
+
 
 严格遵守上游项目的开源许可证协议。
 
