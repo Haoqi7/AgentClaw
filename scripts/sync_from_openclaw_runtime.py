@@ -3,7 +3,7 @@ import json, os, pathlib, time
 import datetime
 import traceback
 import logging
-from file_lock import atomic_json_write, atomic_json_read
+from file_lock import atomic_json_write, atomic_json_read, atomic_json_update
 
 log = logging.getLogger('sync_runtime')
 logging.basicConfig(level=logging.INFO, format='%(asctime)s [%(name)s] %(message)s', datefmt='%H:%M:%S')
@@ -311,9 +311,9 @@ def main():
         existing_tasks_file = DATA / 'tasks_source.json'
         if existing_tasks_file.exists():
             try:
-                existing = json.loads(existing_tasks_file.read_text(encoding='utf-8'))
+                existing = atomic_json_read(existing_tasks_file, [])
                 jjc_existing = [t for t in existing if str(t.get('id', '')).startswith('JJC')]
-                
+
                 # 去掉 tasks 里已有的 JJC（以防重复），再把旨意放到最前面
                 tasks = [t for t in tasks if not str(t.get('id', '')).startswith('JJC')]
                 tasks = jjc_existing + tasks
@@ -321,7 +321,17 @@ def main():
                 log.error(f'merge existing JJC tasks failed: {e}')
                 pass
 
-        atomic_json_write(DATA / 'tasks_source.json', tasks)
+        # 【竞态修复】使用 atomic_json_update 替代 atomic_json_write，
+        # 写回时在同一把锁内重新读取最新 JJC 任务，
+        # 防止 kanban_update.py 在读和写之间修改数据后被覆盖。
+        _sync_tasks = tasks  # capture for closure
+
+        def _merge_preserve_jjc(current_data):
+            latest_jjc = [t for t in current_data if str(t.get('id', '')).startswith('JJC')]
+            non_jjc = [t for t in _sync_tasks if not str(t.get('id', '')).startswith('JJC')]
+            return latest_jjc + non_jjc
+
+        atomic_json_update(existing_tasks_file, _merge_preserve_jjc, [])
 
         duration_ms = int((time.time() - start) * 1000)
         write_status(
