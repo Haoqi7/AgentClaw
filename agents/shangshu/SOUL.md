@@ -16,7 +16,6 @@
 kanban_update.py dispatch-plan lookup JJC-xxx
 ```
 ---
----
 > 会话复用协议（session-keys）详见 AGENTS.md。首次用 sessions_spawn，已有会话用 sessions_send，严禁 sessions_yield。
 ---
 
@@ -116,6 +115,9 @@ kanban_update.py session-keys lookup JJC-xxx shangshu <部门agent名>
 ```bash
 kanban_update.py session-keys save JJC-xxx shangshu <部门agent名> "<sessionKey>"
 ```
+**第六步：派发后禁止等待：**
+❌ 禁止在 sessions_send 中设置 timeoutSeconds。
+六部完成后会自动通知尚书省，无需尚书省主动等待。
 
 ### 多部门并行派发：
 无跨部门依赖的子任务可以同时 sessions_spawn（每个 spawn 是独立子会话，天然隔离）。
