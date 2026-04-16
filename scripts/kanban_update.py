@@ -1798,7 +1798,14 @@ def cmd_state(task_id, new_state, now_text=None):
 
         # 【F2 修复】初始化 _scheduler 字段，确保 CLI 修改的任务与 server.py 路径一致
         _ensure_scheduler_field(t)
-        
+
+        # 【停滞修复】每次状态变更都更新 lastProgressAt，防止调度扫描用旧时间
+        # 计算 stalled_sec 误判为停滞，触发不必要的重试派发。
+        t.setdefault('_scheduler', {})
+        if isinstance(t['_scheduler'], dict):
+            t['_scheduler']['lastProgressAt'] = now_iso()
+            t['_scheduler']['stallSince'] = None
+
         # ═══════════════════════════════════════════════════════════════
         # ⚠️ 不再清除 _lastNotify[target_agent]！
         # 旧逻辑：每次状态转换都清去重 → 导致去重完全失效 → 无限循环
@@ -2428,6 +2435,12 @@ def cmd_progress(task_id, now_text, todos_pipe='', tokens=0, cost=0.0, elapsed=0
         if len(t['progress_log']) > MAX_PROGRESS_LOG:
             t['progress_log'] = t['progress_log'][-MAX_PROGRESS_LOG:]
         t['updatedAt'] = at
+        # 【停滞修复】每次进展上报都更新 lastProgressAt，防止调度扫描
+        # 用旧时间计算 stalled_sec 误判为停滞，触发不必要的重试派发。
+        t.setdefault('_scheduler', {})
+        if isinstance(t['_scheduler'], dict):
+            t['_scheduler']['lastProgressAt'] = at
+            t['_scheduler']['stallSince'] = None
         done_cnt[0] = sum(1 for td in t.get('todos', []) if td.get('status') == 'completed')
         total_cnt[0] = len(t.get('todos', []))
         return tasks
