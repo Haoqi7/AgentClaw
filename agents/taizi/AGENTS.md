@@ -82,7 +82,6 @@ python3 scripts/kanban_update.py session-keys save <id> <agent_a> <agent_b> ""  
 
 太子只能与中书省通信，禁止联系其他部门处理任务：
 - ✅ 允许：太子 → 中书省、太子 → 皇上
-- ❌ 禁止：太子 → 门下省/尚书省/六部
 
 ---
 
