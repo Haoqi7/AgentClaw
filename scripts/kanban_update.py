@@ -744,7 +744,7 @@ def _async_spawn_and_save_key(agent_id, message, task_id, from_id, to_label):
     threading.Thread(target=_wait_and_record, daemon=True).start()
 
 
-def _notify_agent(agent_id, task_id, from_org, to_org, title='', remark='', current_session_key=None, brief=False, _retry=0):
+def _notify_agent(agent_id, task_id, from_org, to_org, title='', remark='', current_session_key=None, brief=False, _retry=0, action_override=None):
     """通知目标 Agent 有新任务/流转（含 Session Key 复用机制 — 程序层核心保障）。
 
     修改说明（发完即走）：首次通知改为全异步，不再阻塞等待 Agent 回复确认。
@@ -869,12 +869,14 @@ def _notify_agent(agent_id, task_id, from_org, to_org, title='', remark='', curr
         except Exception:
             pass
 
-        if action_items:
+        _actual_actions = action_override if action_override else action_items
+        if _actual_actions:
             parts.append(f"")
             parts.append(f"🚀 你需要做的：")
-            parts.append(action_items)
-        parts.append(f"")
-        parts.append(f"请立即开始处理，无需回复确认！")
+            parts.append(_actual_actions)
+        if not brief and not action_override:
+            parts.append(f"")
+            parts.append(f"请立即开始处理，无需回复确认！")
 
         message = '\n'.join(parts)
 
@@ -1855,6 +1857,15 @@ def cmd_state(task_id, new_state, now_text=None):
                     if '门下' in _from and '封驳' in _remark_text:
                         now_text = _remark_text
                         break
+            _reject_actions = None
+            if old_state[0] == 'Menxia' and new_state == 'Zhongshu':
+                _reject_actions = (
+                    '1. 根据门下省的封驳建议修改方案\n'
+                    '2. 将方案存入看板（dispatch-plan save）\n'
+                    '3. 提交门下省审议（kanban state Menxia）→ 等待准奏/封驳\n'
+                    '4. 如封驳 → 修改方案 → 重新 dispatch-plan save + state Menxia\n'
+                    '5. 准奏后无需操作！程序自动通知尚书省派发'
+                )
             _notify_agent(
                 agent_id=notify_agent_id,
                 task_id=task_id,
@@ -1862,6 +1873,7 @@ def cmd_state(task_id, new_state, now_text=None):
                 to_org=new_org_label,
                 title=task_title,
                 remark=now_text or f"状态已变更为 {new_org_label}",
+                action_override=_reject_actions,
             )
 
         # ═══════════════════════════════════════════════════════════════
