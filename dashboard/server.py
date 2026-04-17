@@ -1781,31 +1781,11 @@ def handle_scheduler_scan(threshold_sec=600):
         # 1. 太子手动操作的任务（准奏/叫停/恢复等）
         # 2. 派发已成功（lastDispatchStatus=success），说明 Agent 已收到任务
         # 3. 派发正在进行中（lastDispatchStatus=queued/dispatching）
-        # 4. 【关键修复】_lastNotify 中有近期成功通知记录（kanban_update.py 路径）
         _dispatch_status = sched.get('lastDispatchStatus', '')
         if sched.get('_taiziManual'):
             continue
         if _dispatch_status in ('success', 'queued', 'dispatching', 'gateway-offline'):
             continue
-
-        # 【关键修复】交叉检查 _lastNotify：防止 cmd_state 已通过 _notify_agent
-        # 通知了目标 Agent，但 _scheduler.lastDispatchStatus 未及时同步。
-        _target_agent_for_scan = _STATE_AGENT_MAP.get(state)
-        if _target_agent_for_scan:
-            _last_notify_scan = task.get('_lastNotify', {}).get(_target_agent_for_scan, {})
-            if _last_notify_scan.get('done'):
-                _notify_at_str = _last_notify_scan.get('at', '')
-                if _notify_at_str:
-                    try:
-                        _notify_dt = _parse_iso(_notify_at_str)
-                        if _notify_dt:
-                            _now_scan_dt = datetime.datetime.now(datetime.timezone.utc)
-                            _notify_elapsed = (_now_scan_dt - _notify_dt).total_seconds()
-                            if _notify_elapsed < 300:  # 5分钟内已成功通知
-                                log.info(f'🔒 scheduler-scan 交叉去重：{task_id} {_target_agent_for_scan} {_notify_elapsed:.0f}s前已通知，跳过停滞重试')
-                                continue
-                    except Exception:
-                        pass
 
         retry_count = int(sched.get('retryCount') or 0)
         max_retry = max(0, int(sched.get('maxRetry') or 1))
@@ -2902,41 +2882,6 @@ def dispatch_for_state(task_id, task, new_state, trigger='state-transition'):
         # Issue #1 fix: 当无法确定具体六部 agent 时，记录详细日志帮助排查
         log.warning(f'⚠️ {task_id} 新状态 {new_state} 无法确定目标 Agent（org={task.get("org","")}, targetDept={task.get("targetDept","")}），跳过自动派发。尚书省需在旨意中明确指定 targetDept。')
         return
-
-    # 【关键修复】交叉检查 _lastNotify：防止 kanban_update.py 已通知但
-    # scheduler-scan 因只看 _scheduler.lastDispatchStatus 而重复派发。
-    # 根因：两套去重机制独立运行，互不通信。
-    # scheduler-scan trigger='taizi-scan-retry' 会在180s后触发此函数，
-    # 但 cmd_state 已通过 _notify_agent 异步发送了完整方案给尚书省。
-    try:
-        _last_notify = task.get('_lastNotify', {}).get(agent_id, {})
-        if _last_notify.get('done'):
-            _last_at_str = _last_notify.get('at', '')
-            if _last_at_str:
-                try:
-                    _last_dt = _parse_iso(_last_at_str)
-                    if _last_dt:
-                        _now_dt = datetime.datetime.now(datetime.timezone.utc)
-                        _elapsed = (_now_dt - _last_dt).total_seconds()
-                        if _elapsed < 300:  # 5分钟内已成功通知过，跳过重复派发
-                            log.info(f'🔒 交叉去重：{task_id} → {agent_id}，{_elapsed:.0f}s前 _notify_agent 已成功通知（{_last_at_str}），跳过 dispatch_for_state（trigger={trigger}）')
-                            return
-                except Exception:
-                    pass
-        elif _last_notify.get('at'):
-            # 异步待确认：30秒内跳过
-            try:
-                _last_dt = _parse_iso(_last_notify.get('at', ''))
-                if _last_dt:
-                    _now_dt = datetime.datetime.now(datetime.timezone.utc)
-                    _elapsed = (_now_dt - _last_dt).total_seconds()
-                    if _elapsed < 60:  # 60秒内已发送（待确认），跳过
-                        log.info(f'🔒 交叉去重（异步）：{task_id} → {agent_id}，{_elapsed:.0f}s前 _notify_agent 已发送（待确认），跳过 dispatch_for_state（trigger={trigger}）')
-                        return
-            except Exception:
-                pass
-    except Exception as e:
-        log.warning(f'交叉去重检查异常（不影响流程）: {e}')
 
     # 【F5】尚书省分流：如果任务活跃Agent是六部，说明六部正在执行，
     # 不应向尚书省发完整方案消息。改为轻量提醒。
