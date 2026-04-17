@@ -1817,8 +1817,13 @@ def cmd_state(task_id, new_state, now_text=None):
         target_agent = _resolve_agent_id(new_state)
 
         # 🔒 记录当前活跃 Agent，用于后续去重
+        # 【F10 修复】activeAgent 必须存储 agent ID（拼音），不能是中文名
+        # 根因：尚书省先 flow→礼部（org 变成 '礼部'），再 state Doing，
+        # 此时 _resolve_agent_id('Doing')=None，回退到 t['org']='礼部'（中文），
+        # 导致 F1 分流判断 '礼部' in ('libu','hubu',...) 失败，穿透发完整通知。
         if new_state in ('Doing', 'Next'):
-            t['activeAgent'] = target_agent or t.get('org', '')
+            _raw_agent = target_agent or t.get('org', '')
+            t['activeAgent'] = _ORG_AGENT_MAP.get(_raw_agent, _raw_agent)
         elif new_state == 'Done':
             t.pop('activeAgent', None)  # 完成时清除
             # 不清除 _lastNotify：任务已完成，不会再触发通知
@@ -2135,7 +2140,7 @@ def cmd_flow(task_id, from_dept, to_dept, remark):
     log.info(f'✅ {task_id} 流转记录: {from_dept} → {to_dept}')
 
     # ═══════════════════════════════════════════════════════════════════════
-    # 【V6 流转通知】已注释掉 — 2026-04-14
+    # 【V6 流转通知】已注释掉 — 2026-04-14（六部→六部方向）
     #
     # 注释原因：
     #   尚书省 LLM 通过 sessions_spawn 派发六部时，已直接通知了六部。
@@ -2169,6 +2174,34 @@ def cmd_flow(task_id, from_dept, to_dept, remark):
     #             )
     #     except Exception as _flow_notify_err:
     #         log.warning(f'🔗 V6流转通知异常: {_flow_notify_err}')
+
+    # ═══════════════════════════════════════════════════════════════════════
+    # 【F10 修复】六部→尚书省 flow 触发简短通知（兜底 F1b 缺失）
+    #
+    # 根因：六部完成汇报时可能不经过 state Review，直接 Doing→Done，
+    # 导致 F1b 分流（Doing→Review 简短通知）无法触发。
+    # 同时 F1 分流因 activeAgent 中英文不匹配（F10 已修复），也可能未触发。
+    # 此兜底确保：六部 flow 回尚书省时，尚书省一定能收到简短通知。
+    # 方向限制：只对 六部→尚书省 触发，不影响其他 flow 路径。
+    # ═══════════════════════════════════════════════════════════════════════
+    if to_dept == '尚书省' and from_dept in _LIU_BU_NAMES:
+        try:
+            _flow_tasks = load()
+            _flow_task = find_task(_flow_tasks, task_id)
+            if _flow_task:
+                _flow_title = _flow_task.get('title', '')
+                _notify_agent(
+                    agent_id='shangshu',
+                    task_id=task_id,
+                    from_org=from_dept,
+                    to_org='尚书省',
+                    title=_flow_title,
+                    remark=f'【{task_id}】{from_dept}{clean_remark[:30] if clean_remark else "有进展"}',
+                    brief=True,
+                )
+                log.info(f'🔗 F10兜底通知: {task_id} {from_dept}→尚书省 (brief)')
+        except Exception as _e:
+            log.warning(f'🔗 F10兜底通知异常: {_e}')
 
 
 # ── 六部名称集合（用于 cmd_flow 校验：拒绝「六部」泛称）──
