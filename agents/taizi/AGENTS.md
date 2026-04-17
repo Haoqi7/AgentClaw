@@ -52,7 +52,8 @@
 与中书省对话时，必须复用已有会话，禁止重复 spawn。
 
 ### 流程：
-1. 首次向中书省派发任务时：使用 `sessions_spawn` 创建会话，从返回值获取 `sessionKey`
+**注意：⚠️ 如果是通过 create 命令触发中书省的场景，即使 lookup 返回空，也禁止 spawn 中书省。应上报异常。**
+1. 除派发任务外，首次和中书省对话：使用 `sessions_spawn` 创建会话，从返回值获取 `sessionKey`
 2. 立即保存 key：
 ```bash
 python3 scripts/kanban_update.py session-keys save JJC-xxx taizi zhongshu "<sessionKey>"
@@ -67,8 +68,7 @@ python3 scripts/kanban_update.py session-keys lookup JJC-xxx taizi zhongshu
 ```bash
 python3 scripts/kanban_update.py session-keys save <id> <agent_a> <agent_b> ""  # 清除失效key
 ```
-
-同一任务内，太子↔中书省只应产生一个会话。
+**同一任务会话内，太子↔中书省只应产生一个会话。**
 
 ---
 
