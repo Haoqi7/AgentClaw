@@ -677,11 +677,16 @@ def _async_spawn_and_save_key(agent_id, message, task_id, from_id, to_label):
                     pass
 
             if _rc == 0:
-                # 成功：标记 _lastNotify done=True
+                # 成功：标记 _lastNotify done=True + 同步 _scheduler.lastDispatchStatus='success'
                 def _mark_done(tasks):
                     t = find_task(tasks, task_id)
                     if t:
                         t.setdefault("_lastNotify", {}).setdefault(agent_id, {})["done"] = True
+                        # 【关键修复】同步更新 _scheduler，防止 scheduler-scan 重复派发
+                        if isinstance(t.get("_scheduler"), dict):
+                            t["_scheduler"]["lastDispatchStatus"] = "success"
+                            t["_scheduler"]["lastDispatchAgent"] = agent_id
+                            t["_scheduler"]["lastDispatchAt"] = now_iso()
                     return tasks
                 try:
                     atomic_json_update(TASKS_FILE, _mark_done, [])
@@ -713,6 +718,11 @@ def _async_spawn_and_save_key(agent_id, message, task_id, from_id, to_label):
                             t = find_task(tasks, task_id)
                             if t:
                                 t.setdefault("_lastNotify", {}).setdefault(agent_id, {})["done"] = True
+                                # 【关键修复】同步更新 _scheduler
+                                if isinstance(t.get("_scheduler"), dict):
+                                    t["_scheduler"]["lastDispatchStatus"] = "success"
+                                    t["_scheduler"]["lastDispatchAgent"] = agent_id
+                                    t["_scheduler"]["lastDispatchAt"] = now_iso()
                             return tasks
                         try:
                             atomic_json_update(TASKS_FILE, _mark_done2, [])
@@ -1811,6 +1821,19 @@ def cmd_state(task_id, new_state, now_text=None):
         if isinstance(t['_scheduler'], dict):
             t['_scheduler']['lastProgressAt'] = now_iso()
             t['_scheduler']['stallSince'] = None
+
+        # 【关键修复】状态变更即将触发 _notify_agent 派发，
+        # 同步标记 lastDispatchStatus='dispatching'，防止 scheduler-scan
+        # 因看不到 _lastNotify 而在 180s 后重复 dispatch_for_state。
+        # 根因：kanban_update.py 的 _lastNotify 和 server.py 的
+        # _scheduler.lastDispatchStatus 是两套独立去重系统，互不通信。
+        _target_agent_for_dispatch = _resolve_agent_id(new_state)
+        if _target_agent_for_dispatch and new_state not in ('Done', 'Cancelled'):
+            if isinstance(t.get('_scheduler'), dict):
+                t['_scheduler']['lastDispatchStatus'] = 'dispatching'
+                t['_scheduler']['lastDispatchAgent'] = _target_agent_for_dispatch
+                t['_scheduler']['lastDispatchAt'] = now_iso()
+                t['_scheduler']['lastDispatchTrigger'] = 'cmd-state'
 
         # ═══════════════════════════════════════════════════════════════
         # ⚠️ 不再清除 _lastNotify[target_agent]！
