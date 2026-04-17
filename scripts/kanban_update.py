@@ -145,6 +145,7 @@ _STATE_AGENT_MAP = {
     # 门下省准奏后，程序直接通知尚书省（不再通过中书省中转）。
     # 中书省职责简化为：接旨→起草→提审→修改（不负责回奏和派发）。
     'Assigned': 'shangshu',
+    'Review': 'shangshu',    # 【F2】与 server.py 一致，修复 Review 状态下 progress agent 推断为空
     'Pending': 'zhongshu',
     'Done': 'taizi',
 }
@@ -1890,6 +1891,23 @@ def cmd_state(task_id, new_state, now_text=None):
                 if notify_agent_id in _LIU_BU_AGENT_IDS:
                     log.info(f'🔗 架构调整: {task_id} Doing状态跳过程序层通知六部 {notify_agent_id}，依赖尚书省 sessions_spawn')
                     notify_agent_id = ''
+                # 【F1】尚书省分流：如果活跃Agent是六部，说明六部正在执行，
+                # 此时的 Doing 通知是六部回传触发的，不应发完整任务给尚书省。
+                elif notify_agent_id == 'shangshu':
+                    _active = t.get('activeAgent', '')
+                    if _active in _LIU_BU_AGENT_IDS:
+                        liubu_label = _AGENT_LABELS.get(_active, _active)
+                        log.info(f'🔗 F1分流: {task_id} Doing通知改为轻量消息→尚书省（{liubu_label}工作中）')
+                        _notify_agent(
+                            agent_id='shangshu',
+                            task_id=task_id,
+                            from_org=liubu_label,
+                            to_org='尚书省',
+                            title=task_title,
+                            remark=f'【{task_id}】{liubu_label}有进展，请关注',
+                            brief=True,
+                        )
+                        notify_agent_id = ''  # 已处理，跳过后续通用通知
             # 准奏场景：覆盖尚书省通知的说明
             if old_state[0] == 'Menxia' and new_state == 'Assigned':
                 now_text = '门下和中书省准奏'

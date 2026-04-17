@@ -986,11 +986,13 @@ def handle_review_action(task_id, action, comment=''):
     if action == 'approve':
         if task['state'] == 'Menxia':
             task['state'] = 'Assigned'
+            task['org'] = '尚书省'  # 【F3】同步更新 org，与 cmd_state STATE_ORG_MAP 保持一致
             task['now'] = '门下省准奏，已通知中书省，移交尚书省派发'
             remark = f'✅ 准奏通知：{comment or "门下省审议通过，中书省知悉记录"}'
             to_dept = '中书省'
         else:  # Review
             task['state'] = 'Done'
+            task['org'] = '完成'  # 【F3】同步更新 org
             task['now'] = '御批通过，任务完成'
             remark = f'✅ 御批准奏：{comment or "审查通过"}'
             to_dept = '皇上'
@@ -998,6 +1000,7 @@ def handle_review_action(task_id, action, comment=''):
         round_num = (task.get('review_round') or 0) + 1
         task['review_round'] = round_num
         task['state'] = 'Zhongshu'
+        task['org'] = '中书省'  # 【F3】同步更新 org
         task['now'] = f'封驳退回中书省修订（第{round_num}轮）'
         remark = f'🚫 封驳：{comment or "需要修改"}'
         to_dept = '中书省'
@@ -2872,6 +2875,22 @@ def dispatch_for_state(task_id, task, new_state, trigger='state-transition'):
     if not agent_id:
         # Issue #1 fix: 当无法确定具体六部 agent 时，记录详细日志帮助排查
         log.warning(f'⚠️ {task_id} 新状态 {new_state} 无法确定目标 Agent（org={task.get("org","")}, targetDept={task.get("targetDept","")}），跳过自动派发。尚书省需在旨意中明确指定 targetDept。')
+        return
+
+    # 【F5】尚书省分流：如果任务活跃Agent是六部，说明六部正在执行，
+    # 不应向尚书省发完整方案消息。改为轻量提醒。
+    _LIU_BU_IDS = ('libu', 'hubu', 'bingbu', 'xingbu', 'gongbu', 'libu_hr')
+    if agent_id == 'shangshu' and task.get('activeAgent', '') in _LIU_BU_IDS:
+        _active_label = {'libu':'礼部','hubu':'户部','bingbu':'兵部','xingbu':'刑部','gongbu':'工部','libu_hr':'吏部'}.get(task['activeAgent'], task['activeAgent'])
+        log.info(f'🔗 F5分流: {task_id} dispatch_for_state 跳过尚书省完整派发（{_active_label}工作中），改为轻量提醒')
+        try:
+            subprocess.Popen(
+                ['openclaw', 'agent', '--agent', 'shangshu', '-m',
+                 f'【{task_id}】{_active_label}有进展，请关注任务进度', '--timeout', '60'],
+                stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+            )
+        except Exception as e:
+            log.warning(f'F5轻量通知失败: {e}')
         return
 
     # 【R1 尚书省空闲检测】

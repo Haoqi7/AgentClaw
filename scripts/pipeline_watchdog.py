@@ -2322,7 +2322,19 @@ def _main_inner():
 
                 # ── 介入处理：唤醒目标部门 ──
                 if target_id and target_id not in woken_agents:
-                    wake_ok, wake_detail = wake_agent(target_id, f"任务 {task_id} 流程断链，{from_label}已等你 {broken['elapsed_sec'] // 60} 分钟")
+                    # 【F4】六部回传场景：用轻量消息代替完整唤醒
+                    _wake_msg = f"任务 {task_id} 流程断链，{from_label}已等你 {broken['elapsed_sec'] // 60} 分钟"
+                    if target_id == 'shangshu':
+                        _last_from = ''
+                        for _fl in reversed(task.get('flow_log', [])):
+                            _nf = normalize_name(_fl.get('from', ''))
+                            if _nf in ('gongbu', 'bingbu', 'hubu', 'libu', 'xingbu', 'libu_hr'):
+                                _last_from = ID_TO_LABEL.get(_nf, _nf)
+                                break
+                        if _last_from:
+                            _wake_msg = f"【{task_id}】{_last_from}已完成工作等待你汇总，请尽快 done"
+                            log(f"  💡 F4轻量唤醒: {_wake_msg}")
+                    wake_ok, wake_detail = wake_agent(target_id, _wake_msg)
                     woken_agents.add(target_id)
                     # 记录唤醒动作
                     audit["notifications"].append(_make_notif(
