@@ -114,7 +114,7 @@
               ▼        ▼        ▼        ▼          ▼        ▼
           ┌────────┐┌───────┐┌───────┐┌───────┐┌───────┐┌───────┐
           │ 💰户部││ 📝礼部││ ⚔️兵部││⚖️刑部││ 🔧工部││ 👔吏部│
-          └──┬─────┘└──┬────┘└───┬───┘└───┬──┘└───┬───┘└───┬───┘
+          └──┬─────┘└──┬────┘└───┬───┘└───┬───┘└───┬───┘└───┬───┘
              └─────────┴─────────┴────────┴───────┴────────┘
                                │
                                ▼
@@ -137,19 +137,80 @@
 | **Agent 运行时** | [OpenClaw](https://github.com/openclaw) — AI Agent 基础设施 |
 | **数据库** | JSON 文件（零配置）|
 | **消息渠道** | 飞书 · Telegram · Slack · Discord · 企业微信 · Webhook |
-| **部署** | Docker Compose 一键部署 / 裸机脚本安装 |
+| **部署** | Docker Compose 一键部署 / 一键脚本安装 / 手动安装 |
 
 ---
 
 ## 🚀 快速上手
 
-### 前置条件
+### ⚡ 方式一：一键安装（推荐，小白友好）
+
+就像 Docker 一样简单，一行命令从零装好全部环境（Python、Node.js、OpenClaw、项目代码）：
+
+```bash
+curl -sSL https://raw.githubusercontent.com/Haoqi7/AgentClaw/main/install-all.sh | bash
+```
+
+> 支持 Ubuntu / Debian / CentOS / Fedora / Arch Linux / macOS / WSL，自动检测已安装的组件并跳过。
+
+安装完成后，只需两步即可启动：
+
+```bash
+# 1. 配置 API Key（首次安装必须）
+openclaw agents add taizi
+
+# 2. 启动服务
+cd ~/AgentClaw
+bash start.sh
+```
+
+<details>
+<summary>📁 <b>更多 install-all.sh 参数</b></summary>
+
+```bash
+# 指定安装目录
+bash install-all.sh --dir /opt/AgentClaw
+
+# 跳过前端构建（无 Node.js 时自动跳过）
+bash install-all.sh --skip-frontend
+
+# 只安装系统依赖，不克隆仓库
+bash install-all.sh --deps-only
+
+# 安装后自动后台启动服务
+bash install-all.sh --auto-start
+
+# 全程非交互模式（适合脚本/CI）
+bash install-all.sh -y
+```
+
+</details>
+
+---
+
+### 🐳 方式二：Docker 部署
+
+无需安装任何依赖，直接拉取镜像运行：
+
+```bash
+docker compose -f docker/docker-compose.yml up -d
+```
+
+详见 [Docker 部署](#docker-部署) 章节。
+
+---
+
+### 🛠 方式三：手动本地安装
+
+如果已有 Python 3.10+ 和 Node.js 22+ 环境，可以手动安装：
+
+#### 前置条件
 
 - **Node.js** >= 22（前端构建）
 - **Python** >= 3.10
 - **OpenClaw CLI** 已安装并初始化
 
-### 第 1 步：安装 OpenClaw
+#### 第 1 步：安装 OpenClaw
 
 ```bash
 npm install -g @qingchencloud/openclaw-zh@latest
@@ -159,7 +220,7 @@ openclaw gateway
 
 初始化向导会引导你选择 AI 模型、配置 API 密钥、设置聊天通道。
 
-### 第 2 步：安装三省六部
+#### 第 2 步：安装三省六部
 
 ```bash
 git clone https://github.com/Haoqi7/AgentClaw.git
@@ -174,7 +235,7 @@ chmod +x install.sh && ./install.sh
 - ✅ 构建 React 前端
 - ✅ 初始化数据目录
 
-### 第 3 步：配置消息渠道
+#### 第 3 步：配置消息渠道
 
 ```bash
 # 以飞书为例，太子作为旨意入口
@@ -183,7 +244,7 @@ openclaw channels add --type feishu --agent taizi
 - 太子会自动识别闲聊和任务指令，指令类消息提炼标题后转发中书省。
 - 可参考`openclaw.example.json`和`exec-approvals.json`来配置。
 
-### 第 4 步：启动服务
+#### 第 4 步：启动服务
 
 ```bash
 # 一键启动（前台运行，Ctrl+C 停止所有服务）
@@ -204,7 +265,9 @@ bash stop.sh
 
 浏览器打开 `http://127.0.0.1:7891`，总控台就绪。
 
-### 第 5 步：发送你的第一道旨意
+---
+
+### 📮 发送你的第一道旨意
 
 通过消息渠道发送：
 
@@ -262,7 +325,6 @@ bash stop.sh
 > 看板 → 🌅 天下要闻 → ⚙️ 订阅管理 → 配置分类和推送渠道
 
 ---
-
 
 ## 🐳 Docker 部署
 
@@ -325,8 +387,6 @@ export EDICT_HOME=/opt/AgentClaw
 bash start.sh
 ```
 
-
-
 ---
 
 ## 📁 项目结构
@@ -360,9 +420,10 @@ AgentClaw/
 │   ├── Dockerfile
 │   ├── docker-compose.yml
 │   └── entrypoint.sh
+├── install-all.sh           # 🆕 一键安装（从零部署，自动装依赖）
 ├── start.sh                 # 一键启动（本地部署）
 ├── stop.sh                  # 一键停止（本地部署）
-├── install.sh               # 一键安装
+├── install.sh               # 一键安装（需已有依赖环境）
 └── uninstall.sh             # 一键卸载
 ```
 ---
@@ -374,7 +435,6 @@ AgentClaw/
 - [OpenClaw](https://github.com/openclaw) — AI Agent 基础设施
 - [OpenClawChineseTranslation](https://github.com/1186258278/OpenClawChineseTranslation) — 中文本地化
 - [edict](https://github.com/cft0808/edict)
-
 
 严格遵守上游项目的开源许可证协议。
 
