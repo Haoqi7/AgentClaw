@@ -1907,17 +1907,22 @@ def cmd_state(task_id, new_state, now_text=None):
                     _active = t.get('activeAgent', '')
                     if _active in _LIU_BU_AGENT_IDS:
                         liubu_label = _AGENT_LABELS.get(_active, _active)
-                        log.info(f'🔗 F1分流: {task_id} Doing通知改为轻量消息→尚书省（{liubu_label}工作中）')
-                        _notify_agent(
-                            agent_id='shangshu',
-                            task_id=task_id,
-                            from_org=liubu_label,
-                            to_org='尚书省',
-                            title=task_title,
-                            remark=f'【{task_id}】{liubu_label}有进展，请关注',
-                            brief=True,
-                        )
-                        notify_agent_id = ''  # 已处理，跳过后续通用通知
+                        remark_text = f'【{task_id}】{liubu_label}有进展，请关注'
+                        from_label = liubu_label
+                    else:
+                        remark_text = f'【{task_id}】任务已派发执行中'
+                        from_label = '六部'
+                    log.info(f'🔗 F1分流: {task_id} Doing通知改为轻量消息→尚书省')
+                    _notify_agent(
+                        agent_id='shangshu',
+                        task_id=task_id,
+                        from_org=from_label,
+                        to_org='尚书省',
+                        title=task_title,
+                        remark=remark_text,
+                        brief=True,
+                    )
+                    notify_agent_id = ''  # 已处理，跳过后续通用通知
             # 【F1b】Doing→Review：六部完成，尚书省发简短消息代替完整方案
             if old_state[0] == 'Doing' and new_state == 'Review' and notify_agent_id == 'shangshu':
                 try:
