@@ -28,7 +28,7 @@
 
 <p align="center">
   <img src="https://img.shields.io/badge/Agents-12-purple?style=for-the-badge" alt="12 Agents">
-  <img src="https://img.shields.io/badge/前端组件-18+-blue?style=for-the-badge" alt="18+ Components">
+  <img src="https://img.shields.io/badge/前端组件-16+-blue?style=for-the-badge" alt="16+ Components">
   <img src="https://img.shields.io/badge/消息渠道-7-green?style=for-the-badge" alt="7 Channels">
   <img src="https://img.shields.io/badge/圣旨模板-9-orange?style=for-the-badge" alt="9 Templates">
 </p>
@@ -109,7 +109,9 @@ AgentClaw 将中国古代的「三省六部制」映射为多 Agent 协作架构
 ```
 ┌─────────────────────────────────────────────────────────────────┐
 │                        皇帝 (用户)                              │
-│                    飞书 / Telegram / Signal                     │
+│                                                                 │
+│      飞书 / Telegram / Slack / Discord / 企业微信 / Webhook     │
+│                                                                 │
 └────────────────────────────┬────────────────────────────────────┘
                              ▼
 ┌────────────────────────────────────────────────────────────────┐
@@ -117,7 +119,7 @@ AgentClaw 将中国古代的「三省六部制」映射为多 Agent 协作架构
 └────────────────────────────┬───────────────────────────────────┘
                              ▼
 ┌────────────────┐    ┌────────────────┐    ┌──────────────────┐
-│ 📜 中书省      │───▶│ 🔍 门下省      │───▶│ 📮 尚书省        │
+│ 📜 中书省      │───▶│ 🔍 门下省      │───▶│ 📮 尚书省     │
 │ 规划 · 拆解    │◀───│ 审议 · 驳回    │    │ 派发 · 汇总      │
 └────────────────┘    └────────────────┘    └───────┬──────────┘
                                                    │
