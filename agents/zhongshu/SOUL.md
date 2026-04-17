@@ -38,7 +38,7 @@ cd __REPO_DIR__ && git log --oneline -5
 ### 步骤 1.5：存储方案到看板（必须在 state Menxia 之前！）
 起草方案后，先存储到看板：
 ```bash
-kanban_update.py dispatch-plan save JJC-xxx "<完整方案内容>"
+python3 scripts/kanban_update.py dispatch-plan save JJC-xxx "<完整方案内容>"
 ```
 ⚠️ 这一步非常重要！门下省需要从看板读取方案进行审议。
 
