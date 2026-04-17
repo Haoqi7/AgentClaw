@@ -184,6 +184,25 @@ bash install-all.sh --auto-start
 bash install-all.sh -y
 ```
 
+<details>
+<summary>🗑️ <b>一键卸载</b></summary>
+
+```bash
+# 交互式卸载（逐步确认）
+bash uninstall-all.sh
+
+# 静默卸载（全部默认 yes）
+bash uninstall-all.sh -y
+
+# 只清理项目数据，不动系统依赖和 OpenClaw
+bash uninstall-all.sh --project-only
+
+# 全部清除（项目 + OpenClaw + nvm，不可恢复）
+bash uninstall-all.sh --nuke
+```
+
+</details>
+
 </details>
 
 ---
@@ -421,10 +440,11 @@ AgentClaw/
 │   ├── docker-compose.yml
 │   └── entrypoint.sh
 ├── install-all.sh           # 🆕 一键安装（从零部署，自动装依赖）
+├── uninstall-all.sh         # 🆕 一键卸载（清除 install-all.sh 装的全部）
 ├── start.sh                 # 一键启动（本地部署）
 ├── stop.sh                  # 一键停止（本地部署）
 ├── install.sh               # 一键安装（需已有依赖环境）
-└── uninstall.sh             # 一键卸载
+└── uninstall.sh             # 一键卸载（仅清理项目数据）
 ```
 ---
 
