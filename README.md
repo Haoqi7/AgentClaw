@@ -28,8 +28,8 @@
 
 <p align="center">
   <img src="https://img.shields.io/badge/Agents-12-purple?style=for-the-badge" alt="12 Agents">
-  <img src="https://img.shields.io/badge/前端组件-16+-blue?style=for-the-badge" alt="16+ Components">
-  <img src="https://img.shields.io/badge/消息渠道-7-green?style=for-the-badge" alt="7 Channels">
+  <img src="https://img.shields.io/badge/前端组件-16-blue?style=for-the-badge" alt="16 Components">
+  <img src="https://img.shields.io/badge/消息渠道-6-green?style=for-the-badge" alt="6 Channels">
   <img src="https://img.shields.io/badge/圣旨模板-9-orange?style=for-the-badge" alt="9 Templates">
 </p>
 
@@ -109,9 +109,7 @@ AgentClaw 将中国古代的「三省六部制」映射为多 Agent 协作架构
 ```
 ┌─────────────────────────────────────────────────────────────────┐
 │                        皇帝 (用户)                              │
-│                                                                 │
-│      飞书 / Telegram / Slack / Discord / 企业微信 / Webhook     │
-│                                                                 │
+│          飞书 / Telegram / Slack / Discord / 企业微信 / Webhook          │
 └────────────────────────────┬────────────────────────────────────┘
                              ▼
 ┌────────────────────────────────────────────────────────────────┐
@@ -119,20 +117,20 @@ AgentClaw 将中国古代的「三省六部制」映射为多 Agent 协作架构
 └────────────────────────────┬───────────────────────────────────┘
                              ▼
 ┌────────────────┐    ┌────────────────┐    ┌──────────────────┐
-│ 📜 中书省      │───▶│ 🔍 门下省      │───▶│ 📮 尚书省     │
+│ 📜 中书省      │───▶│ 🔍 门下省      │───▶│ 📮 尚书省        │
 │ 规划 · 拆解    │◀───│ 审议 · 驳回    │    │ 派发 · 汇总      │
 └────────────────┘    └────────────────┘    └───────┬──────────┘
-                                                    │
-              ┌────────┬────────┬────────┬──────────┼────────┐
-              ▼        ▼        ▼        ▼          ▼        ▼
-          ┌────────┐┌───────┐┌───────┐┌───────┐┌───────┐┌───────┐
-          │ 💰户部││ 📝礼部││ ⚔️兵部││⚖️刑部││ 🔧工部││ 👔吏部│
-          └──┬─────┘└──┬────┘└───┬───┘└───┬──┘└───┬───┘└───┬───┘
-             └─────────┴─────────┴────────┴───────┴────────┘
+                                                   │
+              ┌────────┬────────┬────────┬─────────┼────────┐
+              ▼        ▼        ▼        ▼         ▼        ▼
+          ┌──────┐┌──────┐┌──────┐┌──────┐┌──────┐┌──────┐
+          │ 💰户部││ 📝礼部││ ⚔️兵部││ ⚖️刑部││ 🔧工部││ 👔吏部│
+          └──┬───┘└──┬───┘└──┬───┘└──┬───┘└──┬───┘└──┬───┘
+             └────────┴────────┴────────┴────────┴────────┘
                                │
                                ▼
                     ┌────────────────────┐
-                    │ 📦 产出阁· 奏折阁  │
+                    │  📦 产出阁 · 奏折阁  │
                     └────────────────────┘
 
   ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─
@@ -199,12 +197,21 @@ openclaw channels add --type feishu --agent taizi
 ### 第 4 步：启动服务
 
 ```bash
-# 终端 1：数据刷新循环（每 15 秒同步）
-bash scripts/run_loop.sh &
+# 一键启动（前台运行，Ctrl+C 停止所有服务）
+bash start.sh
 
-# 终端 2：看板服务器
-python3 dashboard/server.py
+# 或后台运行（日志写入 start.log）
+bash start.sh --detach
+
+# 停止所有服务
+bash stop.sh
 ```
+
+启动脚本会自动完成：
+- ✅ 环境与端口检查（gateway:18789、看板:7891）
+- ✅ 启动 OpenClaw Gateway 并等待就绪
+- ✅ 启动数据刷新循环（每 15 秒同步）
+- ✅ 启动看板服务器
 
 浏览器打开 `http://127.0.0.1:7891`，总控台就绪。
 
@@ -233,10 +240,10 @@ python3 dashboard/server.py
 | 📜 **旨意看板** | 任务全生命周期看板，支持手动派发、太子巡检、状态流转 |
 | 🏛️ **朝堂议政** | 多 Agent 实时讨论，朝堂仪式化交互 |
 | 🔌 **省部调度** | 各部门工作负载、任务分布、性能概览 |
-| 📋 **旨库** | 9 套预设圣旨模板 |
+| 📋 **旨库** | 9 套预设圣旨模板，填参数一键下旨 |
 | 🛡️ **流程监察** | 御史台审计面板，查看违规记录、告警通知、巡检结果 |
 | 📦 **产出阁** | 任务产出物按部门归档，在线预览（Markdown 渲染）+ 下载 |
-| 📜 **奏折阁** | 已完成任务自动归档 |
+| 📜 **奏折阁** | 已完成任务自动归档，随时回溯 |
 | 💬 **小任务** | Agent 会话管理，轻量级子任务 |
 | 🌅 **天下要闻** | 钦天监新闻简报，分类订阅 + 多渠道推送 |
 | 👔 **官员总览** | 12 位 Agent 的能力画像、在线状态、绩效统计 |
@@ -304,12 +311,30 @@ docker run -d \
 | 健康检查 | 每 15 秒双端点检测，自动恢复 |
 | 重启策略 | `unless-stopped` |
 
-### 环境变量（可选）
+### 环境变量
 
-| 变量 | 说明 |
-|:---|:---|
-| `EDICT_EXTERNAL_URL` | 外部访问地址（如 `https://your-domain.com`）|
-| `EDICT_CORS_ORIGINS` | 跨域白名单（逗号分隔）|
+以下环境变量同时适用于本地部署和 Docker 部署：
+
+| 变量 | 默认值 | 说明 |
+|:---|:---|:---|
+| `EDICT_HOME` | 项目根目录 | 项目根目录路径。如果自定义了项目路径，需要显式设置。start.sh 会自动设置。 |
+| `EDICT_DASHBOARD_PORT` | `7891` | 看板服务器监听端口。如需更改端口，启动前设置此变量：`export EDICT_DASHBOARD_PORT=8080` |
+| `EDICT_GATEWAY_URL` | 自动推断 | OpenClaw Gateway 地址。本地部署通常无需设置，Docker 部署时如 Gateway 与看板不在同一网络需显式配置 |
+| `EDICT_EXTERNAL_URL` | 空 | 看板外部访问地址（如 `https://your-domain.com`），用于通知推送链接等场景 |
+| `EDICT_EXTERNAL_GATEWAY_URL` | 空 | Gateway 外部访问地址（可选，不设置则基于 `EDICT_EXTERNAL_URL` 或 Host 头推断）|
+| `EDICT_CORS_ORIGINS` | 空 | 额外允许的 CORS Origin 跨域白名单（逗号分隔，如 `http://192.168.1.100:7891,http://myhost:8080`)|
+
+#### 本地部署环境变量示例
+
+```bash
+# 修改看板端口
+export EDICT_DASHBOARD_PORT=8080
+bash start.sh
+
+# 自定义项目路径
+export EDICT_HOME=/opt/AgentClaw
+bash start.sh
+```
 
 
 
@@ -333,7 +358,7 @@ AgentClaw/
 │   ├── zaochao/SOUL.md     #   钦天监 — 新闻采集
 │   └── jiancha/SOUL.md     #   御史台 — 流程审计
 ├── frontend/                # React + TypeScript 前端
-│   └── src/components/      #   18 个组件
+│   └── src/components/      #   16 个前端组件
 ├── dashboard/               # 看板服务器 + API
 │   ├── server.py           #   主服务（Python HTTP）
 │   └── task_output_api.py  #   产出管理 API
@@ -346,6 +371,8 @@ AgentClaw/
 │   ├── Dockerfile
 │   ├── docker-compose.yml
 │   └── entrypoint.sh
+├── start.sh                 # 一键启动（本地部署）
+├── stop.sh                  # 一键停止（本地部署）
 ├── install.sh               # 一键安装
 └── uninstall.sh             # 一键卸载
 ```
