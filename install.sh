@@ -373,7 +373,7 @@ build_frontend() {
 
   if ! command -v node &>/dev/null; then
     warn "未找到 node，跳过前端构建。看板将使用预构建版本（如果存在）"
-    warn "请安装 Node.js 18+ 后运行: cd frontend && npm install && npm run build"
+    warn "请安装 Node.js 22+ 后运行: cd frontend && npm install && npm run build"
     return
   fi
 
