@@ -2625,6 +2625,12 @@ def get_task_activity(task_id):
 
     progress_log = task.get('progress_log', [])
     related_agents = set()
+    # 【G3】从 flow_log 补充历史参与部门，防止转交后 session 日志消失
+    _FLOW_DEPT_MAP = {'太子': 'taizi', '皇上': 'huangshang', **_ORG_AGENT_MAP}
+    for fl in flow_log:
+        for _name, _aid in _FLOW_DEPT_MAP.items():
+            if _aid and _name in (fl.get('from', ''), fl.get('to', '')):
+                related_agents.add(_aid)
 
     # 资源消耗累加
     total_tokens = 0
