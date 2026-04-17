@@ -1051,6 +1051,30 @@ def handle_review_action(task_id, action, comment=''):
                 if not _t or _t.get('state') != 'Assigned':
                     log.warning(f'{task_id} 3秒后状态已变更（{_t.get("state") if _t else "不存在"}），取消延迟派发')
                     return
+                # ═══════════════════════════════════════════════════════════════
+                # 【关键修复 #56】延迟派发前去重：防止与 kanban_update.py 重复派发
+                # 根因：门下省可能通过 CLI (cmd_state/_notify_agent) 和 Dashboard API
+                # (handle_review_action) 两条路径准奏，导致尚书省收到两次完整方案。
+                # 修复：在 _delayed_dispatch 实际派发前，检查 _lastNotify 和
+                # _scheduler.lastDispatchStatus，若已有近期派发记录则跳过。
+                # ═══════════════════════════════════════════════════════════════
+                _last_notify_shangshu = _t.get('_lastNotify', {}).get('shangshu', {})
+                if _last_notify_shangshu.get('at'):
+                    try:
+                        _ln_dt = _parse_iso(_last_notify_shangshu.get('at', ''))
+                        if _ln_dt:
+                            _ln_elapsed = (datetime.datetime.now(datetime.timezone.utc) - _ln_dt).total_seconds()
+                            if _ln_elapsed < 30:  # 30秒内已有通知记录（含 pending），跳过
+                                log.info(f'🔒 #56延迟派发去重：{task_id} → shangshu，{_ln_elapsed:.0f}s前 _lastNotify 已有记录，跳过 _delayed_dispatch')
+                                return
+                    except Exception:
+                        pass
+                _sched_pre = _t.get('_scheduler', {})
+                if isinstance(_sched_pre, dict):
+                    _pre_status = _sched_pre.get('lastDispatchStatus', '')
+                    if _pre_status in ('success', 'dispatching', 'queued'):
+                        log.info(f'🔒 #56延迟派发去重：{task_id} lastDispatchStatus={_pre_status}，跳过 _delayed_dispatch')
+                        return
                 # 追加第2条 flow_log：中书省 → 尚书省
                 _t.setdefault('flow_log', []).append({
                     'at': now_iso(),
@@ -1781,11 +1805,31 @@ def handle_scheduler_scan(threshold_sec=600):
         # 1. 太子手动操作的任务（准奏/叫停/恢复等）
         # 2. 派发已成功（lastDispatchStatus=success），说明 Agent 已收到任务
         # 3. 派发正在进行中（lastDispatchStatus=queued/dispatching）
+        # 4. 【关键修复】_lastNotify 中有近期成功通知记录（kanban_update.py 路径）
         _dispatch_status = sched.get('lastDispatchStatus', '')
         if sched.get('_taiziManual'):
             continue
         if _dispatch_status in ('success', 'queued', 'dispatching', 'gateway-offline'):
             continue
+
+        # 【关键修复】交叉检查 _lastNotify：防止 cmd_state 已通过 _notify_agent
+        # 通知了目标 Agent，但 _scheduler.lastDispatchStatus 未及时同步。
+        _target_agent_for_scan = _STATE_AGENT_MAP.get(state)
+        if _target_agent_for_scan:
+            _last_notify_scan = task.get('_lastNotify', {}).get(_target_agent_for_scan, {})
+            if _last_notify_scan.get('done'):
+                _notify_at_str = _last_notify_scan.get('at', '')
+                if _notify_at_str:
+                    try:
+                        _notify_dt = _parse_iso(_notify_at_str)
+                        if _notify_dt:
+                            _now_scan_dt = datetime.datetime.now(datetime.timezone.utc)
+                            _notify_elapsed = (_now_scan_dt - _notify_dt).total_seconds()
+                            if _notify_elapsed < 300:  # 5分钟内已成功通知
+                                log.info(f'🔒 scheduler-scan 交叉去重：{task_id} {_target_agent_for_scan} {_notify_elapsed:.0f}s前已通知，跳过停滞重试')
+                                continue
+                    except Exception:
+                        pass
 
         retry_count = int(sched.get('retryCount') or 0)
         max_retry = max(0, int(sched.get('maxRetry') or 1))
@@ -2844,7 +2888,12 @@ def _build_shangshu_dispatch_msg(task_id, title, target_dept=''):
         f'旨意: {title}',
     ]
     if target_dept:
-        msg_parts.append(f'建议派发部门: {target_dept}')
+        # 【修复 #56】附带拼音 agent_id，防止尚书省 LLM 用中文名 dispatch 失败
+        _dept_agent_id = _ORG_AGENT_MAP.get(target_dept, '')
+        if _dept_agent_id:
+            msg_parts.append(f'建议派发部门: {target_dept}（agent: {_dept_agent_id}）')
+        else:
+            msg_parts.append(f'建议派发部门: {target_dept}')
     msg_parts.append(f'⚠️ 看板已有此任务，请勿重复创建。')
     msg_parts.append(f'请分析方案并通过 sessions_spawn 派发给六部执行。')
 
@@ -2882,6 +2931,41 @@ def dispatch_for_state(task_id, task, new_state, trigger='state-transition'):
         # Issue #1 fix: 当无法确定具体六部 agent 时，记录详细日志帮助排查
         log.warning(f'⚠️ {task_id} 新状态 {new_state} 无法确定目标 Agent（org={task.get("org","")}, targetDept={task.get("targetDept","")}），跳过自动派发。尚书省需在旨意中明确指定 targetDept。')
         return
+
+    # 【关键修复】交叉检查 _lastNotify：防止 kanban_update.py 已通知但
+    # scheduler-scan 因只看 _scheduler.lastDispatchStatus 而重复派发。
+    # 根因：两套去重机制独立运行，互不通信。
+    # scheduler-scan trigger='taizi-scan-retry' 会在180s后触发此函数，
+    # 但 cmd_state 已通过 _notify_agent 异步发送了完整方案给尚书省。
+    try:
+        _last_notify = task.get('_lastNotify', {}).get(agent_id, {})
+        if _last_notify.get('done'):
+            _last_at_str = _last_notify.get('at', '')
+            if _last_at_str:
+                try:
+                    _last_dt = _parse_iso(_last_at_str)
+                    if _last_dt:
+                        _now_dt = datetime.datetime.now(datetime.timezone.utc)
+                        _elapsed = (_now_dt - _last_dt).total_seconds()
+                        if _elapsed < 300:  # 5分钟内已成功通知过，跳过重复派发
+                            log.info(f'🔒 交叉去重：{task_id} → {agent_id}，{_elapsed:.0f}s前 _notify_agent 已成功通知（{_last_at_str}），跳过 dispatch_for_state（trigger={trigger}）')
+                            return
+                except Exception:
+                    pass
+        elif _last_notify.get('at'):
+            # 异步待确认：30秒内跳过
+            try:
+                _last_dt = _parse_iso(_last_notify.get('at', ''))
+                if _last_dt:
+                    _now_dt = datetime.datetime.now(datetime.timezone.utc)
+                    _elapsed = (_now_dt - _last_dt).total_seconds()
+                    if _elapsed < 60:  # 60秒内已发送（待确认），跳过
+                        log.info(f'🔒 交叉去重（异步）：{task_id} → {agent_id}，{_elapsed:.0f}s前 _notify_agent 已发送（待确认），跳过 dispatch_for_state（trigger={trigger}）')
+                        return
+            except Exception:
+                pass
+    except Exception as e:
+        log.warning(f'交叉去重检查异常（不影响流程）: {e}')
 
     # 【F5】尚书省分流：如果任务活跃Agent是六部，说明六部正在执行，
     # 不应向尚书省发完整方案消息。改为轻量提醒。
@@ -2969,6 +3053,29 @@ def dispatch_for_state(task_id, task, new_state, trigger='state-transition'):
         f'旨意: {title}\n'
         f'⚠️ 看板已有此任务，请勿重复创建。直接用 kanban_update.py 更新状态。'
     ))
+
+    # ═══════════════════════════════════════════════════════════════
+    # 【关键修复 #56】派发前立即写入 _lastNotify（pending 状态）
+    # 根因：原逻辑依赖 _do_dispatch 成功后异步写入 _lastNotify，
+    # 导致在 3s _delayed_dispatch 和 120s scheduler-scan 窗口内，
+    # 其他路径看不到派发记录，造成重复派发。
+    # 修复：在实际派发之前立即写入 pending 记录，确保任何路径
+    # 读取磁盘时都能看到该任务已进入派发流程。
+    # ═══════════════════════════════════════════════════════════════
+    try:
+        def _pre_mark_notify(tasks):
+            _t = next((t for t in tasks if t.get('id') == task_id), None)
+            if _t:
+                _t.setdefault('_lastNotify', {})[agent_id] = {
+                    'at': now_iso(),
+                    'remark': f'dispatch_for_state({trigger})',
+                    'done': False,  # pending，待 _do_dispatch 成功后更新为 True
+                }
+            return tasks
+        atomic_json_update(get_task_data_dir() / 'tasks_source.json', _pre_mark_notify, [])
+        log.info(f'🔒 #56预标记：{task_id} → {agent_id} _lastNotify 写入 pending')
+    except Exception as e:
+        log.warning(f'#56预标记异常（不阻塞派发）: {e}')
 
     def _do_dispatch():
         try:
