@@ -1896,7 +1896,7 @@ def cmd_state(task_id, new_state, now_text=None):
             # 六部由尚书省通过 sessions_spawn 通知（含完整子任务内容）。
             # 程序层不再发送通用通知给六部，避免重复通知。
             # alive_check（180秒兜底）作为最后防线保留。
-            if new_state == 'Doing' and notify_agent_id and t:
+            if new_state in ('Doing', 'Next') and notify_agent_id and t:
                 _LIU_BU_AGENT_IDS = ('libu', 'hubu', 'bingbu', 'xingbu', 'gongbu', 'libu_hr')
                 if notify_agent_id in _LIU_BU_AGENT_IDS:
                     log.info(f'🔗 架构调整: {task_id} Doing状态跳过程序层通知六部 {notify_agent_id}，依赖尚书省 sessions_spawn')
