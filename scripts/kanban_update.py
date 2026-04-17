@@ -1757,6 +1757,7 @@ def _ensure_scheduler_field(task):
 def cmd_state(task_id, new_state, now_text=None):
     """更新任务状态（原子操作，含流转合法性校验 + 会话去重）"""
     old_state = [None]
+    old_org = [None]
     rejected = [False]
     skipped = [False]
     
@@ -1766,6 +1767,7 @@ def cmd_state(task_id, new_state, now_text=None):
             log.error(f'任务 {task_id} 不存在')
             return tasks
         old_state[0] = t['state']
+        old_org[0] = t.get('org', '')
         # 自转换快速路径：相同状态不拒绝，直接跳过（避免 Zhongshu→Zhongshu 等噪声）
         if old_state[0] == new_state:
             log.info(f'✅ {task_id} 状态不变: {new_state}（自转换跳过）')
@@ -1911,7 +1913,7 @@ def cmd_state(task_id, new_state, now_text=None):
             # 【F1b】Doing→Review：六部完成，尚书省发简短消息代替完整方案
             if old_state[0] == 'Doing' and new_state == 'Review' and notify_agent_id == 'shangshu':
                 try:
-                    _org = t.get('org', '') if t else ''
+                    _org = old_org[0] or ''
                     _label = _AGENT_LABELS.get(_ORG_AGENT_MAP.get(_org, ''), _org or '六部')
                     _brief_msg = f'【{task_id}】{_label}已完成，请汇总审查'
                     subprocess.Popen(
