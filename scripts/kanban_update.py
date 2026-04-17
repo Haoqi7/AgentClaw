@@ -1908,6 +1908,20 @@ def cmd_state(task_id, new_state, now_text=None):
                             brief=True,
                         )
                         notify_agent_id = ''  # 已处理，跳过后续通用通知
+            # 【F1b】Doing→Review：六部完成，尚书省发简短消息代替完整方案
+            if old_state[0] == 'Doing' and new_state == 'Review' and notify_agent_id == 'shangshu':
+                try:
+                    _org = t.get('org', '') if t else ''
+                    _label = _AGENT_LABELS.get(_ORG_AGENT_MAP.get(_org, ''), _org or '六部')
+                    _brief_msg = f'【{task_id}】{_label}已完成，请汇总审查'
+                    subprocess.Popen(
+                        ['openclaw', 'agent', '--agent', 'shangshu', '-m', _brief_msg, '--timeout', '60'],
+                        stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                    )
+                    log.info(f'🔗 F1b分流: {task_id} Doing→Review发简短消息→尚书省({_label}已完成)')
+                except Exception as e:
+                    log.warning(f'F1b简短消息发送失败: {e}')
+                notify_agent_id = ''  # 阻止下面的完整方案通知
             # 准奏场景：覆盖尚书省通知的说明
             if old_state[0] == 'Menxia' and new_state == 'Assigned':
                 now_text = '门下和中书省准奏'
