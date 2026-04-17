@@ -815,9 +815,12 @@ def _notify_agent(agent_id, task_id, from_org, to_org, title='', remark='', curr
     confirm_fmt = profile.get('confirm_fmt', '已收到 {task_id} {title}').format(task_id=task_id, title=title)
     deadline = profile.get('deadline', '10分钟内确认')
 
-    # ── brief 模式：极简通知（准奏→中书省等无需操作的场景） ──
+    # ── brief 模式：按接收部门区分通知内容 ──
     if brief:
-        message = f'📢 {task_id} 门下省已准奏「{title or task_id}」，你无需操作。程序已派发尚书省。'
+        if agent_id == 'zhongshu':
+            message = f'📢 {task_id} 门下省已准奏「{title or task_id}」，你无需操作。程序已派发尚书省。'
+        else:
+            message = f'📢 {task_id} {remark}'
     else:
         # 组装针对性通知消息
         parts = [
