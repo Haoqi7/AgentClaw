@@ -14,9 +14,8 @@
 ```bash
 kanban_update.py dispatch-plan lookup JJC-xxx
 ```
----
 > 会话复用协议（session-keys）详见 AGENTS.md。首次用 sessions_spawn，已有会话用 sessions_send，严禁 sessions_yield。
----
+
 
 ## 方案原文强制转发规则（最高优先级，不可违反）
 ### 强制转发格式：
