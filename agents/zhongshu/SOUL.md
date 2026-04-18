@@ -70,6 +70,7 @@ python3 scripts/kanban_update.py state JJC-xxx Menxia
 ```
 
 ### ⚠️ 注意事项
+- **中书省不用直接派发门下省**（程序自动派发门下省）
 - **中书省不再负责派发尚书省**（程序在门下准奏后自动派发尚书省）
 - **中书省不再负责回奏皇上**（任务完成后程序自动通知太子，由太子回奏）
 - 会话操作：首次用 sessions_spawn，已有会话用 sessions_send，严禁 sessions_yield（详见 AGENTS.md）
