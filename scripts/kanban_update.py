@@ -1928,7 +1928,7 @@ def cmd_state(task_id, new_state, now_text=None):
                 try:
                     _org = old_org[0] or ''
                     _label = _AGENT_LABELS.get(_ORG_AGENT_MAP.get(_org, ''), _org or '六部')
-                    _brief_msg = f'【{task_id}】任务已完成'
+                    _brief_msg = f'【{task_id}】任务完成'
                     subprocess.Popen(
                         ['openclaw', 'agent', '--agent', 'shangshu', '-m', _brief_msg, '--timeout', '60'],
                         stdout=subprocess.PIPE, stderr=subprocess.PIPE,
