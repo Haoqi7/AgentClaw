@@ -120,6 +120,19 @@ create_workspaces() {
       warn "未找到 $REPO_DIR/agents/$agent/AGENTS.md，跳过"
     fi
   done
+    # 从 agents/$agent/IDENTITY.md 文件夹复制身份定义
+  for agent in "${AGENTS[@]}"; do
+    if [ -f "$REPO_DIR/agents/$agent/IDENTITY.md" ]; then
+      if [ -f "$OC_HOME/workspace-$agent/IDENTITY.md" ]; then
+        cp "$OC_HOME/workspace-$agent/IDENTITY.md" "$OC_HOME/workspace-$agent/IDENTITY.md.bak.$(date +%Y%m%d-%H%M%S)"
+        warn "已备份旧 IDENTITY.md → $OC_HOME/workspace-$agent/IDENTITY.md.bak.*"
+      fi
+      cp "$REPO_DIR/agents/$agent/IDENTITY.md" "$OC_HOME/workspace-$agent/IDENTITY.md"
+      log "IDENTITY.md 已复制: $OC_HOME/workspace-$agent/IDENTITY.md"
+    else
+      warn "未找到 $REPO_DIR/agents/$agent/IDENTITY.md，跳过"
+    fi
+  done
 }
 
 # ── Step 2: 注册 Agents ─────────────────────────────────────
@@ -219,11 +232,11 @@ tasks = [
         "output": "",
         "ac": "系统正常运行",
         "flow_log": [
-            {"at": "2024-01-01T00:00:00Z", "from": "皇上", "to": "中书省", "remark": "下旨初始化三省六部系统"},
-            {"at": "2024-01-01T00:01:00Z", "from": "中书省", "to": "门下省", "remark": "规划方案提交审核"},
-            {"at": "2024-01-01T00:02:00Z", "from": "门下省", "to": "尚书省", "remark": "✅ 准奏"},
-            {"at": "2024-01-01T00:03:00Z", "from": "尚书省", "to": "工部", "remark": "派发：系统初始化"},
-            {"at": "2024-01-01T00:04:00Z", "from": "工部", "to": "尚书省", "remark": "✅ 完成"},
+            {"at": "2026-03-01T00:00:00Z", "from": "皇上", "to": "中书省", "remark": "下旨初始化三省六部系统"},
+            {"at": "2026-03-01T00:01:00Z", "from": "中书省", "to": "门下省", "remark": "规划方案提交审核"},
+            {"at": "2026-03-01T00:02:00Z", "from": "门下省", "to": "尚书省", "remark": "✅ 准奏"},
+            {"at": "2026-03-01T00:03:00Z", "from": "尚书省", "to": "工部", "remark": "派发：系统初始化"},
+            {"at": "2026-03-01T00:04:00Z", "from": "工部", "to": "尚书省", "remark": "✅ 完成"},
         ]
     }
 ]
