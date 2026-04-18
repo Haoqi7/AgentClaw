@@ -73,6 +73,15 @@ python3 scripts/kanban_update.py flow <id> "<from>" "<to>" "<remark>"
 python3 scripts/kanban_update.py progress <id> "<当前在做什么>" "<计划1✅|计划2🔄|计划3>"
 python3 scripts/kanban_update.py todo <id> <todo_id> "<title>" <status> --detail "<产出详情>"
 ```
+### 定时任务执行规范
+
+- 所有定时任务必须使用 OpenClaw cron，在工部独立线程中执行：
+- 定时任务触发后在工部独立线程中执行，不影响主会话响应
+- 定时任务产生的所有文件（脚本、日志、配置等）必须存放在工部工作区下，每个定时任务独立一个文件夹：
+```
+~/.openclaw/workspace-gongbu/cron/<cron-task-id>/
+```
+- 禁止将定时任务文件散落在根目录或其他位置
 
 ## 实时进展上报
 
