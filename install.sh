@@ -120,6 +120,20 @@ create_workspaces() {
       warn "未找到 $REPO_DIR/agents/$agent/AGENTS.md，跳过"
     fi
   done
+
+  # 从 agents/$agent/IDENTITY.md 文件夹复制身份定义
+  for agent in "${AGENTS[@]}"; do
+    if [ -f "$REPO_DIR/agents/$agent/IDENTITY.md" ]; then
+      if [ -f "$OC_HOME/workspace-$agent/IDENTITY.md" ]; then
+        cp "$OC_HOME/workspace-$agent/IDENTITY.md" "$OC_HOME/workspace-$agent/IDENTITY.md.bak.$(date +%Y%m%d-%H%M%S)"
+        warn "已备份旧 IDENTITY.md → $OC_HOME/workspace-$agent/IDENTITY.md.bak.*"
+      fi
+      cp "$REPO_DIR/agents/$agent/IDENTITY.md" "$OC_HOME/workspace-$agent/IDENTITY.md"
+      log "IDENTITY.md 已复制: $OC_HOME/workspace-$agent/IDENTITY.md"
+    else
+      warn "未找到 $REPO_DIR/agents/$agent/IDENTITY.md，跳过"
+    fi
+  done
 }
 
 # ── Step 2: 注册 Agents ─────────────────────────────────────
@@ -130,176 +144,14 @@ register_agents() {
   cp "$OC_CFG" "$OC_CFG.bak.sansheng-$(date +%Y%m%d-%H%M%S)"
   log "已备份配置: $OC_CFG.bak.*"
 
-  python3 << 'PYEOF'
-import json, pathlib, sys
-
-cfg_path = pathlib.Path.home() / '.openclaw' / 'openclaw.json'
-cfg = json.loads(cfg_path.read_text())
-
-AGENTS = [
-  {"id": "taizi",    "subagents": {"allowAgents": ["zhongshu"]}},
-    {"id": "zhongshu", "subagents": {"allowAgents": ["menxia", "shangshu"]}},
-    {"id": "menxia",   "subagents": {"allowAgents": ["zhongshu"]}},
-  {"id": "shangshu", "subagents": {"allowAgents": ["zhongshu", "hubu", "libu", "bingbu", "xingbu", "gongbu", "libu_hr"]}},
-    {"id": "hubu",     "subagents": {"allowAgents": ["shangshu"]}},
-    {"id": "libu",     "subagents": {"allowAgents": ["shangshu"]}},
-    {"id": "bingbu",   "subagents": {"allowAgents": ["shangshu"]}},
-    {"id": "xingbu",   "subagents": {"allowAgents": ["shangshu"]}},
-    {"id": "gongbu",   "subagents": {"allowAgents": ["shangshu"]}},
-  {"id": "libu_hr",  "subagents": {"allowAgents": ["shangshu"]}},
-  {"id": "zaochao",  "subagents": {"allowAgents": []}},
-  {"id": "jiancha",  "subagents": {"allowAgents": ["taizi","zhongshu","menxia","shangshu","hubu","libu","bingbu","xingbu","gongbu","libu_hr"]}},
-]
-
-agents_cfg = cfg.setdefault('agents', {})
-agents_list = agents_cfg.get('list', [])
-existing_ids = {a['id'] for a in agents_list}
-
-added = 0
-for ag in AGENTS:
-    ag_id = ag['id']
-    ws = str(pathlib.Path.home() / f'.openclaw/workspace-{ag_id}')
-    if ag_id not in existing_ids:
-        entry = {'id': ag_id, 'workspace': ws, **{k:v for k,v in ag.items() if k!='id'}}
-        agents_list.append(entry)
-        added += 1
-        print(f'  + added: {ag_id}')
-    else:
-        print(f'  ~ exists: {ag_id} (skipped)')
-
-agents_cfg['list'] = agents_list
-
-# Fix #142: 清理 bindings 中的非法字段（pattern 不被 gateway 支持）
-bindings = cfg.get('bindings', [])
-cleaned = 0
-for b in bindings:
-    match = b.get('match', {})
-    if isinstance(match, dict) and 'pattern' in match:
-        del match['pattern']
-        cleaned += 1
-        print(f'  🧹 cleaned invalid "pattern" from binding: {b.get("agentId", "?")}')
-if cleaned:
-    print(f'Cleaned {cleaned} invalid binding field(s)')
-
-cfg_path.write_text(json.dumps(cfg, ensure_ascii=False, indent=2))
-print(f'Done: {added} agents added')
-PYEOF
-
-  log "Agents 注册完成"
-}
-
-# ── Step 3: 初始化 Data ─────────────────────────────────────
-init_data() {
-  info "初始化数据目录..."
-  
-  mkdir -p "$REPO_DIR/data"
-  
-  # 初始化空文件
-  for f in live_status.json agent_config.json model_change_log.json; do
-    if [ ! -f "$REPO_DIR/data/$f" ]; then
-      echo '{}' > "$REPO_DIR/data/$f"
+  python3  "$REPO_DIR/data/$f"
     fi
   done
   echo '[]' > "$REPO_DIR/data/pending_model_changes.json"
 
   # 初始任务文件
   if [ ! -f "$REPO_DIR/data/tasks_source.json" ]; then
-    python3 << 'PYEOF'
-import json, pathlib
-tasks = [
-    {
-        "id": "JJC-DEMO-001",
-        "title": "🎉 系统初始化完成",
-        "official": "工部尚书",
-        "org": "工部",
-        "state": "Done",
-        "now": "三省六部系统已就绪",
-        "eta": "-",
-        "block": "无",
-        "output": "",
-        "ac": "系统正常运行",
-        "flow_log": [
-            {"at": "2024-01-01T00:00:00Z", "from": "皇上", "to": "中书省", "remark": "下旨初始化三省六部系统"},
-            {"at": "2024-01-01T00:01:00Z", "from": "中书省", "to": "门下省", "remark": "规划方案提交审核"},
-            {"at": "2024-01-01T00:02:00Z", "from": "门下省", "to": "尚书省", "remark": "✅ 准奏"},
-            {"at": "2024-01-01T00:03:00Z", "from": "尚书省", "to": "工部", "remark": "派发：系统初始化"},
-            {"at": "2024-01-01T00:04:00Z", "from": "工部", "to": "尚书省", "remark": "✅ 完成"},
-        ]
-    }
-]
-import os
-data_dir = pathlib.Path(os.environ.get('REPO_DIR', '.')) / 'data'
-data_dir.mkdir(exist_ok=True)
-(data_dir / 'tasks_source.json').write_text(json.dumps(tasks, ensure_ascii=False, indent=2))
-print('tasks_source.json 已初始化')
-PYEOF
-  fi
-
-  log "数据目录初始化完成: $REPO_DIR/data"
-}
-
-# ── Step 3.3: 创建 data 软链接确保数据一致 (Fix #88) ─────────
-link_resources() {
-  info "创建 data/scripts 软链接以确保 Agent 数据一致..."
-  
-  AGENTS=(taizi zhongshu menxia shangshu hubu libu bingbu xingbu gongbu libu_hr zaochao jiancha)
-  LINKED=0
-  for agent in "${AGENTS[@]}"; do
-    ws="$OC_HOME/workspace-$agent"
-    mkdir -p "$ws"
-
-    # 软链接 data 目录：确保各 agent 读写同一份 tasks_source.json
-    ws_data="$ws/data"
-    if [ -L "$ws_data" ]; then
-      : # 已是软链接，跳过
-    elif [ -d "$ws_data" ]; then
-      # 已有 data 目录（非符号链接），备份后替换
-      mv "$ws_data" "${ws_data}.bak.$(date +%Y%m%d-%H%M%S)"
-      ln -s "$REPO_DIR/data" "$ws_data"
-      LINKED=$((LINKED + 1))
-    else
-      ln -s "$REPO_DIR/data" "$ws_data"
-      LINKED=$((LINKED + 1))
-    fi
-
-    # 软链接 scripts 目录
-    ws_scripts="$ws/scripts"
-    if [ -L "$ws_scripts" ]; then
-      : # 已是软链接
-    elif [ -d "$ws_scripts" ]; then
-      mv "$ws_scripts" "${ws_scripts}.bak.$(date +%Y%m%d-%H%M%S)"
-      ln -s "$REPO_DIR/scripts" "$ws_scripts"
-      LINKED=$((LINKED + 1))
-    else
-      ln -s "$REPO_DIR/scripts" "$ws_scripts"
-      LINKED=$((LINKED + 1))
-    fi
-  done
-
-  # Legacy: workspace-main
-  ws_main="$OC_HOME/workspace-main"
-  if [ -d "$ws_main" ]; then
-    for target in data scripts; do
-      link_path="$ws_main/$target"
-      if [ ! -L "$link_path" ]; then
-        [ -d "$link_path" ] && mv "$link_path" "${link_path}.bak.$(date +%Y%m%d-%H%M%S)"
-        ln -s "$REPO_DIR/$target" "$link_path"
-        LINKED=$((LINKED + 1))
-      fi
-    done
-  fi
-
-  log "已创建 $LINKED 个软链接（data/scripts → 项目目录）"
-}
-
-# ── Step 3.5: 设置 Agent 间通信可见性 (Fix #83 + 会话隔离) ──────────
-setup_visibility() {
-  info "配置 Agent 间消息可见性..."
-  # 方案 B+：visibility=own 实现 Agent 会话隔离
-  # - own：每个 Agent 只能看到自己的会话，无法跨部门查看消息
-  # - 防止子代理越权查看其他部门会话内容
-  # - 跨部门通信仅通过 sessions_spawn/sessions_send 进行（受 allowAgents 白名单控制）
-  if openclaw config set tools.sessions.visibility own 2>/dev/null; then
+    python3 /dev/null; then
     log "已设置 tools.sessions.visibility=own（会话隔离模式：Agent 仅可见自己的会话）"
   else
     warn "设置 visibility 失败（可能 openclaw 版本不支持），请手动执行:"
