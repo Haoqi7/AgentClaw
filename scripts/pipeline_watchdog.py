@@ -2190,41 +2190,6 @@ def _main_inner():
                     # ── 介入处理：通知尚书省必须重新用 sessions_spawn 派发 ──
                     target_label = lv.get("target_label", "六部")
                     target_agent_id = lv.get("target_agent", "")
-                    # ═══════════════════════════════════════════════════════════════
-                    # 【修复 #56】假派发越权介入前去重：防止与正常派发流程重复
-                    # 根因：门下省准奏后 dispatch_for_state 或 _notify_agent 已派发
-                    # 给尚书省，但尚书省尚未完成六部 sessions_spawn（仍在处理中），
-                    # 此时监察检测到"尚书省→六部无证据"误判为假派发，导致尚书省
-                    # 收到第二条一模一样的派发指令。
-                    # 修复：检查 _lastNotify 和 _scheduler.lastDispatchStatus，
-                    # 若尚书省近期已被通知且仍在处理中，跳过介入。
-                    # ═══════════════════════════════════════════════════════════════
-                    _skip_fake_dispatch = False
-                    _ss_last_notify = task.get('_lastNotify', {}).get('shangshu', {})
-                    if _ss_last_notify.get('at'):
-                        try:
-                            _ss_dt = datetime.datetime.fromisoformat(str(_ss_last_notify['at']).replace('Z', '+00:00'))
-                            if _ss_dt.tzinfo:
-                                _ss_elapsed = (datetime.datetime.now(_ss_dt.tzinfo) - _ss_dt).total_seconds()
-                            else:
-                                _ss_elapsed = (datetime.datetime.now(_BJT) - _ss_dt).total_seconds()
-                            if _ss_elapsed < 300:  # 5分钟内已通知尚书省
-                                log(f"🔒 #56假派发去重：{task_id} 尚书省 {_ss_elapsed:.0f}s前已被通知，跳过假派发介入（可能仍在处理中）")
-                                _skip_fake_dispatch = True
-                        except Exception:
-                            pass
-                    _ss_sched = task.get('_scheduler', {})
-                    if isinstance(_ss_sched, dict) and _ss_sched.get('lastDispatchStatus') in ('success', 'dispatching', 'queued'):
-                        log(f"🔒 #56假派发去重：{task_id} lastDispatchStatus={_ss_sched.get('lastDispatchStatus')}，跳过假派发介入")
-                        _skip_fake_dispatch = True
-                    if _skip_fake_dispatch:
-                        audit["notifications"].append(_make_notif(
-                            notif_type="假派发越权介入(去重跳过)", to="尚书省",
-                            detail=f"检测到{target_label}无执行证据，但尚书省近期已被通知，跳过重复介入",
-                            task_id=task_id,
-                            status="skipped",
-                        ))
-                        continue
                     re_dispatch_detail = (
                         f"任务 {task_id} 检测到假派发越权："
                         f"尚书省声称已派发至{target_label}，但{target_label}无任何执行证据。"
@@ -2382,89 +2347,61 @@ def _main_inner():
                 # ── 介入处理：通知上游重新派发 ──
                 if parent_id and parent_id not in woken_agents:
                     parent_label = ID_TO_LABEL.get(parent_id, parent_id)
-                    # ═══════════════════════════════════════════════════════════════
-                    # 【修复 #56】断链重新派发前去重：防止与正常派发流程重复
-                    # 根因：正常派发流程（dispatch_for_state / _notify_agent）已通知
-                    # 上级 Agent，但上级尚未完成下游 sessions_spawn，此时监察检测到
-                    # "断链"误判并再次通知上级重新派发，导致上级收到重复指令。
-                    # ═══════════════════════════════════════════════════════════════
-                    _skip_broken_redispatch = False
-                    _parent_last_notify = task.get('_lastNotify', {}).get(parent_id, {})
-                    if _parent_last_notify.get('at'):
-                        try:
-                            _pn_dt = datetime.datetime.fromisoformat(str(_parent_last_notify['at']).replace('Z', '+00:00'))
-                            if _pn_dt.tzinfo:
-                                _pn_elapsed = (datetime.datetime.now(_pn_dt.tzinfo) - _pn_dt).total_seconds()
-                            else:
-                                _pn_elapsed = (datetime.datetime.now(_BJT) - _pn_dt).total_seconds()
-                            if _pn_elapsed < 180:  # 3分钟内已通知该上级
-                                log(f"🔒 #56断链去重：{task_id} {parent_label} {_pn_elapsed:.0f}s前已被通知，跳过断链重新派发")
-                                _skip_broken_redispatch = True
-                        except Exception:
-                            pass
-                    if _skip_broken_redispatch:
+                    if not is_agent_awake(parent_id):
+                        wake_ok, wake_detail = wake_agent(parent_id, f"任务 {task_id} 断链，需要你重新派发{target_label}")
+                        woken_agents.add(parent_id)
+                        # 记录唤醒动作
                         audit["notifications"].append(_make_notif(
-                            notif_type="断链通知(去重跳过)", to=parent_label,
-                            detail=f"{from_label}→{target_label} 断链，但{parent_label}近期已被通知，跳过重复通知",
-                            task_id=task_id,
-                            status="skipped",
-                        ))
-                    else:
-                        if not is_agent_awake(parent_id):
-                            wake_ok, wake_detail = wake_agent(parent_id, f"任务 {task_id} 断链，需要你重新派发{target_label}")
-                            woken_agents.add(parent_id)
-                            # 记录唤醒动作
-                            audit["notifications"].append(_make_notif(
-                                notif_type="断链唤醒", to=parent_label,
-                                detail=f"断链处理：唤醒上级{parent_label}重新派发{target_label}",
-                                task_id=task_id,
-                                status="sent" if wake_ok else "failed",
-                            ))
-                        else:
-                            wake_ok = True
-                            wake_detail = f"{parent_label} 已在线，直接发送重新派发通知"
-
-                        re_dispatch_msg = (
-                            f"🔔 流程断链通知 - 需要你重新派发\n"
-                            f"任务ID: {task_id}\n"
-                            f"标题: {title}\n"
-                            f"问题: {from_label} → {target_label} 已等待 {broken['elapsed_sec'] // 60} 分钟无回应\n"
-                            f"已唤醒 {target_label}，请重新派发任务给它。\n"
-                            f"使用 sessions_spawn 唤醒 {target_label}（如果之前没有 sessionKey）\n"
-                            f"或使用 sessions_send 继续已有对话（如果有 sessionKey）。\n"
-                            f"⚠️ 禁止使用 sessions_yield，必须使用 sessions_spawn！\n"
-                            f"⚠️ 看板已有此任务，请勿重复创建。"
-                        )
-                        try:
-                            # 精准发送到该任务的父级子代理 session，不打 main session
-                            _task_session_key = _find_task_session_key_for_agent(task, parent_id)
-                            if _task_session_key:
-                                subprocess.Popen(
-                                    ["openclaw", "sessions", "send", "--session-key", _task_session_key, "-m", re_dispatch_msg],
-                                    stdout=subprocess.DEVNULL,
-                                    stderr=subprocess.DEVNULL,
-                                )
-                                log(f"已通知 {parent_label} 重新派发 {target_label} | {task_id} [复用 session]")
-                            else:
-                                subprocess.Popen(
-                                    ["openclaw", "sessions", "spawn", "--agent", parent_id, "--task", re_dispatch_msg,
-                                     "--mode", "run", "--thread", "false"],
-                                    stdout=subprocess.DEVNULL,
-                                    stderr=subprocess.DEVNULL,
-                                )
-                                log(f"已通知 {parent_label} 重新派发 {target_label} | {task_id} [新 subagent]")
-                        except Exception as e:
-                            log(f"通知 {parent_label} 重新派发失败: {e}")
-                            wake_ok = False
-                            wake_detail = str(e)
-
-                        # 记录通知动作
-                        audit["notifications"].append(_make_notif(
-                            notif_type="断链通知", to=parent_label,
-                            detail=f"{from_label}→{target_label} 断链，已通知{parent_label}重新派发",
+                            notif_type="断链唤醒", to=parent_label,
+                            detail=f"断链处理：唤醒上级{parent_label}重新派发{target_label}",
                             task_id=task_id,
                             status="sent" if wake_ok else "failed",
                         ))
+                    else:
+                        wake_ok = True
+                        wake_detail = f"{parent_label} 已在线，直接发送重新派发通知"
+                    
+                    re_dispatch_msg = (
+                        f"🔔 流程断链通知 - 需要你重新派发\n"
+                        f"任务ID: {task_id}\n"
+                        f"标题: {title}\n"
+                        f"问题: {from_label} → {target_label} 已等待 {broken['elapsed_sec'] // 60} 分钟无回应\n"
+                        f"已唤醒 {target_label}，请重新派发任务给它。\n"
+                        f"使用 sessions_spawn 唤醒 {target_label}（如果之前没有 sessionKey）\n"
+                        f"或使用 sessions_send 继续已有对话（如果有 sessionKey）。\n"
+                        f"⚠️ 禁止使用 sessions_yield，必须使用 sessions_spawn！\n"
+                        f"⚠️ 看板已有此任务，请勿重复创建。"
+                    )
+                    try:
+                        # 精准发送到该任务的父级子代理 session，不打 main session
+                        _task_session_key = _find_task_session_key_for_agent(task, parent_id)
+                        if _task_session_key:
+                            subprocess.Popen(
+                                ["openclaw", "sessions", "send", "--session-key", _task_session_key, "-m", re_dispatch_msg],
+                                stdout=subprocess.DEVNULL,
+                                stderr=subprocess.DEVNULL,
+                            )
+                            log(f"已通知 {parent_label} 重新派发 {target_label} | {task_id} [复用 session]")
+                        else:
+                            subprocess.Popen(
+                                ["openclaw", "sessions", "spawn", "--agent", parent_id, "--task", re_dispatch_msg,
+                                 "--mode", "run", "--thread", "false"],
+                                stdout=subprocess.DEVNULL,
+                                stderr=subprocess.DEVNULL,
+                            )
+                            log(f"已通知 {parent_label} 重新派发 {target_label} | {task_id} [新 subagent]")
+                    except Exception as e:
+                        log(f"通知 {parent_label} 重新派发失败: {e}")
+                        wake_ok = False
+                        wake_detail = str(e)
+                    
+                    # 记录通知动作
+                    audit["notifications"].append(_make_notif(
+                        notif_type="断链通知", to=parent_label,
+                        detail=f"{from_label}→{target_label} 断链，已通知{parent_label}重新派发",
+                        task_id=task_id,
+                        status="sent" if wake_ok else "failed",
+                    ))
                 elif parent_id and parent_id in woken_agents:
                     parent_label = ID_TO_LABEL.get(parent_id, parent_id)
                     re_dispatch_msg = (
