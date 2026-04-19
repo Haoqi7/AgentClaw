@@ -2,18 +2,7 @@ import { useEffect, useState } from 'react';
 import { useStore, fmtBJT } from '../store';
 import { api } from '../api';
 
-const FALLBACK_MODELS = [
-  { id: 'anthropic/claude-sonnet-4-6', l: 'Claude Sonnet 4.6', p: 'Anthropic' },
-  { id: 'anthropic/claude-opus-4-5', l: 'Claude Opus 4.5', p: 'Anthropic' },
-  { id: 'anthropic/claude-haiku-3-5', l: 'Claude Haiku 3.5', p: 'Anthropic' },
-  { id: 'openai/gpt-4o', l: 'GPT-4o', p: 'OpenAI' },
-  { id: 'openai/gpt-4o-mini', l: 'GPT-4o Mini', p: 'OpenAI' },
-  { id: 'google/gemini-2.5-pro', l: 'Gemini 2.5 Pro', p: 'Google' },
-  { id: 'copilot/claude-sonnet-4', l: 'Claude Sonnet 4', p: 'Copilot' },
-  { id: 'copilot/claude-opus-4.5', l: 'Claude Opus 4.5', p: 'Copilot' },
-  { id: 'copilot/gpt-4o', l: 'GPT-4o', p: 'Copilot' },
-  { id: 'copilot/gemini-2.5-pro', l: 'Gemini 2.5 Pro', p: 'Copilot' },
-];
+const FALLBACK_MODELS: { id: string; l: string; p: string }[] = [];
 
 const CHANNELS = [
   { id: 'feishu', label: '飞书 Feishu' },
