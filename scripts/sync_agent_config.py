@@ -115,7 +115,7 @@ def _collect_openclaw_models(cfg):
             if mid_str and mid_str not in known_ids:
                 extra.append({'id': mid_str, 'label': mid_str, 'provider': pname})
                 known_ids.add(mid_str)
-    return KNOWN_MODELS + extra
+    return extra
 
 
 def main():
