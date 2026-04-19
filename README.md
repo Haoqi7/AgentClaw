@@ -354,6 +354,7 @@ bash stop.sh
 ```bash
 docker pull haoqi7/openclaw:latest
 ```
+> ⚠️ **Docker 部署必须挂载 `/app/AgentClaw/data` 目录**，否则每次更新镜像后看板任务数据（旨意看板、产出阁、奏折阁、归档）都会丢失。详见下方各部署方式中的挂载说明。
 
 ### 方式一：Docker Compose（推荐）
 
@@ -371,8 +372,10 @@ docker run -d \
   -p 7891:7891 \
   -p 18789:18789 \
   -v /root/.openclaw:/root/.openclaw \
+  -v /path/to/agentclaw-data:/app/AgentClaw/data \  
  haoqi7/openclaw:latest
 ```
+⚠️ 必须挂载两个目录，否则更新镜像后任务数据会丢失：
 
 ### 配置说明
 
@@ -380,6 +383,7 @@ docker run -d \
 |:---|:---|
 | 端口 | `7891`（总控台）、`18789`（OpenClaw Gateway）|
 | 挂载卷 | `/root/.openclaw`（持久化存储）|
+| 挂载卷 | `/app/AgentClaw/data`看板任务数据（tasks_source.json、live_status.json 等）|
 | 健康检查 | 每 15 秒双端点检测，自动恢复 |
 | 重启策略 | `unless-stopped` |
 
