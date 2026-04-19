@@ -355,6 +355,8 @@ bash stop.sh
 docker pull haoqi7/openclaw:latest
 ```
 > ⚠️ **Docker 部署必须挂载 `/app/AgentClaw/data`和 `/root/.openclaw`目录**，否则每次更新镜像后看板任务数据（旨意看板、产出阁、奏折阁、归档）都会丢失。详见下方各部署方式中的挂载说明。
+> 系统的 workspace 目录（/root/.openclaw/workspace-*/data）只是指向 /app/AgentClaw/data 的软链接，不是真实数据。
+
 
 ### 方式一：Docker Compose（推荐）
 
