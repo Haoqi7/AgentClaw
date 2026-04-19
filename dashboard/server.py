@@ -925,16 +925,19 @@ def handle_create_task(title, org='中书省', official='中书令', priority='n
         nums = [int(tid.split('-')[-1]) for tid in today_ids if tid.split('-')[-1].isdigit()]
         seq = max(nums) + 1 if nums else 1
     task_id = f'JJC-{today}-{seq:03d}'
-    # 正确流程起点：皇上 -> 太子分拣
+    # 看板创建任务直接进入中书省（跳过太子分拣）
+    # 原因：太子 SOUL 协议要求「皇上明确说执行」才可转交中书省，
+    # 程序化派发缺乏此确认上下文，导致太子死锁不推进。
+    # 飞书渠道不受影响（走独立对话流，用户可自然确认）。
     # target_dept 记录模板建议的最终执行部门（仅供尚书省派发参考）
-    initial_org = '太子'
+    initial_org = '中书省'
     new_task = {
         'id': task_id,
         'title': title,
         'official': official,
         'org': initial_org,
-        'state': 'Taizi',
-        'now': '等待太子接旨分拣',
+        'state': 'Zhongshu',
+        'now': '中书省正在起草执行方案',
         'eta': '-',
         'block': '无',
         'output': '',
@@ -961,9 +964,9 @@ def handle_create_task(title, org='中书省', official='中书令', priority='n
     save_tasks(tasks)
     log.info(f'创建任务: {task_id} | {title[:40]}')
 
-    dispatch_for_state(task_id, new_task, 'Taizi', trigger='imperial-edict')
+    dispatch_for_state(task_id, new_task, 'Zhongshu', trigger='imperial-edict')
 
-    return {'ok': True, 'taskId': task_id, 'message': f'旨意 {task_id} 已下达，正在派发给太子'}
+    return {'ok': True, 'taskId': task_id, 'message': f'旨意 {task_id} 已下达，正在派发给中书省起草方案'}
 
 
 def handle_review_action(task_id, action, comment=''):

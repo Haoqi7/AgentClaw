@@ -56,11 +56,12 @@ function _isTransient(err: unknown): boolean {
 }
 
 /** 带超时 + 重试的 fetch 包装 */
-async function fetchWithRetry(url: string, init?: RequestInit): Promise<Response> {
+async function fetchWithRetry(url: string, init?: RequestInit, timeoutMs?: number): Promise<Response> {
+  const _timeout = timeoutMs ?? FETCH_TIMEOUT_MS;
   let lastErr: unknown;
   for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
     const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS);
+    const timer = setTimeout(() => controller.abort(), _timeout);
     try {
       const res = await fetch(url, { ...init, signal: controller.signal });
       clearTimeout(timer);
@@ -82,18 +83,18 @@ async function fetchWithRetry(url: string, init?: RequestInit): Promise<Response
 
 // ── 通用请求 ──
 
-async function fetchJ<T>(url: string): Promise<T> {
-  const res = await fetchWithRetry(url, { cache: 'no-store' });
+async function fetchJ<T>(url: string, timeoutMs?: number): Promise<T> {
+  const res = await fetchWithRetry(url, { cache: 'no-store' }, timeoutMs);
   if (!res.ok) throw new Error(String(res.status));
   return res.json();
 }
 
-async function postJ<T>(url: string, data: unknown): Promise<T> {
+async function postJ<T>(url: string, data: unknown, timeoutMs?: number): Promise<T> {
   const res = await fetchWithRetry(url, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(data),
-  });
+  }, timeoutMs);
   if (!res.ok) {
     const text = await res.text().catch(() => '');
     throw new Error(`HTTP ${res.status}: ${text.slice(0, 200)}`);
@@ -179,10 +180,11 @@ export const api = {
   // ── 朝堂议政 ──
   courtDiscussStart: (topic: string, officials: string[], taskId?: string) =>
     postJ<CourtDiscussSessionData>(`${API_BASE}/api/court-discuss/start`, { topic, officials, taskId }),
+  // 朝堂议政推进：后端需调 LLM 生成多位官员讨论，耗时 5~30s，使用 90s 超时
   courtDiscussAdvance: (sessionId: string, userMessage?: string, decree?: string) =>
-    postJ<CourtDiscussResult>(`${API_BASE}/api/court-discuss/advance`, { sessionId, userMessage, decree }),
+    postJ<CourtDiscussResult>(`${API_BASE}/api/court-discuss/advance`, { sessionId, userMessage, decree }, 90_000),
   courtDiscussConclude: (sessionId: string) =>
-    postJ<ActionResult & { summary?: string }>(`${API_BASE}/api/court-discuss/conclude`, { sessionId }),
+    postJ<ActionResult & { summary?: string }>(`${API_BASE}/api/court-discuss/conclude`, { sessionId }, 90_000),
   courtDiscussDestroy: (sessionId: string) =>
     postJ<ActionResult>(`${API_BASE}/api/court-discuss/destroy`, { sessionId }),
   courtDiscussFate: () =>
