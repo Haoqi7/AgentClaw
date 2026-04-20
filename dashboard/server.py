@@ -1369,15 +1369,15 @@ _SUPERVISION_CONFIG = {
     'Menxia':    {'remind_sec': 600, 'timeout_sec': 900, 'label': '门下省', 'parent_agent': 'zhongshu'},
     'Assigned':  {'remind_sec': 600, 'timeout_sec': 900, 'label': '尚书省', 'parent_agent': 'taizi'},
     # 六部/Next：5分钟催办，30分钟超时上报太子（原 timeout_sec=0 不会上报）
-    'Doing':     {'remind_sec': 300, 'timeout_sec': 1800, 'label': '六部',   'parent_agent': 'shangshu'},
-    'Next':      {'remind_sec': 300, 'timeout_sec': 1800, 'label': '六部',   'parent_agent': 'shangshu'},
+    'Doing':     {'remind_sec': 300, 'timeout_sec': 1500, 'label': '六部',   'parent_agent': 'shangshu'},
+    'Next':      {'remind_sec': 300, 'timeout_sec': 1500, 'label': '六部',   'parent_agent': 'shangshu'},
     'Taizi':     {'remind_sec': 600, 'timeout_sec': 900, 'label': '太子',   'parent_agent': 'taizi'},
     'Pending':   {'remind_sec': 600, 'timeout_sec': 900, 'label': '中书省', 'parent_agent': 'taizi'},
     'Review':    {'remind_sec': 300, 'timeout_sec': 600,  'label': '汇总审查', 'parent_agent': 'taizi'},
 }
 
 # 长期停滞二次通知间隔（秒）：超过 timeout_sec 后，每 N 秒重复通知太子
-_PERIODIC_RENOTIFY_SEC = 1800  # 30 分钟
+_PERIODIC_RENOTIFY_SEC = 1600  # 30 分钟
 
 # ═══════════════════════════════════════════════════════════════════════
 # 🎯 针对性催办消息模板（每个部门独立定制）
@@ -1902,8 +1902,8 @@ def handle_scheduler_scan(threshold_sec=600):
         )
         wake_agent(target, msg)
 
-    # ── 长期停滞严重警告：停滞超过 2 小时且未升级 ──
-    CRITICAL_STALL_SEC = 7200  # 2 小时
+    # ── 长期停滞严重警告：停滞超过 50 分钟且未升级 ──
+    CRITICAL_STALL_SEC = 3000  # 50分钟
     for task in tasks:
         task_id = task.get('id', '')
         state = task.get('state', '')
