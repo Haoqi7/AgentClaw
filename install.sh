@@ -92,7 +92,7 @@ backup_existing() {
 create_workspaces() {
   info "创建 Agent Workspace..."
   
-  AGENTS=(taizi zhongshu menxia shangshu hubu libu bingbu xingbu gongbu libu_hr zaochao jiancha)
+  AGENTS=(taizi zhongshu menxia shangshu hubu libu bingbu xingbu gongbu libu_hr zaochao jiancha hanlin hanlin_xiuzhuan hanlin_bianxiu hanlin_jiantao)
   for agent in "${AGENTS[@]}"; do
     ws="$OC_HOME/workspace-$agent"
     mkdir -p "$ws/skills"
@@ -150,10 +150,10 @@ cfg_path = pathlib.Path.home() / '.openclaw' / 'openclaw.json'
 cfg = json.loads(cfg_path.read_text())
 
 AGENTS = [
-  {"id": "taizi",    "subagents": {"allowAgents": ["zhongshu"]}},
+    {"id": "taizi",    "subagents": {"allowAgents": ["zhongshu"]}},
     {"id": "zhongshu", "subagents": {"allowAgents": ["menxia", "shangshu"]}},
     {"id": "menxia",   "subagents": {"allowAgents": ["zhongshu"]}},
-  {"id": "shangshu", "subagents": {"allowAgents": ["zhongshu", "hubu", "libu", "bingbu", "xingbu", "gongbu", "libu_hr"]}},
+    {"id": "shangshu", "subagents": {"allowAgents": ["zhongshu", "hubu", "libu", "bingbu", "xingbu", "gongbu", "libu_hr"]}},
     {"id": "hubu",     "subagents": {"allowAgents": ["shangshu"]}},
     {"id": "libu",     "subagents": {"allowAgents": ["shangshu"]}},
     {"id": "bingbu",   "subagents": {"allowAgents": ["shangshu"]}},
@@ -162,6 +162,10 @@ AGENTS = [
   {"id": "libu_hr",  "subagents": {"allowAgents": ["shangshu"]}},
   {"id": "zaochao",  "subagents": {"allowAgents": []}},
   {"id": "jiancha",  "subagents": {"allowAgents": ["taizi","zhongshu","menxia","shangshu","hubu","libu","bingbu","xingbu","gongbu","libu_hr"]}},
+  {"id": "hanlin",           "subagents": {"allowAgents": ["hanlin_xiuzhuan","hanlin_bianxiu","hanlin_jiantao"]}},
+  {"id": "hanlin_xiuzhuan",  "subagents": {"allowAgents": ["hanlin"]}},
+  {"id": "hanlin_bianxiu",   "subagents": {"allowAgents": ["hanlin"]}},
+  {"id": "hanlin_jiantao",   "subagents": {"allowAgents": ["hanlin"]}},
 ]
 
 agents_cfg = cfg.setdefault('agents', {})
@@ -255,7 +259,7 @@ PYEOF
 link_resources() {
   info "创建 data/scripts 软链接以确保 Agent 数据一致..."
   
-  AGENTS=(taizi zhongshu menxia shangshu hubu libu bingbu xingbu gongbu libu_hr zaochao jiancha)
+  AGENTS=(taizi zhongshu menxia shangshu hubu libu bingbu xingbu gongbu libu_hr zaochao jiancha hanlin hanlin_xiuzhuan hanlin_bianxiu hanlin_jiantao)
   LINKED=0
   for agent in "${AGENTS[@]}"; do
     ws="$OC_HOME/workspace-$agent"
@@ -366,7 +370,7 @@ sync_auth() {
     return
   fi
 
-  AGENTS=(taizi zhongshu menxia shangshu hubu libu bingbu xingbu gongbu libu_hr zaochao jiancha)
+  AGENTS=(taizi zhongshu menxia shangshu hubu libu bingbu xingbu gongbu libu_hr zaochao jiancha hanlin hanlin_xiuzhuan hanlin_bianxiu hanlin_jiantao)
   SYNCED=0
   for agent in "${AGENTS[@]}"; do
     AGENT_DIR="$OC_HOME/agents/$agent/agent"
@@ -379,6 +383,36 @@ sync_auth() {
   log "API Key 已同步到 $SYNCED 个 Agent"
   info "来源: $MAIN_AUTH"
 }
+
+# ── Step 3.6: 启动翰林院独立服务 ──────────────────────────
+start_hanlin_server() {
+  info "启动翰林院独立服务..."
+
+  # 确保 data/hanlin 目录存在
+  mkdir -p "$REPO_DIR/data/hanlin/projects"
+
+  # 停止已有实例
+  HANLIN_PID=$(lsof -ti:7892 2>/dev/null)
+  if [ -n "$HANLIN_PID" ]; then
+    kill $HANLIN_PID 2>/dev/null
+    sleep 1
+    log "已停止旧翰林院服务 (PID: $HANLIN_PID)"
+  fi
+
+  # 启动翰林院服务 (后台)
+  nohup python3 "$REPO_DIR/hanlin_server/hanlin_server.py" \
+    > "$REPO_DIR/data/hanlin/server.log" 2>&1 &
+  HANLIN_NEW_PID=$!
+
+  # 验证启动
+  sleep 2
+  if kill -0 $HANLIN_NEW_PID 2>/dev/null; then
+    log "翰林院服务已启动 (PID: $HANLIN_NEW_PID, 端口: 7892)"
+  else
+    warn "翰林院服务启动失败，请手动运行: python3 $REPO_DIR/hanlin_server/hanlin_server.py"
+  fi
+}
+
 
 # ── Step 4: 构建前端 ──────────────────────────────────────────
 build_frontend() {
@@ -437,6 +471,7 @@ init_data
 link_resources
 setup_visibility
 sync_auth
+start_hanlin_server
 build_frontend
 first_sync
 restart_gateway
@@ -452,7 +487,9 @@ echo "     openclaw agents add taizi     # 按提示输入 Anthropic API Key"
 echo "     ./install.sh                  # 重新运行以同步到所有 Agent"
 echo "  2. 启动数据刷新循环:  bash scripts/run_loop.sh &"
 echo "  3. 启动看板服务器:    python3 \"\$REPO_DIR/dashboard/server.py\""
-echo "  4. 打开看板:          http://127.0.0.1:7891"
+echo "  4. 启动翰林院服务:    python3 \"\$REPO_DIR/hanlin_server/hanlin_server.py\""
+echo "  5. 打开看板:          http://127.0.0.1:7891"
+echo "  6. 翰林院面板:        看板左侧'翰林院'Tab"
 echo ""
 warn "首次安装必须配置 API Key，否则 Agent 会报错"
 info "文档: readme.md"
