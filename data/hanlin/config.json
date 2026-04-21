@@ -1,0 +1,10 @@
+{
+  "port": 7892,
+  "dataDir": "data/hanlin",
+  "projectsDir": "data/hanlin/projects",
+  "defaults": {
+    "wordsPerChapter": 2000,
+    "maxRewrite": 2,
+    "reviewImportantThreshold": 3
+  }
+}
