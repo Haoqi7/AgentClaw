@@ -159,6 +159,34 @@
         }
       },
       {
+        "id": "hanlin",
+        "workspace": "/root/.openclaw/workspace-hanlin",
+        "subagents": {
+          "allowAgents": ["hanlin_xiuzhuan", "hanlin_bianxiu", "hanlin_jiantao"]
+        }
+      },
+      {
+        "id": "hanlin_xiuzhuan",
+        "workspace": "/root/.openclaw/workspace-hanlin_xiuzhuan",
+        "subagents": {
+          "allowAgents": ["hanlin"]
+        }
+      },
+      {
+        "id": "hanlin_bianxiu",
+        "workspace": "/root/.openclaw/workspace-hanlin_bianxiu",
+        "subagents": {
+          "allowAgents": ["hanlin"]
+        }
+      },
+      {
+        "id": "hanlin_jiantao",
+        "workspace": "/root/.openclaw/workspace-hanlin_jiantao",
+        "subagents": {
+          "allowAgents": ["hanlin"]
+        }
+      },
+      {
         "id": "jiancha",
         "workspace": "/root/.openclaw/workspace-jiancha",
         "subagents": {
