@@ -90,8 +90,8 @@ export function getPipeStatus(t: Task): PipeStatus[] {
 export type TabKey =
   | 'edicts' | 'monitor' | 'officials' | 'models'
   | 'skills' | 'sessions' | 'memorials' | 'templates' | 'morning' | 'audit' | 'court'
-  | 'outputs';  // [TaskOutput] 新增产出阁 Tab
-
+  | 'outputs'  // [TaskOutput] 新增产出阁 Tab
+  | 'hanlin';  // 翰林院
 export const TAB_DEFS: { key: TabKey; label: string; icon: string }[] = [
   { key: 'edicts',    label: '旨意看板', icon: '📜' },
   { key: 'court',     label: '朝堂议政', icon: '🏛️' },
@@ -99,6 +99,7 @@ export const TAB_DEFS: { key: TabKey; label: string; icon: string }[] = [
   { key: 'templates', label: '旨库',     icon: '📋' },
   { key: 'audit',     label: '流程监察', icon: '🛡️' },
   { key: 'outputs',   label: '产出阁',   icon: '📦' },
+  { key: 'hanlin',    label: '翰林院',   icon: '📚' },
   { key: 'memorials', label: '奏折阁',   icon: '📜' },
   { key: 'sessions',  label: '小任务',   icon: '💬' },
   { key: 'morning',   label: '天下要闻', icon: '🌅' },
