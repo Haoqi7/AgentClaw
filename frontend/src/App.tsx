@@ -16,6 +16,8 @@ import Toaster from './components/Toaster';
 import CourtCeremony from './components/CourtCeremony';
 import CourtDiscussion from './components/CourtDiscussion';
 import TaskOutputPanel from './components/TaskOutputPanel';
+import HanlinPanel from './HanlinPanel';
+import './HanlinPanel.css';
 
 export default function App() {
   const activeTab = useStore((s) => s.activeTab);
@@ -101,6 +103,7 @@ export default function App() {
       {activeTab === 'morning' && <MorningPanel />}
       {activeTab === 'audit' && <AuditPanel />}
       {activeTab === 'outputs' && <TaskOutputPanel />}
+      {activeTab === 'hanlin' && <HanlinPanel />}
 
       {/* ── Overlays ── */}
       <TaskModal />
