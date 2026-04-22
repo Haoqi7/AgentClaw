@@ -80,7 +80,7 @@ function fileExt(name: string): string {
 function FileCard({ f, taskId, onPreview, toast }: {
   f: Artifact; taskId: string | null;
   onPreview: (name: string, content: string, path?: string) => void;
-  toast: (msg: string, type?: string) => void;
+  toast: (msg: string, type?: "ok" | "err" | undefined) => void;
 }) {
   return (
     <div style={{
@@ -191,15 +191,6 @@ export default function TaskOutputPanel() {
   const [preview, setPreview] = useState<{ name: string; content: string; path?: string } | null>(null);
   const [expandedFolders, setExpandedFolders] = useState<Set<string>>(new Set());
 
-  // 默认展开所有子文件夹
-  useEffect(() => {
-    if (artifacts.length > 0) {
-      const folders = new Set<string>();
-      artifacts.forEach(a => { if (a.subfolder) folders.add(a.subfolder); });
-      setExpandedFolders(folders);
-    }
-  }, [artifacts.length]);
-
   const toggleFolder = (folderKey: string) => {
     setExpandedFolders(prev => {
       const next = new Set(prev);
@@ -249,6 +240,16 @@ export default function TaskOutputPanel() {
 
   // Group artifacts by dept → subfolder (两级树状分组)
   const artifacts = outputData?.artifacts || [];
+
+  // 默认展开所有子文件夹
+  useEffect(() => {
+    if (artifacts.length > 0) {
+      const folders = new Set<string>();
+      artifacts.forEach(a => { if (a.subfolder) folders.add(a.subfolder); });
+      setExpandedFolders(folders);
+    }
+  }, [artifacts.length]);
+
   const grouped = artifacts.reduce<Record<string, Artifact[]>>((acc, a) => {
     const key = a.dept || '未分类';
     if (!acc[key]) acc[key] = [];

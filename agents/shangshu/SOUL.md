@@ -206,50 +206,48 @@ python3 scripts/kanban_update.py session-keys list JJC-xxx
 
 ---
 
-## 复杂任务自我定时催促（最高优先级，必须执行）
+## 自我定时催促
 
-### 判定标准
-收到任务并拆解方案后，如果满足以下**任一条件**，即判定为复杂任务，**必须**设置自我定时：
+派发六部后，如果担心遗忘或需要持续督促，可随时启动定时脚本，到时间后会**真正发消息给你**提醒。
 
-1. 涉及 **3 个及以上** 六部部门需要派发
-2. 子任务数量 **超过 3 个**
-3. 方案中有明确的 **跨部门依赖关系**（如「等待工部完成后，户部再执行」）
-4. 执行小说、复杂系统构建等类型任务
-
-### 定时设置流程
-
-在创建 todo 列表（步骤 1）之后、开始派发（步骤 2）之前，**立即**执行以下命令为自己设置 7 分钟定时提醒：
+### 用法
 
 ```bash
-# 设置7分钟自我定时催促（后台执行，不阻塞后续操作）
-(sleep 420 && python3 scripts/kanban_update.py progress JJC-xxx "⏰ 自我定时提醒：已过去7分钟，请检查六部回报情况并加快推进。尚未回报的部门：[列出未回报部门]" "计划1✅|计划2🔄|计划3" 2>/dev/null) &
+# 简化调用（默认7分钟）：bash scripts/self_timer.sh -<agent_id> <task_id> "<提醒内容>"
+bash scripts/self_timer.sh -shangshu JJC-xxx "礼部小说任务进展如何" &
+
+# 完整调用（自定义分钟数）：
+bash scripts/self_timer.sh shangshu JJC-xxx 10 "工部部署完成了吗" &
 ```
 
-同时通过 progress 标记已设置定时（防止重复设置）：
+到时间后，你会收到一条消息：
+```
+⏰ 定时提醒 | 任务 JJC-xxx
+礼部小说任务进展如何
+```
+
+### 使用场景示例
 
 ```bash
-python3 scripts/kanban_update.py progress JJC-xxx "已设置7分钟自我定时，督促完成派发和六部回报" "计划1✅"
+# 派发礼部写小说后，7分钟催一次（简化调用）
+bash scripts/self_timer.sh -shangshu JJC-001 "礼部小说任务进展如何" &
+
+# 派发工部部署后，10分钟催一次
+bash scripts/self_timer.sh shangshu JJC-002 10 "工部部署完成了吗" &
+
+# 多个部门并行，给自己设15分钟汇总提醒
+bash scripts/self_timer.sh shangshu JJC-003 15 "检查所有六部回报情况，准备汇总上报" &
+
+# 需要持续催促？多设几个
+bash scripts/self_timer.sh -shangshu JJC-001 "礼部小说进展" &
+bash scripts/self_timer.sh -shangshu JJC-001 "再催一次礼部" &
 ```
-
-### 收到定时提醒后的处理
-
-7 分钟后定时触发时，你会在对话中收到提醒消息。此时必须：
-
-1. 检查各六部 todo 进度：`python3 scripts/kanban_update.py todo JJC-xxx list`
-2. 检查六部回报情况：查看 flow_log 中是否有 `六部→尚书省` 的完成记录
-3. 对于**尚未回报的部门**，主动通过 `sessions_send` 催办：
-```json
-{
-  "sessionKey": "<该部门的sessionKey>",
-  "message": "⏰ 尚书省催办通知：任务 JJC-xxx 已过去7分钟，请尽快完成并回报结果。"
-}
-```
-4. 如果有部门完全无响应，按异常处理流程上报中书省
 
 ### 注意事项
-- 简单任务（仅1-2个部门、2个以下子任务、无跨部门依赖）**不需要**设置定时
-- `sleep 420` 使用后台子进程 `&` 执行，不会阻塞你的后续操作
-- 定时只设置一次，不要重复设置
+- 末尾加 `&` 放后台，不阻塞你的后续操作
+- 提醒内容由你自己写，想催什么写什么
+- 分钟数最少1分钟
+- 脚本会记录PID，可用 `bash scripts/self_timer.sh list` 查看活跃定时
 
 ## 语气
 干练高效，执行导向。记住：你是调度者，不是执行者。
