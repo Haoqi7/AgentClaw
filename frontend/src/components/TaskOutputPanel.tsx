@@ -24,6 +24,7 @@ interface Artifact {
   type: string;       // file ext
   size: number;
   path: string;
+  subfolder?: string;  // 嵌套子目录路径（dept 之后的相对路径）
   uploadedAt: string;
 }
 
@@ -74,6 +75,72 @@ function fileExt(name: string): string {
 }
 
 /* ═══════════════════════════════════════════════════════════
+   FileCard 子组件
+   ═══════════════════════════════════════════════════════════ */
+function FileCard({ f, taskId, onPreview, toast }: {
+  f: Artifact; taskId: string | null;
+  onPreview: (name: string, content: string, path?: string) => void;
+  toast: (msg: string, type?: string) => void;
+}) {
+  return (
+    <div style={{
+      display: 'flex', alignItems: 'center', gap: 10,
+      padding: '10px 14px', borderRadius: 8,
+      background: 'var(--bg, #12121f)',
+      border: '1px solid var(--border, #2a2a3a)',
+      transition: 'border-color 0.15s',
+    }}
+      onMouseEnter={(e) => { e.currentTarget.style.borderColor = '#444'; }}
+      onMouseLeave={(e) => { e.currentTarget.style.borderColor = 'var(--border, #2a2a3a)'; }}
+    >
+      <span style={{ fontSize: 22, flexShrink: 0 }}>{fileIcon(f.name)}</span>
+      <div style={{ flex: 1, minWidth: 0 }}>
+        <div style={{
+          fontSize: 13, color: 'var(--fg, #e0e0e0)',
+          overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+        }}>{f.name}</div>
+        <div style={{ fontSize: 11, color: 'var(--muted, #666)', marginTop: 2 }}>
+          {f.subfolder && <span style={{ color: '#888' }}>{f.subfolder}/ </span>}
+          {formatSize(f.size)}
+          {f.uploadedAt && ` · ${new Date(f.uploadedAt).toLocaleString('zh-CN')}`}
+        </div>
+      </div>
+      <div style={{ display: 'flex', gap: 6, flexShrink: 0 }}>
+        {['md', 'txt', 'json', 'yaml', 'yml', 'py', 'js', 'ts', 'sh', 'csv', 'html', 'css', 'sql', 'log'].includes(fileExt(f.name)) && (
+          <button
+            onClick={async () => {
+              try {
+                // 使用完整 path 而非 name，支持子目录路径
+                const previewPath = f.path || f.name;
+                const data = await api.taskOutputPreview(taskId!, previewPath);
+                if (data.ok && data.content) {
+                  onPreview(f.name, data.content as string, f.path);
+                } else {
+                  toast(data.error || '文件为空', 'err');
+                }
+              } catch (e) { toast('预览失败', 'err'); }
+            }}
+            style={{
+              padding: '4px 10px', borderRadius: 4, fontSize: 11, cursor: 'pointer',
+              background: 'transparent', border: '1px solid #444', color: '#aaa',
+            }}
+          >预览</button>
+        )}
+        <a
+          href={`/api/outputs/${encodeURIComponent(taskId!)}/download/${encodeURIComponent(f.path || f.name)}`}
+          download={f.name}
+          style={{
+            padding: '4px 10px', borderRadius: 4, fontSize: 11,
+            background: 'rgba(46, 204, 138, 0.1)', border: '1px solid rgba(46, 204, 138, 0.3)',
+            color: '#2ecc8a', textDecoration: 'none', display: 'inline-block',
+          }}
+        >下载</a>
+      </div>
+    </div>
+  );
+}
+
+/* ═══════════════════════════════════════════════════════════
    Component
    ═══════════════════════════════════════════════════════════ */
 
@@ -121,7 +188,26 @@ export default function TaskOutputPanel() {
   const [outputData, setOutputData] = useState<TaskOutputData | null>(null);
   const [loading, setLoading] = useState(false);
   const [deptFilter, setDeptFilter] = useState<string>('');
-  const [preview, setPreview] = useState<{ name: string; content: string } | null>(null);
+  const [preview, setPreview] = useState<{ name: string; content: string; path?: string } | null>(null);
+  const [expandedFolders, setExpandedFolders] = useState<Set<string>>(new Set());
+
+  // 默认展开所有子文件夹
+  useEffect(() => {
+    if (artifacts.length > 0) {
+      const folders = new Set<string>();
+      artifacts.forEach(a => { if (a.subfolder) folders.add(a.subfolder); });
+      setExpandedFolders(folders);
+    }
+  }, [artifacts.length]);
+
+  const toggleFolder = (folderKey: string) => {
+    setExpandedFolders(prev => {
+      const next = new Set(prev);
+      if (next.has(folderKey)) next.delete(folderKey);
+      else next.add(folderKey);
+      return next;
+    });
+  };
 
   // Derive task list
   const tasks = liveStatus?.tasks || [];
@@ -161,7 +247,7 @@ export default function TaskOutputPanel() {
 
 
 
-  // Group artifacts by dept
+  // Group artifacts by dept → subfolder (两级树状分组)
   const artifacts = outputData?.artifacts || [];
   const grouped = artifacts.reduce<Record<string, Artifact[]>>((acc, a) => {
     const key = a.dept || '未分类';
@@ -172,6 +258,21 @@ export default function TaskOutputPanel() {
   const filteredGrouped = deptFilter
     ? Object.fromEntries([[deptFilter, grouped[deptFilter] || []]])
     : grouped;
+
+  // 构建部门内的子文件夹分组
+  const buildFolderTree = (files: Artifact[]) => {
+    const root: Artifact[] = [];
+    const folders: Record<string, Artifact[]> = {};
+    files.forEach(f => {
+      const sf = f.subfolder || '';
+      if (!sf) root.push(f);
+      else {
+        if (!folders[sf]) folders[sf] = [];
+        folders[sf].push(f);
+      }
+    });
+    return { root, folders };
+  };
 
   return (
     <div style={{ display: 'flex', height: 'calc(100vh - 110px)', gap: 0 }}>
@@ -315,7 +416,10 @@ export default function TaskOutputPanel() {
                 </div>
               )}
 
-              {!loading && artifacts.length > 0 && Object.entries(filteredGrouped).map(([dept, files]) => (
+              {!loading && artifacts.length > 0 && Object.entries(filteredGrouped).map(([dept, files]) => {
+                const { root, folders } = buildFolderTree(files);
+                const hasSubFolders = Object.keys(folders).length > 0;
+                return (
                 <div key={dept} style={{ marginBottom: 20 }}>
                   {/* Dept header */}
                   <div style={{
@@ -335,80 +439,59 @@ export default function TaskOutputPanel() {
                     </span>
                   </div>
 
-                  {/* File cards */}
+                  {/* Root-level files (无子文件夹的文件) */}
                   <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
-                    {files.map((f) => (
-                      <div key={f.name} style={{
-                        display: 'flex', alignItems: 'center', gap: 10,
-                        padding: '10px 14px', borderRadius: 8,
-                        background: 'var(--bg, #12121f)',
-                        border: '1px solid var(--border, #2a2a3a)',
-                        transition: 'border-color 0.15s',
-                      }}
-                        onMouseEnter={(e) => { e.currentTarget.style.borderColor = '#444'; }}
-                        onMouseLeave={(e) => { e.currentTarget.style.borderColor = 'var(--border, #2a2a3a)'; }}
-                      >
-                        {/* Icon */}
-                        <span style={{ fontSize: 22, flexShrink: 0 }}>
-                          {fileIcon(f.name)}
-                        </span>
-
-                        {/* Info */}
-                        <div style={{ flex: 1, minWidth: 0 }}>
-                          <div style={{
-                            fontSize: 13, color: 'var(--fg, #e0e0e0)',
-                            overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
-                          }}>
-                            {f.name}
-                          </div>
-                          <div style={{ fontSize: 11, color: 'var(--muted, #666)', marginTop: 2 }}>
-                            {formatSize(f.size)}
-                            {f.uploadedAt && ` · ${new Date(f.uploadedAt).toLocaleString('zh-CN')}`}
-                          </div>
-                        </div>
-
-                        {/* Actions */}
-                        <div style={{ display: 'flex', gap: 6, flexShrink: 0 }}>
-                          {/* Preview (text files) */}
-                          {['md', 'txt', 'json', 'yaml', 'yml', 'py', 'js', 'ts', 'sh', 'csv', 'html', 'css', 'sql', 'log'].includes(fileExt(f.name)) && (
-                            <button
-                              onClick={async () => {
-                                try {
-                                  const data = await api.taskOutputPreview(selectedId!, f.name);
-                                  if (data.ok && data.content) {
-                                    setPreview({ name: f.name, content: data.content as string });
-                                  } else {
-                                    toast(data.error || '文件为空', 'err');
-                                  }
-                                } catch (e) { toast('预览失败', 'err'); }
-                              }}
-                              style={{
-                                padding: '4px 10px', borderRadius: 4, fontSize: 11, cursor: 'pointer',
-                                background: 'transparent', border: '1px solid #444', color: '#aaa',
-                              }}
-                            >
-                              预览
-                            </button>
-                          )}
-                          {/* Download */}
-                          <a
-                            href={`/api/outputs/${encodeURIComponent(selectedId!)}/download/${encodeURIComponent(f.name)}`}
-                            download={f.name}
-                            style={{
-                              padding: '4px 10px', borderRadius: 4, fontSize: 11,
-                              background: 'rgba(46, 204, 138, 0.1)', border: '1px solid rgba(46, 204, 138, 0.3)',
-                              color: '#2ecc8a', textDecoration: 'none', display: 'inline-block',
-                            }}
-                          >
-                            下载
-                          </a>
-
-                        </div>
-                      </div>
+                    {root.map((f) => (
+                      <FileCard key={f.path} f={f} taskId={selectedId} onPreview={(name, content, path) => setPreview({ name, content, path })} toast={toast} />
                     ))}
                   </div>
+
+                  {/* Sub-folder tree */}
+                  {hasSubFolders && Object.entries(folders).sort(([a], [b]) => a.localeCompare(b)).map(([folderPath, folderFiles]) => {
+                    const folderKey = `${dept}/${folderPath}`;
+                    const isExpanded = expandedFolders.has(folderKey);
+                    const folderName = folderPath.split('/').pop() || folderPath;
+                    return (
+                      <div key={folderKey} style={{ marginTop: 6 }}>
+                        {/* Folder header */}
+                        <div
+                          onClick={() => toggleFolder(folderKey)}
+                          style={{
+                            display: 'flex', alignItems: 'center', gap: 6, padding: '6px 10px',
+                            borderRadius: 6, cursor: 'pointer', userSelect: 'none',
+                            background: 'rgba(255,255,255,0.03)',
+                            borderLeft: `2px solid ${deptColor(dept)}66`,
+                            transition: 'background 0.15s',
+                          }}
+                          onMouseEnter={(e) => { e.currentTarget.style.background = 'rgba(255,255,255,0.06)'; }}
+                          onMouseLeave={(e) => { e.currentTarget.style.background = 'rgba(255,255,255,0.03)'; }}
+                        >
+                          <span style={{ fontSize: 14, lineHeight: 1, color: 'var(--muted, #888)', transition: 'transform 0.2s', transform: isExpanded ? 'rotate(90deg)' : 'rotate(0deg)' }}>
+                            ▶
+                          </span>
+                          <span style={{ fontSize: 15 }}>📁</span>
+                          <span style={{ fontSize: 13, color: 'var(--fg, #ccc)', fontWeight: 500 }}>{folderName}</span>
+                          <span style={{ fontSize: 11, color: 'var(--muted, #555)' }}>{folderFiles.length}</span>
+                          {folderPath.includes('/') && (
+                            <span style={{ fontSize: 10, color: 'var(--muted, #444)', marginLeft: 4 }}>
+                              {folderPath}
+                            </span>
+                          )}
+                        </div>
+
+                        {/* Folder files (展开时显示) */}
+                        {isExpanded && (
+                          <div style={{ display: 'flex', flexDirection: 'column', gap: 4, paddingLeft: 28, marginTop: 4 }}>
+                            {folderFiles.map((f) => (
+                              <FileCard key={f.path} f={f} taskId={selectedId} onPreview={(name, content, path) => setPreview({ name, content, path })} toast={toast} />
+                            ))}
+                          </div>
+                        )}
+                      </div>
+                    );
+                  })}
                 </div>
-              ))}
+              );})}
             </div>
           </>
         )}

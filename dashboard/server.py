@@ -3164,34 +3164,51 @@ def _save_manifest(task_id: str, manifest: dict):
 
 
 def _safe_filename(filename: str) -> str:
-    """清理文件名，防止路径遍历"""
-    filename = filename.replace('/', '_').replace('\\', '_')
-    filename = filename.replace('..', '')
-    if len(filename) > 200:
-        name, ext = os.path.splitext(filename)
-        filename = name[:196] + ext
-    return filename or 'unnamed'
+    """清理文件名，防止路径遍历（仅清理危险字符，保留路径分隔符以支持子目录）"""
+    filename = filename.replace('\\', '/')
+    parts = pathlib.PurePosixPath(filename).parts
+    clean_parts = []
+    for p in parts:
+        p = p.replace('..', '').strip()
+        if p and p != '.' and p != '..':
+            clean_parts.append(p)
+    clean_name = '/'.join(clean_parts)
+    if len(clean_name) > 200:
+        clean_name = clean_name[:200]
+    return clean_name or 'unnamed'
+
+
+def _safe_path_search(filename: str) -> str:
+    """将用户传入的文件名/路径标准化，用于搜索（保留路径结构）"""
+    return filename.replace('\\', '/').strip('./')
 
 
 def _scan_output_dir(task_id: str) -> list:
-    """[TaskOutput] 扫描产出目录，自动生成文件清单"""
+    """[TaskOutput] 递归扫描产出目录（支持嵌套子目录），自动生成文件清单"""
     output_dir = _get_output_dir(task_id)
     if not output_dir.exists():
         return []
     artifacts = []
-    for dept_dir in sorted(output_dir.iterdir()):
-        if not dept_dir.is_dir():
+    for f in output_dir.rglob('*'):
+        if not f.is_file():
             continue
-        for f in dept_dir.iterdir():
-            if f.is_file() and not f.name.startswith('.') and f.name != 'manifest.json':
-                artifacts.append({
-                    'name': f.name,
-                    'dept': dept_dir.name,
-                    'type': f.suffix.lstrip('.').lower(),
-                    'size': f.stat().st_size,
-                    'path': str(f.relative_to(output_dir)),
-                    'uploadedAt': datetime.datetime.fromtimestamp(f.stat().st_mtime).isoformat(),
-                })
+        if f.name.startswith('.') or f.name == 'manifest.json':
+            continue
+        rel_path = str(f.relative_to(output_dir))
+        parts = rel_path.split(os.sep)
+        # dept = 第一级子目录名，根目录文件归为 '未分类'
+        dept = parts[0] if len(parts) > 1 else '未分类'
+        # subfolder = dept 之后的子目录路径（用于前端树状展示）
+        subfolder = '/'.join(parts[1:-1]) if len(parts) > 2 else ''
+        artifacts.append({
+            'name': f.name,
+            'dept': dept,
+            'type': f.suffix.lstrip('.').lower(),
+            'size': f.stat().st_size,
+            'path': rel_path,
+            'subfolder': subfolder,
+            'uploadedAt': datetime.datetime.fromtimestamp(f.stat().st_mtime, tz=datetime.timezone.utc).isoformat(),
+        })
     return artifacts
 
 
@@ -3229,14 +3246,18 @@ def handle_output_download(task_id: str, filename: str, handler):
         if not output_dir.exists():
             handler.send_error(404, 'output directory not found')
             return
-        safe_name = _safe_filename(filename)
+        search_name = _safe_path_search(filename)
         found_file = None
-        if (output_dir / safe_name).exists():
-            found_file = output_dir / safe_name
+        # 1. 尝试直接按路径查找（支持嵌套子目录）
+        candidate = output_dir / search_name
+        if candidate.is_file():
+            found_file = candidate
         else:
-            for sub_dir in output_dir.iterdir():
-                if sub_dir.is_dir() and (sub_dir / safe_name).exists():
-                    found_file = sub_dir / safe_name
+            # 2. 递归搜索（按文件名匹配，兼容旧路径）
+            base_name = pathlib.Path(search_name).name
+            for f in output_dir.rglob(base_name):
+                if f.is_file():
+                    found_file = f
                     break
         if not found_file:
             handler.send_error(404, 'file not found')
@@ -3248,7 +3269,7 @@ def handle_output_download(task_id: str, filename: str, handler):
         cors_headers(handler)
         handler.send_header('Content-Type', mime)
         handler.send_header('Content-Length', str(len(data)))
-        handler.send_header('Content-Disposition', f'attachment; filename="{_url_quote(filename)}"')
+        handler.send_header('Content-Disposition', f'attachment; filename="{_url_quote(found_file.name)}"')
         handler.end_headers()
         handler.wfile.write(data)
     except Exception as e:
@@ -3257,21 +3278,25 @@ def handle_output_download(task_id: str, filename: str, handler):
 
 
 def handle_output_preview(task_id: str, filename: str) -> dict:
-    """预览产出文件（仅文本文件）"""
+    """预览产出文件（支持嵌套子目录路径）"""
     try:
         if not _SAFE_NAME_RE.match(task_id):
             return {'ok': False, 'error': 'invalid task_id'}
         output_dir = _get_output_dir(task_id)
         if not output_dir.exists():
             return {'ok': True, 'content': '', 'exists': False}
-        safe_name = _safe_filename(filename)
+        search_name = _safe_path_search(filename)
         found_file = None
-        if (output_dir / safe_name).exists():
-            found_file = output_dir / safe_name
+        # 1. 尝试直接按路径查找
+        candidate = output_dir / search_name
+        if candidate.is_file():
+            found_file = candidate
         else:
-            for sub_dir in output_dir.iterdir():
-                if sub_dir.is_dir() and (sub_dir / safe_name).exists():
-                    found_file = sub_dir / safe_name
+            # 2. 递归搜索
+            base_name = pathlib.Path(search_name).name
+            for f in output_dir.rglob(base_name):
+                if f.is_file():
+                    found_file = f
                     break
         if not found_file:
             return {'ok': True, 'content': '', 'exists': False}
@@ -3282,7 +3307,8 @@ def handle_output_preview(task_id: str, filename: str) -> dict:
         return {
             'ok': True,
             'content': content,
-            'filename': filename,
+            'filename': found_file.name,
+            'path': str(found_file.relative_to(output_dir)),
             'size': size,
         }
     except Exception as e:
@@ -3378,37 +3404,41 @@ def handle_output_upload(task_id: str, handler) -> dict:
 
 
 def handle_output_delete(task_id: str, filename: str) -> dict:
-    """删除产出文件"""
+    """删除产出文件（支持嵌套子目录路径）"""
     try:
         if not _SAFE_NAME_RE.match(task_id):
             return {'ok': False, 'error': 'invalid task_id'}
-        safe_name = _safe_filename(filename)
+        search_name = _safe_path_search(filename)
         output_dir = _get_output_dir(task_id)
         if not output_dir.exists():
             return {'ok': False, 'error': '产出目录不存在'}
+        # 查找文件（支持嵌套路径）
         found_file = None
-        found_dept = None
-        if (output_dir / safe_name).exists():
-            found_file = output_dir / safe_name
-            found_dept = '根目录'
+        found_path = None
+        candidate = output_dir / search_name
+        if candidate.is_file():
+            found_file = candidate
+            found_path = str(candidate.relative_to(output_dir))
         else:
-            for sub_dir in output_dir.iterdir():
-                if sub_dir.is_dir() and (sub_dir / safe_name).exists():
-                    found_file = sub_dir / safe_name
-                    found_dept = sub_dir.name
+            base_name = pathlib.Path(search_name).name
+            for f in output_dir.rglob(base_name):
+                if f.is_file():
+                    found_file = f
+                    found_path = str(f.relative_to(output_dir))
                     break
         if not found_file:
             return {'ok': False, 'error': f'文件 {filename} 不存在'}
         found_file.unlink()
+        # 更新 manifest（按 path 匹配删除）
         manifest = _load_manifest(task_id)
         manifest['artifacts'] = [
             a for a in manifest.get('artifacts', [])
-            if a.get('name') != safe_name
+            if a.get('path', '') != found_path and a.get('name', '') != found_file.name
         ]
         manifest['totalSize'] = sum(a.get('size', 0) for a in manifest['artifacts'])
         _save_manifest(task_id, manifest)
-        log.info(f'[TaskOutput] 删除成功: {task_id}/{found_dept}/{safe_name}')
-        return {'ok': True, 'message': f'已删除 {found_dept}/{safe_name}'}
+        log.info(f'[TaskOutput] 删除成功: {task_id}/{found_path}')
+        return {'ok': True, 'message': f'已删除 {found_path}'}
     except Exception as e:
         log.error(f'[TaskOutput] 删除失败: {e}')
         return {'ok': False, 'error': str(e)[:200]}
