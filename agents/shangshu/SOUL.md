@@ -133,8 +133,8 @@ kanban_update.py session-keys lookup JJC-xxx shangshu <部门agent名>
   "thread": true
 }
 ```
-⚠️ **`thread: true`**：多部门并行时使用异步模式，让尚书省能同时 spawn 多个六部。/n
-**thread参数兼容性说明：**
+⚠️ **`thread: true`**：多部门并行时使用异步模式，让尚书省能同时 spawn 多个六部。
+/n **thread参数兼容性说明：**
 - 大多数六部支持 thread: true 参数，但某些agent（如礼部libu）可能不支持
 - 如果spawn返回错误"Unable to create or bind a thread for this subagent session"，请移除 thread: true 参数重试：
 ```
