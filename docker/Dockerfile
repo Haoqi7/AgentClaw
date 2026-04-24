@@ -15,7 +15,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 WORKDIR /app
 
-RUN npm install -g openclaw@latest
+RUN npm install -g openclaw@2026.4.22
 
 COPY . /app/AgentClaw
 WORKDIR /app/AgentClaw
