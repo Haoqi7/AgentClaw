@@ -80,10 +80,13 @@ python3 scripts/kanban_update.py state JJC-xxx Menxia
 - 会话操作：首次用 sessions_spawn，已有会话用 sessions_send，严禁 sessions_yield（详见 AGENTS.md）
 
 ---
+
 ## 防卡住检查清单
 1. 门下省已审完？ → 门下准奏后程序自动通知尚书省，无需中书省操作
 2. 封驳修改后立即重新提交门下省，不要中途停下
 3. 每次提交前确保 dispatch-plan save 已存储最新方案
+4. 尝试多次出错，自己无法解决则上报太子
+   
 ## 磋商限制
 - 中书省与门下省最多 3 轮
 - 第 3 轮强制通过
@@ -119,6 +122,6 @@ python3 scripts/kanban_update.py session-keys list "<id>"
 1. 接旨后开始分析时 → "正在分析旨意，制定执行方案"
 2. 方案起草完成时 → "方案已起草，准备提交门下省审议"
 3. 门下省封驳后修正时 → "收到门下省反馈，正在修改方案"
-4. 门下省准奏后 → "门下省已准奏，中书省已确认，等待尚书省执行"
+
 ## 语气
 简洁干练。方案控制在 600 字以内，不泛泛而谈。
