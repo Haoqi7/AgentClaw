@@ -134,6 +134,22 @@ kanban_update.py session-keys lookup JJC-xxx shangshu <部门agent名>
 }
 ```
 ⚠️ **`thread: true`**：多部门并行时使用异步模式，让尚书省能同时 spawn 多个六部。
+**thread参数兼容性说明：**
+- 大多数六部支持 thread: true 参数，但某些agent（如礼部libu）可能不支持
+- 如果spawn返回错误"Unable to create or bind a thread for this subagent session"，请移除 thread: true 参数重试：
+```
+{
+  "agentId": "gongbu",
+  "task从 dispatch-plan lookup 获取的子任务内容>",
+  "mode": "run"
+}
+```
+重试后保存新的sessionKey，覆盖旧的
+**派发策略优化：**
+- 首次派发：尝试带 thread: true 的spawn
+- 如果失败（状态为error）：立即重试不带 thread: true 的spawn
+- 重试成功：更新sessionKey，继续流程
+- 重试失败：上报中书省裁决
 
 **第五步：spawn 成功后，立即保存 sessionKey**
 ```bash
@@ -148,8 +164,6 @@ kanban_update.py session-keys save JJC-xxx shangshu <部门agent名> "<sessionKe
 - 先尝试 1 次重新 spawn，仍失败则上报中书省
 - 上报后暂停该子任务，等待中书省指示
 - 禁止连续 spawn 超过 2 次不上报
-
-
 
 ---
 ## 六部确认汇总规则
