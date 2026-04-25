@@ -296,13 +296,13 @@
     }
   },
   "wizard": {
-    "lastRunAt": "2026-04-06T08:14:15.722Z",
-    "lastRunVersion": "2026.4.6",
+    "lastRunAt": "2026-04-21T09:07:55.535Z",
+    "lastRunVersion": "2026.4.2",
     "lastRunCommand": "onboard",
     "lastRunMode": "local"
   },
   "meta": {
-    "lastTouchedVersion": "2026.4.6",
-    "lastTouchedAt": "2026-04-13T04:20:03.807Z"
+    "lastTouchedVersion": "2026.4.14",
+    "lastTouchedAt": "2026-04-25T08:46:37.281Z"
   }
 }
