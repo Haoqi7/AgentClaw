@@ -47,6 +47,7 @@ jobs:
         with:
           context: .
           file: docker/Dockerfile
+          no-cache: true
           platforms: linux/amd64,linux/arm64
           push: true
           tags: |
@@ -58,6 +59,7 @@ jobs:
         run: |
           mkdir -p out
           docker buildx build \
+            --no-cache \
             --platform linux/amd64 \
             -f docker/Dockerfile \
             -t haoqi7/openclaw:${{ steps.meta.outputs.tag }} \
