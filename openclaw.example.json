@@ -263,6 +263,21 @@
   },
   "plugins": {
     "entries": {
+      "memory-core": {
+        "enabled": true,
+        "config": {
+          "dreaming": {
+            "enabled": true,          
+            "frequency": "0 3 * * *", 
+            "promotionPolicy": {       
+              "score": 0.8,            
+              "recalls": 3,            
+              "uniqueQueries": 3        
+            },
+            "retentionDays": 7        
+          }
+        }
+      },
       "tavily": {
         "enabled": true,
         "config": {
