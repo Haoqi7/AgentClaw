@@ -28,5 +28,5 @@ RUN cd /app/AgentClaw/frontend && npm install && npm run build
 COPY docker/entrypoint.sh /entrypoint.sh
 RUN chmod +x /entrypoint.sh
 
-EXPOSE 7891 18789 18791
+EXPOSE 7891 18789 
 ENTRYPOINT ["/entrypoint.sh"]
