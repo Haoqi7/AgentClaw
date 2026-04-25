@@ -47,7 +47,7 @@ check_prerequisites() {
   # 1. openclaw CLI
   if ! command -v openclaw &>/dev/null; then
     error "未找到 openclaw CLI，请先安装："
-    echo "    npm install -g @qingchencloud/openclaw-zh@latest"
+    echo "    npm install -g @qingchencloud/openclaw-zh@2026.4.22-zh.2"
     echo "    openclaw onboard --install-daemon"
     exit 1
   fi
