@@ -9,6 +9,7 @@ services:
     ports:
       - "7891:7891"
       - "18789:18789"
+      - "18791:18791"
     environment:
       - TZ=Asia/Shanghai
       - EDICT_DASHBOARD_PORT=7891
