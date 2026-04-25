@@ -252,17 +252,12 @@
   "channels": {
     "feishu": {
       "enabled": true,
-      "appId": "yours",
-      "appSecret": "yours",
-      "connectionMode": "websocket",
-      "domain": "feishu",
-      "groupPolicy": "open",
-      "blockStreaming": false,
-      "streaming": true,
-      "replyMode": "streaming",
-      "footer": {
-        "status": true,
-        "elapsed": true
+      "dmPolicy": "pairing",
+      "accounts": {
+        "main": {
+          "appId": "yours",
+          "appSecret": "yours"
+        }
       }
     }
   },
