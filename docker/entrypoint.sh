@@ -16,8 +16,8 @@ log "=== 初始化阶段 ==="
 if [ ! -f "$INITIALIZED_MARKER" ]; then
   log "首次启动：运行 openclaw onboard/init..."
   mkdir -p "$OC_HOME"
-  openclaw onboard --install-daemon || true
-  openclaw init || true
+  timeout 60 openclaw onboard --install-daemon || warn "onboard 超时或失败，已跳过"
+  timeout 60 openclaw init || warn "init 超时或失败，已跳过"
 
   # 运行项目安装脚本（仅首次）
   if [ -f /app/AgentClaw/install.sh ]; then
