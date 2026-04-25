@@ -2,9 +2,9 @@
   "models": {
     "mode": "merge",
     "providers": {
-      "astroncodingplan": {
+      "codingplan": {
         "baseUrl": "https://maas-coding-api.cn-huabei-1.xf-yun.com/v2",
-        "apiKey": "yours-key",
+        "apiKey": "your-key",
         "api": "openai-completions",
         "models": [
           {
@@ -18,24 +18,6 @@
             "maxTokens": 32768
           }
         ]
-      },
-      "codingplan": {
-        "baseUrl": "https://maas-coding-api.cn-huabei-1.xf-yun.com/v2",
-        "apiKey": "yours-key",
-        "api": "openai-completions",
-        "models": [
-          {
-            "id": "astron-code-latest",
-            "name": "astron-code-latest",
-            "api": "openai-completions",
-            "reasoning": false,
-            "input": [
-              "text"
-            ],
-            "contextWindow": 92130,
-            "maxTokens": 32768
-          }
-        ]
       }
     }
   },
@@ -44,6 +26,7 @@
       "workspace": "/root/.openclaw/workspace",
       "models": {
         "github-copilot/gpt-4o": {},
+        "codingplan/astron-code-latest": {},
         "github-copilot/gpt-5.2": {}
       },
       "model": {
@@ -182,7 +165,7 @@
     "mode": "local",
     "auth": {
       "mode": "token",
-      "token": "yourstokem"
+      "token": "yourkey"
     },
     "port": 18789,
     "bind": "lan",
@@ -213,13 +196,16 @@
   "session": {
     "dmScope": "per-channel-peer"
   },
+  "env": {
+    "TZ": "Asia/Shanghai"
+  },
   "bindings": [
     {
       "type": "route",
       "agentId": "taizi",
       "match": {
         "channel": "feishu",
-        "accountId": "default"
+        "accountId": "main"
       }
     }
   ],
@@ -234,9 +220,6 @@
     "sessions": {
       "visibility": "all"
     },
-    "env": {
-    "TZ": "Asia/Shanghai"
-  },
     "agentToAgent": {
       "enabled": true
     }
@@ -255,8 +238,8 @@
       "dmPolicy": "pairing",
       "accounts": {
         "main": {
-          "appId": "yours",
-          "appSecret": "yours"
+          "appId": "your-key",
+          "appSecret": "your-key"
         }
       }
     }
@@ -267,14 +250,7 @@
         "enabled": true,
         "config": {
           "dreaming": {
-            "enabled": true,          
-            "frequency": "0 3 * * *", 
-            "promotionPolicy": {       
-              "score": 0.8,            
-              "recalls": 3,            
-              "uniqueQueries": 3        
-            },
-            "retentionDays": 7        
+            "enabled": true
           }
         }
       },
@@ -282,11 +258,11 @@
         "enabled": true,
         "config": {
           "webSearch": {
-            "apiKey": "yours-key"
+            "apiKey": "your-key"
           }
         }
       },
-      "feishu": {
+      "github-copilot": {
         "enabled": true
       }
     }
@@ -312,12 +288,12 @@
   },
   "wizard": {
     "lastRunAt": "2026-04-21T09:07:55.535Z",
-    "lastRunVersion": "2026.4.2",
+    "lastRunVersion": "2026.4.22",
     "lastRunCommand": "onboard",
     "lastRunMode": "local"
   },
   "meta": {
-    "lastTouchedVersion": "2026.4.14",
-    "lastTouchedAt": "2026-04-25T08:46:37.281Z"
+    "lastTouchedVersion": "2026.4.22",
+    "lastTouchedAt": "2026-04-25T18:00:00.000Z"
   }
 }
