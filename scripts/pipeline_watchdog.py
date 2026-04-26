@@ -2309,6 +2309,45 @@ def _main_inner():
                 target_label = broken["target_label"]
                 from_label = broken["from_label"]
                 target_dept = ID_TO_DEPT.get(target_id, target_id)
+
+                # ═══════════════════════════════════════════════
+                # 六部自会话断链：催六部本身（通过 session_key 精准投递子会话）
+                # ═══════════════════════════════════════════════
+                _from_agent = normalize_name(flow_log[-1].get('from', ''))
+
+                if _from_agent == target_id and target_id in LIU_BU_AGENT_IDS:
+                    violation = {
+                        "task_id": task_id,
+                        "title": title,
+                        "type": "断链超时",
+                        "detail": broken["detail"],
+                        "detected_at": now_iso,
+                    }
+                    new_violations.append(violation)
+                    if target_id not in woken_agents:
+                        _wake_msg = f"任务 {task_id} 你已长时间未更新进度，请立即继续执行并上报看板"
+                        _sk = _find_task_session_key_for_agent(task, target_id)
+                        if _sk:
+                            subprocess.Popen(
+                                ["openclaw", "sessions", "send", "--session-key", _sk, "-m", _wake_msg],
+                                stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                            )
+                            wake_ok, wake_detail = True, "已通过session_key唤醒子会话"
+                            log(f"已通过session唤醒 {target_label}（子会话） | {task_id}")
+                        else:
+                            wake_ok, wake_detail = wake_agent(target_id, _wake_msg)
+                        woken_agents.add(target_id)
+                        audit["notifications"].append(_make_notif(
+                            notif_type="断链唤醒", to=target_label,
+                            detail=f"{target_label}自会话断链，已唤醒继续执行",
+                            task_id=task_id,
+                            status="sent" if wake_ok else "failed",
+                        ))
+                    continue
+
+                # ═══════════════════════════════════════════════
+                # 非六部场景：走原有 PARENT_MAP 逻辑（不需要改）
+                # ═══════════════════════════════════════════════
                 parent_id = PARENT_MAP.get(target_dept)
 
                 violation = {
