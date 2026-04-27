@@ -39,15 +39,6 @@
 
 当 `state` 命令已触发程序层通知时，LLM 层绝对禁止再用 `sessions_spawn` 唤醒同一目标。
 
----
-
-## 会话隔离规则
-
-| 子代理 | 允许通信的对象 | 禁止通信的对象 |
-|--------|--------------|--------------|
-| 中书省 | 太子、门下省 | 尚书省、六部、皇上 |
-
-违规后果：监察系统每 60 秒扫描一次，检测到隔离违规将记录到 `pipeline_audit.json` 并通知太子。
 
 ---
 
@@ -73,11 +64,6 @@ python3 scripts/kanban_update.py session-keys save <id> <agent_a> <agent_b> ""  
 ```
 然后执行 sessions_spawn 创建新会话并保存新 key。
 
-### 中书省需要维护的 session-keys：
-
-| 对方部门 | 保存命令示例 |
-|----------|-------------|
-| 门下省 | session-keys save JJC-xxx zhongshu menxia "<返回的sessionKey>" |
 
 
 ---
