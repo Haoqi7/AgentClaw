@@ -16,15 +16,70 @@ log "=== 初始化阶段 ==="
 if [ ! -f "$INITIALIZED_MARKER" ]; then
   log "首次启动：运行 openclaw onboard/init..."
   mkdir -p "$OC_HOME"
-  timeout 60 openclaw onboard --install-daemon || warn "onboard 超时或失败，已跳过"
-  timeout 60 openclaw init || warn "init 超时或失败，已跳过"
+
+  # ── 检测当前 OpenClaw 版本是否支持 --non-interactive ──
+  NON_INTERACTIVE_SUPPORTED=false
+  if openclaw onboard --help 2>&1 | grep -q -- '--non-interactive'; then
+    NON_INTERACTIVE_SUPPORTED=true
+    log "检测到 OpenClaw 支持 --non-interactive 模式（将使用非交互模式）"
+  else
+    log "当前 OpenClaw 版本不支持 --non-interactive（将使用交互模式）"
+  fi
+
+  # ── 运行 onboard ──
+  if [ "$NON_INTERACTIVE_SUPPORTED" = true ]; then
+    # 新版（≥2026.4.20）：非交互模式，解决 @clack/prompts raw mode 在 Docker TTY 中卡死问题
+    timeout 60 openclaw onboard --non-interactive \
+      --mode local \
+      --auth-choice "${OPENCLAW_AUTH_CHOICE:-openai}" \
+      --model "${OPENCLAW_MODEL:-gpt-4o}" \
+      --install-daemon \
+      --skip-bootstrap \
+      || warn "onboard 超时或失败，已跳过"
+  else
+    # 旧版（≤2026.4.14）：交互模式，旧版向导在 Docker 中可正常交互
+    timeout 60 openclaw onboard --install-daemon || warn "onboard 超时或失败，已跳过"
+  fi
+
+  # ── 运行 init ──
+  if [ "$NON_INTERACTIVE_SUPPORTED" = true ]; then
+    timeout 60 openclaw init --non-interactive || warn "init 超时或失败，已跳过"
+  else
+    timeout 60 openclaw init || warn "init 超时或失败，已跳过"
+  fi
+
+  # ── 兜底：如果 onboard/init 均失败，手动创建最小可用配置 ──
+  # 防止 install.sh 因找不到 openclaw.json 而 exit 1 导致容器重启循环
+  if [ ! -f "$OC_CFG" ]; then
+    warn "openclaw.json 不存在（onboard/init 均失败），自动生成最小配置..."
+    cat > "$OC_CFG" <<'JSONEOF'
+{
+  "version": "1.0",
+  "channels": {
+    "feishu": {
+      "dmPolicy": "open"
+    }
+  },
+  "agents": {
+    "list": []
+  },
+  "models": {
+    "default": {
+      "provider": "openai",
+      "model": "gpt-4o"
+    }
+  }
+}
+JSONEOF
+    log "已生成兜底 openclaw.json，启动后请通过 WebUI 或 CLI 补充 API Key"
+  fi
 
   # 运行项目安装脚本（仅首次）
   if [ -f /app/AgentClaw/install.sh ]; then
     cd /app/AgentClaw
     chmod +x install.sh
     log "运行 install.sh（首次安装）..."
-    ./install.sh
+    ./install.sh || warn "install.sh 执行有错误，但继续启动..."
   fi
 
   # 标记初始化完成（在 install.sh 完成后写入）
