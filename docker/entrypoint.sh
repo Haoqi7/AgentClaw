@@ -19,15 +19,22 @@ if [ ! -f "$INITIALIZED_MARKER" ]; then
 
   # ── 检测当前 OpenClaw 版本是否支持 --non-interactive ──
   # 分别检测 onboard 和 init 的支持情况
+  # 注意：必须把 help 输出存入变量再 grep，避免 set -euo pipefail 下 grep 无匹配时返回 1 导致脚本退出
   ONBOARD_NON_INTERACTIVE=false
   INIT_NON_INTERACTIVE=false
-  if openclaw onboard --help 2>&1 | grep -q -- '--non-interactive'; then
+  _onboard_help=$(openclaw onboard --help 2>&1 || true)
+  if echo "$_onboard_help" | grep -q -- '--non-interactive'; then
     ONBOARD_NON_INTERACTIVE=true
     log "检测到 onboard 支持 --non-interactive 模式"
+  else
+    log "当前 onboard 不支持 --non-interactive（将使用交互模式）"
   fi
-  if openclaw init --help 2>&1 | grep -q -- '--non-interactive'; then
+  _init_help=$(openclaw init --help 2>&1 || true)
+  if echo "$_init_help" | grep -q -- '--non-interactive'; then
     INIT_NON_INTERACTIVE=true
     log "检测到 init 支持 --non-interactive 模式"
+  else
+    log "当前 init 不支持 --non-interactive（将使用默认模式）"
   fi
 
   # ── 运行 onboard ──
