@@ -945,12 +945,20 @@ def handle_create_task(title, org='中书省', official='中书令', priority='n
         'priority': priority,
         'templateId': template_id,
         'templateParams': params or {},
-        'flow_log': [{
-            'at': now_iso(),
-            'from': '皇上',
-            'to': initial_org,
-            'remark': f'下旨：{title}'
-        }],
+        'flow_log': [
+            {
+                'at': now_iso(),
+                'from': '皇上',
+                'to': '太子',
+                'remark': f'旨库下旨：{title}'
+            },
+            {
+                'at': now_iso(),
+                'from': '太子',
+                'to': '中书省',
+                'remark': '旨库派发→中书省'
+            },
+        ],
         'updatedAt': now_iso(),
     }
     if target_dept:
