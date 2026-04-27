@@ -155,13 +155,14 @@ fi
 
 # ── 阶段 3：Gateway 启动 ──────────────────────────────────────
 log "=== Gateway 启动阶段 ==="
-log "starting openclaw gateway..."
-openclaw gateway &
+GATEWAY_LOG="$OC_HOME/gateway-startup.log"
+log "starting openclaw gateway（日志: $GATEWAY_LOG）..."
+openclaw gateway > "$GATEWAY_LOG" 2>&1 &
 GATEWAY_PID=$!
 
-log "waiting for gateway on 127.0.0.1:18789 ..."
+log "waiting for gateway on 127.0.0.1:18789 (PID=$GATEWAY_PID) ..."
 GATEWAY_READY=false
-for _ in $(seq 1 60); do
+for _i in $(seq 1 90); do
   if (echo > /dev/tcp/127.0.0.1/18789) >/dev/null 2>&1; then
     log "gateway is ready."
     GATEWAY_READY=true
@@ -172,14 +173,29 @@ for _ in $(seq 1 60); do
     warn "gateway 进程（PID=$GATEWAY_PID）已意外退出"
     break
   fi
+  # 每 15 秒输出一次 gateway 日志，方便排查
+  if [ $((_i % 15)) -eq 0 ] && [ -f "$GATEWAY_LOG" ]; then
+    log "--- gateway 日志（等待中，已等 ${_i}s）---"
+    tail -20 "$GATEWAY_LOG" 2>/dev/null || true
+    log "--- 日志结束 ---"
+  fi
   sleep 1
 done
 
 if [ "$GATEWAY_READY" = false ]; then
-  warn "gateway 未在 60 秒内就绪，请检查配置："
-  warn "  1. 运行 openclaw doctor --fix 修复配置"
-  warn "  2. 检查 $OC_CFG 中的 channels.feishu.dmPolicy 是否为合法值"
-  warn "  3. 修复后重启容器（不会重复执行安装步骤）"
+  warn "gateway 未在 90 秒内就绪"
+  warn "=== gateway 启动日志 ==="
+  if [ -f "$GATEWAY_LOG" ]; then
+    cat "$GATEWAY_LOG"
+  else
+    warn "（无日志文件）"
+  fi
+  warn "=== 日志结束 ==="
+  warn "请检查："
+  warn "  1. openclaw.json 配置是否与当前版本兼容"
+  warn "  2. API Key 是否已配置（运行 openclaw doctor 检查）"
+  warn "  3. 运行 openclaw doctor --fix 尝试自动修复"
+  warn "  4. 修复后重启容器（不会重复执行安装步骤）"
   exit 1
 fi
 
