@@ -15,7 +15,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 WORKDIR /app
 
-RUN npm install -g @qingchencloud/openclaw-zh@2026.4.24-zh.1  
+RUN OPENCLAW_EAGER_BUNDLED_PLUGIN_DEPS=1 npm install -g @qingchencloud/openclaw-zh@2026.4.24-zh.1
 
 COPY . /app/AgentClaw
 WORKDIR /app/AgentClaw
