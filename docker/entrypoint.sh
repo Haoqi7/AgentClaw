@@ -18,33 +18,40 @@ if [ ! -f "$INITIALIZED_MARKER" ]; then
   mkdir -p "$OC_HOME"
 
   # ── 检测当前 OpenClaw 版本是否支持 --non-interactive ──
-  NON_INTERACTIVE_SUPPORTED=false
+  # 分别检测 onboard 和 init 的支持情况
+  ONBOARD_NON_INTERACTIVE=false
+  INIT_NON_INTERACTIVE=false
   if openclaw onboard --help 2>&1 | grep -q -- '--non-interactive'; then
-    NON_INTERACTIVE_SUPPORTED=true
-    log "检测到 OpenClaw 支持 --non-interactive 模式（将使用非交互模式）"
-  else
-    log "当前 OpenClaw 版本不支持 --non-interactive（将使用交互模式）"
+    ONBOARD_NON_INTERACTIVE=true
+    log "检测到 onboard 支持 --non-interactive 模式"
+  fi
+  if openclaw init --help 2>&1 | grep -q -- '--non-interactive'; then
+    INIT_NON_INTERACTIVE=true
+    log "检测到 init 支持 --non-interactive 模式"
   fi
 
   # ── 运行 onboard ──
-  if [ "$NON_INTERACTIVE_SUPPORTED" = true ]; then
+  if [ "$ONBOARD_NON_INTERACTIVE" = true ]; then
     # 新版（≥2026.4.20）：非交互模式，解决 @clack/prompts raw mode 在 Docker TTY 中卡死问题
+    log "使用非交互模式运行 onboard..."
     timeout 60 openclaw onboard --non-interactive \
       --mode local \
       --auth-choice "${OPENCLAW_AUTH_CHOICE:-openai}" \
       --model "${OPENCLAW_MODEL:-gpt-4o}" \
       --install-daemon \
-      --skip-bootstrap \
       || warn "onboard 超时或失败，已跳过"
   else
     # 旧版（≤2026.4.14）：交互模式，旧版向导在 Docker 中可正常交互
+    log "使用交互模式运行 onboard..."
     timeout 60 openclaw onboard --install-daemon || warn "onboard 超时或失败，已跳过"
   fi
 
   # ── 运行 init ──
-  if [ "$NON_INTERACTIVE_SUPPORTED" = true ]; then
+  if [ "$INIT_NON_INTERACTIVE" = true ]; then
+    log "使用非交互模式运行 init..."
     timeout 60 openclaw init --non-interactive || warn "init 超时或失败，已跳过"
   else
+    log "使用默认模式运行 init..."
     timeout 60 openclaw init || warn "init 超时或失败，已跳过"
   fi
 
