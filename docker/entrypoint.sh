@@ -17,30 +17,30 @@ if [ ! -f "$INITIALIZED_MARKER" ]; then
   log "首次启动：运行 openclaw onboard/init..."
   mkdir -p "$OC_HOME"
 
-  # ── 检测当前 OpenClaw 版本是否支持 --non-interactive ──
-  # 分别检测 onboard 和 init 的支持情况
-  # 注意：必须把 help 输出存入变量再 grep，避免 set -euo pipefail 下 grep 无匹配时返回 1 导致脚本退出
-  ONBOARD_NON_INTERACTIVE=false
-  INIT_NON_INTERACTIVE=false
-  _onboard_help=$(openclaw onboard --help 2>&1 || true)
-  if echo "$_onboard_help" | grep -q -- '--non-interactive'; then
-    ONBOARD_NON_INTERACTIVE=true
-    log "检测到 onboard 支持 --non-interactive 模式"
+  # ── 检测 OpenClaw 版本，决定使用非交互还是交互模式 ──
+  # openclaw --version 是安全的，不会触发 @clack/prompts 交互向导
+  # 新版（≥2026.4.20）的 onboard 交互向导使用 @clack/prompts raw mode，在 Docker 中会卡死
+  # 旧版（≤2026.4.14）的 onboard 交互向导在 Docker 中正常工作
+  _version_output=$(openclaw --version 2>&1 || true)
+  OC_VERSION=$(echo "$_version_output" | grep -oE '[0-9]{4}\.[0-9]+\.[0-9]+' | head -1 || true)
+
+  USE_NON_INTERACTIVE=false
+  if [ -n "$OC_VERSION" ]; then
+    OC_VERSION_NUM=$(echo "$OC_VERSION" | awk -F. '{printf "%d%02d%02d\n", $1, $2, $3}')
+    if [ "$OC_VERSION_NUM" -ge 20260420 ]; then
+      USE_NON_INTERACTIVE=true
+      log "OpenClaw 版本 $OC_VERSION ≥ 2026.4.20，使用非交互模式（解决 Docker 中 @clack/prompts 卡死）"
+    else
+      log "OpenClaw 版本 $OC_VERSION < 2026.4.20，使用交互模式"
+    fi
   else
-    log "当前 onboard 不支持 --non-interactive（将使用交互模式）"
-  fi
-  _init_help=$(openclaw init --help 2>&1 || true)
-  if echo "$_init_help" | grep -q -- '--non-interactive'; then
-    INIT_NON_INTERACTIVE=true
-    log "检测到 init 支持 --non-interactive 模式"
-  else
-    log "当前 init 不支持 --non-interactive（将使用默认模式）"
+    warn "无法检测 OpenClaw 版本，默认使用非交互模式"
+    USE_NON_INTERACTIVE=true
   fi
 
   # ── 运行 onboard ──
-  if [ "$ONBOARD_NON_INTERACTIVE" = true ]; then
-    # 新版（≥2026.4.20）：非交互模式，解决 @clack/prompts raw mode 在 Docker TTY 中卡死问题
-    log "使用非交互模式运行 onboard..."
+  if [ "$USE_NON_INTERACTIVE" = true ]; then
+    log "运行 onboard --non-interactive..."
     timeout 60 openclaw onboard --non-interactive \
       --mode local \
       --auth-choice "${OPENCLAW_AUTH_CHOICE:-openai}" \
@@ -48,44 +48,17 @@ if [ ! -f "$INITIALIZED_MARKER" ]; then
       --install-daemon \
       || warn "onboard 超时或失败，已跳过"
   else
-    # 旧版（≤2026.4.14）：交互模式，旧版向导在 Docker 中可正常交互
-    log "使用交互模式运行 onboard..."
+    log "运行 onboard（交互模式）..."
     timeout 60 openclaw onboard --install-daemon || warn "onboard 超时或失败，已跳过"
   fi
 
   # ── 运行 init ──
-  if [ "$INIT_NON_INTERACTIVE" = true ]; then
-    log "使用非交互模式运行 init..."
+  if [ "$USE_NON_INTERACTIVE" = true ]; then
+    log "运行 init --non-interactive..."
     timeout 60 openclaw init --non-interactive || warn "init 超时或失败，已跳过"
   else
-    log "使用默认模式运行 init..."
+    log "运行 init（默认模式）..."
     timeout 60 openclaw init || warn "init 超时或失败，已跳过"
-  fi
-
-  # ── 兜底：如果 onboard/init 均失败，手动创建最小可用配置 ──
-  # 防止 install.sh 因找不到 openclaw.json 而 exit 1 导致容器重启循环
-  if [ ! -f "$OC_CFG" ]; then
-    warn "openclaw.json 不存在（onboard/init 均失败），自动生成最小配置..."
-    cat > "$OC_CFG" <<'JSONEOF'
-{
-  "version": "1.0",
-  "channels": {
-    "feishu": {
-      "dmPolicy": "open"
-    }
-  },
-  "agents": {
-    "list": []
-  },
-  "models": {
-    "default": {
-      "provider": "openai",
-      "model": "gpt-4o"
-    }
-  }
-}
-JSONEOF
-    log "已生成兜底 openclaw.json，启动后请通过 WebUI 或 CLI 补充 API Key"
   fi
 
   # 运行项目安装脚本（仅首次）
