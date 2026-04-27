@@ -647,6 +647,8 @@ def _async_spawn_and_save_key(agent_id, message, task_id, from_id, to_label):
     _log_file = _log_dir / f'{task_id}_{agent_id}_{_ts_tag}.log'
 
     # ── V3: 直接启动 openclaw agent 进程（单层调用，与心跳路径一致）──
+    # 【V8 修复】增加3秒初始延迟，避免连续 spawn 时线程资源竞争
+    import time as _init_t; _init_t.sleep(3)
     try:
         _lf = open(str(_log_file), 'w')
         proc = subprocess.Popen(
