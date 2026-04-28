@@ -23,7 +23,14 @@
   },
   "agents": {
     "defaults": {
-      "timeoutSeconds": 1200,
+    "memorySearch": {
+      "provider": "openai",
+      "model": "BAAI/bge-m3",
+      "remote": {
+        "baseUrl": "https://api.siliconflow.cn/v1/",
+        "apiKey": "yours"
+      }
+    },
       "workspace": "/root/.openclaw/workspace",
       "models": {
         "github-copilot/gpt-4o": {},
