@@ -4,7 +4,7 @@
     "providers": {
       "codingplan": {
         "baseUrl": "https://maas-coding-api.cn-huabei-1.xf-yun.com/v2",
-        "apiKey": "your-key",
+        "apiKey": "yours",
         "api": "openai-completions",
         "models": [
           {
@@ -23,6 +23,7 @@
   },
   "agents": {
     "defaults": {
+      "timeoutSeconds": 1200,
       "workspace": "/root/.openclaw/workspace",
       "models": {
         "github-copilot/gpt-4o": {},
@@ -165,7 +166,7 @@
     "mode": "local",
     "auth": {
       "mode": "token",
-      "token": "yourkey"
+      "token": "wzh123456"
     },
     "port": 18789,
     "bind": "lan",
@@ -235,11 +236,13 @@
   "channels": {
     "feishu": {
       "enabled": true,
-      "dmPolicy": "pairing",
       "accounts": {
         "main": {
-          "appId": "your-key",
-          "appSecret": "your-key"
+          "appId": "yours",
+          "appSecret": "yours"
+        },
+        "default": {
+          "dmPolicy": "pairing"
         }
       }
     }
@@ -258,12 +261,22 @@
         "enabled": true,
         "config": {
           "webSearch": {
-            "apiKey": "your-key"
+            "apiKey": "yours"
           }
         }
       },
       "github-copilot": {
         "enabled": true
+      },
+      "memory-wiki": {
+        "enabled": true,
+        "config": {
+          "vaultMode": "isolated",
+          "vault": {
+            "path": "~/.openclaw/wiki/main",
+            "renderMode": "obsidian"
+          }
+        }
       }
     }
   },
@@ -288,12 +301,12 @@
   },
   "wizard": {
     "lastRunAt": "2026-04-21T09:07:55.535Z",
-    "lastRunVersion": "2026.4.22",
+    "lastRunVersion": "2026.4.14",
     "lastRunCommand": "onboard",
     "lastRunMode": "local"
   },
   "meta": {
-    "lastTouchedVersion": "2026.4.22",
-    "lastTouchedAt": "2026-04-25T18:00:00.000Z"
+    "lastTouchedVersion": "2026.4.14",
+    "lastTouchedAt": "2026-04-28T06:06:44.938Z"
   }
 }
