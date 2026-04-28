@@ -17,18 +17,6 @@ WORKDIR /app
 
 RUN npm install -g @qingchencloud/openclaw-zh@2026.4.14-zh.1
 
-
-ARG TARGETARCH
-COPY deps/ /tmp/deps/
-RUN case "${TARGETARCH}" in \
-      amd64) VEC_ARCH="linux-x86_64" ;; \
-      arm64) VEC_ARCH="linux-aarch64" ;; \
-      *)     echo "Unsupported architecture: ${TARGETARCH}" && exit 1 ;; \
-    esac && \
-    mkdir -p /root/.openclaw/extensions && \
-    tar xf /tmp/deps/sqlite-vec-0.1.8-loadable-${VEC_ARCH}.tar.gz -C /tmp && \
-    cp /tmp/vec0.so /root/.openclaw/extensions/ && \
-    rm -rf /tmp/deps /tmp/vec0.so
     
 COPY . /app/AgentClaw
 WORKDIR /app/AgentClaw
