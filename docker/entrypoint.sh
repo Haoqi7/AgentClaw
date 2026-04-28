@@ -10,6 +10,20 @@ warn() { echo "[entrypoint][WARN] $*"; }
 
 log "starting..."
 
+# ── 系统依赖检测：sqlite-vec（记忆向量检索扩展）──
+# sqlite-vec 跨平台自动适配（linux-x64/arm64, darwin, win32）
+# 未安装时记忆系统退化为仅 FTS5 关键词搜索，语义检索不可用
+if npm list -g sqlite-vec 2>/dev/null | grep -q "sqlite-vec@"; then
+  log "sqlite-vec 已安装，记忆向量检索可用"
+else
+  log "sqlite-vec 未安装，正在安装（记忆向量检索扩展）..."
+  if timeout 120 npm install -g sqlite-vec 2>&1; then
+    log "sqlite-vec 安装成功，记忆向量检索已启用"
+  else
+    warn "sqlite-vec 安装失败，记忆向量检索将降级为仅关键词搜索（基本功能不受影响）"
+  fi
+fi
+
 # ── 阶段 1：初始化（仅首次）─────────────────────────────────
 # 使用幂等标记确保重启时不重复执行全量安装
 log "=== 初始化阶段 ==="
