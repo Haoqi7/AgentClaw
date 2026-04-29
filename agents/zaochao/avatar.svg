@@ -1,0 +1,60 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
+  <defs>
+    <radialGradient id="bg" cx="35%" cy="30%" r="65%">
+      <stop offset="0%" stop-color="#3a1808"/>
+      <stop offset="100%" stop-color="#1a0800"/>
+    </radialGradient>
+    <radialGradient id="starGlow" cx="50%" cy="50%" r="50%">
+      <stop offset="0%" stop-color="#ffe680"/>
+      <stop offset="100%" stop-color="#f0a020"/>
+    </radialGradient>
+    <filter id="glow">
+      <feGaussianBlur stdDeviation="1" result="blur"/>
+      <feMerge><feMergeNode in="blur"/><feMergeNode in="SourceGraphic"/></feMerge>
+    </filter>
+    <filter id="starBlur">
+      <feGaussianBlur stdDeviation="0.5"/>
+    </filter>
+  </defs>
+  <!-- Night sky background -->
+  <circle cx="32" cy="32" r="31" fill="url(#bg)" stroke="#e67e22" stroke-width="1"/>
+  <circle cx="32" cy="32" r="28" fill="none" stroke="#e67e22" stroke-width="0.5" opacity="0.4"/>
+  <!-- Stars scattered -->
+  <g fill="#ffe680" filter="url(#starBlur)">
+    <circle cx="10" cy="12" r="1.2"/>
+    <circle cx="50" cy="10" r="1"/>
+    <circle cx="54" cy="22" r="0.8"/>
+    <circle cx="8" cy="48" r="1"/>
+    <circle cx="52" cy="50" r="0.9"/>
+    <circle cx="18" cy="22" r="0.7"/>
+    <circle cx="46" cy="44" r="0.7"/>
+    <circle cx="14" cy="38" r="0.6"/>
+    <circle cx="40" cy="14" r="0.6"/>
+  </g>
+  <!-- Bright stars -->
+  <g filter="url(#glow)">
+    <circle cx="12" cy="16" r="1.8" fill="#ffe680"/>
+    <circle cx="48" cy="12" r="1.5" fill="#ffe680"/>
+  </g>
+  <!-- Armillary sphere (浑天仪) -->
+  <g filter="url(#glow)" transform="translate(32,32)">
+    <!-- Outer ring -->
+    <ellipse cx="0" cy="0" rx="20" ry="20" fill="none" stroke="#e67e22" stroke-width="1.8"/>
+    <!-- Middle ring (tilted) -->
+    <ellipse cx="0" cy="0" rx="16" ry="16" fill="none" stroke="#f0a020" stroke-width="1.5" transform="rotate(30)"/>
+    <!-- Inner ring (tilted other way) -->
+    <ellipse cx="0" cy="0" rx="12" ry="12" fill="none" stroke="#f0a020" stroke-width="1.2" transform="rotate(-45)"/>
+    <!-- Horizontal ring -->
+    <ellipse cx="0" cy="2" rx="18" ry="6" fill="none" stroke="#d4880a" stroke-width="1.5"/>
+    <!-- Central earth -->
+    <circle cx="0" cy="0" r="4" fill="url(#starGlow)" stroke="#d4880a" stroke-width="0.8"/>
+    <!-- Axis rod (vertical) -->
+    <line x1="0" y1="-22" x2="0" y2="22" stroke="#e67e22" stroke-width="1"/>
+    <!-- Axis top -->
+    <circle cx="0" cy="-22" r="1.5" fill="#ffe680"/>
+    <!-- Axis bottom -->
+    <circle cx="0" cy="22" r="1.5" fill="#ffe680"/>
+    <!-- Stand base -->
+    <path d="M-8,22 Q0,26 8,22" fill="none" stroke="#e67e22" stroke-width="1.5"/>
+  </g>
+</svg>

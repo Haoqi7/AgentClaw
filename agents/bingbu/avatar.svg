@@ -1,0 +1,48 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
+  <defs>
+    <radialGradient id="bg" cx="40%" cy="35%" r="60%">
+      <stop offset="0%" stop-color="#ff7088"/>
+      <stop offset="100%" stop-color="#c02040"/>
+    </radialGradient>
+    <linearGradient id="blade" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0%" stop-color="#e0e8f0"/>
+      <stop offset="40%" stop-color="#f8faff"/>
+      <stop offset="60%" stop-color="#f8faff"/>
+      <stop offset="100%" stop-color="#c0c8d0"/>
+    </linearGradient>
+    <linearGradient id="handle" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#8b4513"/>
+      <stop offset="100%" stop-color="#5a2d0c"/>
+    </linearGradient>
+    <filter id="shadow">
+      <feDropShadow dx="1" dy="1" stdDeviation="1.2" flood-color="#000" flood-opacity="0.3"/>
+    </filter>
+  </defs>
+  <circle cx="32" cy="32" r="31" fill="url(#bg)" stroke="#901028" stroke-width="1"/>
+  <circle cx="32" cy="32" r="28" fill="none" stroke="#fff" stroke-width="0.5" opacity="0.3"/>
+  <!-- Chinese straight sword ( Jian 剑) -->
+  <g filter="url(#shadow)" transform="translate(32,32) rotate(-45)">
+    <!-- Blade -->
+    <path d="M-2.5,-22 L2.5,-22 L2,-2 L0,4 L-2,-2 Z" fill="url(#blade)" stroke="#8090a0" stroke-width="0.8"/>
+    <!-- Blade ridge line -->
+    <line x1="0" y1="-20" x2="0" y2="-2" stroke="#fff" stroke-width="0.5" opacity="0.6"/>
+    <!-- Blade tip gleam -->
+    <line x1="-1" y1="-22" x2="1" y2="-18" stroke="#fff" stroke-width="1.5" opacity="0.4" stroke-linecap="round"/>
+    <!-- Guard (tsuba style) -->
+    <ellipse cx="0" cy="4" rx="8" ry="3" fill="#d4a040" stroke="#8b6914" stroke-width="1"/>
+    <ellipse cx="0" cy="4" rx="5" ry="1.5" fill="none" stroke="#ffe080" stroke-width="0.5"/>
+    <!-- Handle wrap -->
+    <rect x="-2.5" y="6" width="5" height="14" rx="1" fill="url(#handle)"/>
+    <line x1="-2.5" y1="9" x2="2.5" y2="11" stroke="#3a1a06" stroke-width="0.8"/>
+    <line x1="-2.5" y1="13" x2="2.5" y2="15" stroke="#3a1a06" stroke-width="0.8"/>
+    <line x1="-2.5" y1="17" x2="2.5" y2="19" stroke="#3a1a06" stroke-width="0.8"/>
+    <!-- Pommel -->
+    <circle cx="0" cy="22" r="3" fill="#d4a040" stroke="#8b6914" stroke-width="0.8"/>
+    <circle cx="0" cy="22" r="1.2" fill="#ffe080"/>
+    <!-- Red tassel -->
+    <path d="M0,20 Q-3,24 -2,28" fill="none" stroke="#c0392b" stroke-width="1.5" stroke-linecap="round"/>
+    <path d="M0,20 Q3,24 2,28" fill="none" stroke="#c0392b" stroke-width="1.5" stroke-linecap="round"/>
+    <circle cx="-2" cy="28" r="1.5" fill="#e74c3c"/>
+    <circle cx="2" cy="28" r="1.5" fill="#e74c3c"/>
+  </g>
+</svg>

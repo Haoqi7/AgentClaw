@@ -1,0 +1,35 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
+  <defs>
+    <radialGradient id="bg" cx="40%" cy="35%" r="60%">
+      <stop offset="0%" stop-color="#f5c060"/>
+      <stop offset="100%" stop-color="#c07820"/>
+    </radialGradient>
+    <linearGradient id="gold" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#fff8e0"/>
+      <stop offset="100%" stop-color="#ffe080"/>
+    </linearGradient>
+    <filter id="glow">
+      <feGaussianBlur stdDeviation="1" result="blur"/>
+      <feMerge><feMergeNode in="blur"/><feMergeNode in="SourceGraphic"/></feMerge>
+    </filter>
+  </defs>
+  <circle cx="32" cy="32" r="31" fill="url(#bg)" stroke="#a06010" stroke-width="1"/>
+  <circle cx="32" cy="32" r="28" fill="none" stroke="#fff" stroke-width="0.5" opacity="0.3"/>
+  <!-- Crown -->
+  <g filter="url(#glow)" transform="translate(32,30)">
+    <!-- Base band -->
+    <rect x="-16" y="4" width="32" height="8" rx="2" fill="url(#gold)" stroke="#c07820" stroke-width="1"/>
+    <!-- Five peaks -->
+    <path d="M-16,4 L-13,-6 L-8,0 L-3,-12 L3,-12 L8,0 L13,-6 L16,4 Z" fill="url(#gold)" stroke="#c07820" stroke-width="1.2"/>
+    <!-- Gems -->
+    <circle cx="0" cy="-10" r="3" fill="#e74c3c" stroke="#c0392b" stroke-width="0.8"/>
+    <circle cx="-11" cy="-4" r="2" fill="#3498db" stroke="#2980b9" stroke-width="0.6"/>
+    <circle cx="11" cy="-4" r="2" fill="#3498db" stroke="#2980b9" stroke-width="0.6"/>
+    <circle cx="-5" cy="-2" r="1.5" fill="#2ecc71" stroke="#27ae60" stroke-width="0.5"/>
+    <circle cx="5" cy="-2" r="1.5" fill="#2ecc71" stroke="#27ae60" stroke-width="0.5"/>
+    <!-- Band jewels -->
+    <circle cx="-8" cy="8" r="2" fill="#e74c3c" stroke="#c0392b" stroke-width="0.5"/>
+    <circle cx="0" cy="8" r="2.5" fill="#3498db" stroke="#2980b9" stroke-width="0.5"/>
+    <circle cx="8" cy="8" r="2" fill="#e74c3c" stroke="#c0392b" stroke-width="0.5"/>
+  </g>
+</svg>

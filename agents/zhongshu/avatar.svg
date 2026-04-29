@@ -1,0 +1,40 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
+  <defs>
+    <radialGradient id="bg" cx="40%" cy="35%" r="60%">
+      <stop offset="0%" stop-color="#b88aff"/>
+      <stop offset="100%" stop-color="#7050c0"/>
+    </radialGradient>
+    <linearGradient id="scroll" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0%" stop-color="#f5e6c8"/>
+      <stop offset="50%" stop-color="#fff8ee"/>
+      <stop offset="100%" stop-color="#f5e6c8"/>
+    </linearGradient>
+    <filter id="glow">
+      <feGaussianBlur stdDeviation="0.8" result="blur"/>
+      <feMerge><feMergeNode in="blur"/><feMergeNode in="SourceGraphic"/></feMerge>
+    </filter>
+  </defs>
+  <circle cx="32" cy="32" r="31" fill="url(#bg)" stroke="#5a40a0" stroke-width="1"/>
+  <circle cx="32" cy="32" r="28" fill="none" stroke="#fff" stroke-width="0.5" opacity="0.3"/>
+  <!-- Scroll -->
+  <g filter="url(#glow)" transform="translate(32,32)">
+    <!-- Scroll body -->
+    <rect x="-12" y="-18" width="24" height="36" rx="2" fill="url(#scroll)" stroke="#b89868" stroke-width="1.2"/>
+    <!-- Top roll -->
+    <ellipse cx="0" cy="-18" rx="12" ry="4" fill="#f0dcc0" stroke="#b89868" stroke-width="1"/>
+    <!-- Bottom roll -->
+    <ellipse cx="0" cy="18" rx="12" ry="4" fill="#f0dcc0" stroke="#b89868" stroke-width="1"/>
+    <!-- Roll ends -->
+    <circle cx="-14" cy="-18" r="2.5" fill="#d4a050" stroke="#a07830" stroke-width="0.8"/>
+    <circle cx="14" cy="-18" r="2.5" fill="#d4a050" stroke="#a07830" stroke-width="0.8"/>
+    <circle cx="-14" cy="18" r="2.5" fill="#d4a050" stroke="#a07830" stroke-width="0.8"/>
+    <circle cx="14" cy="18" r="2.5" fill="#d4a050" stroke="#a07830" stroke-width="0.8"/>
+    <!-- Text lines -->
+    <line x1="-7" y1="-9" x2="7" y2="-9" stroke="#8b7355" stroke-width="1.2" stroke-linecap="round"/>
+    <line x1="-7" y1="-3" x2="7" y2="-3" stroke="#8b7355" stroke-width="1.2" stroke-linecap="round"/>
+    <line x1="-7" y1="3" x2="7" y2="3" stroke="#8b7355" stroke-width="1.2" stroke-linecap="round"/>
+    <line x1="-7" y1="9" x2="3" y2="9" stroke="#8b7355" stroke-width="1.2" stroke-linecap="round"/>
+    <!-- Red seal stamp -->
+    <rect x="3" y="6" width="7" height="7" rx="0.5" fill="#c0392b" opacity="0.7" transform="rotate(-5 6.5 9.5)"/>
+  </g>
+</svg>

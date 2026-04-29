@@ -1,0 +1,33 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
+  <defs>
+    <radialGradient id="bg" cx="40%" cy="35%" r="60%">
+      <stop offset="0%" stop-color="#80b0ff"/>
+      <stop offset="100%" stop-color="#4080d0"/>
+    </radialGradient>
+    <linearGradient id="seal" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#f04040"/>
+      <stop offset="100%" stop-color="#a01010"/>
+    </linearGradient>
+    <filter id="shadow">
+      <feDropShadow dx="1" dy="1" stdDeviation="1.5" flood-color="#000" flood-opacity="0.3"/>
+    </filter>
+  </defs>
+  <circle cx="32" cy="32" r="31" fill="url(#bg)" stroke="#3060a0" stroke-width="1"/>
+  <circle cx="32" cy="32" r="28" fill="none" stroke="#fff" stroke-width="0.5" opacity="0.3"/>
+  <!-- Review magnifying glass over seal -->
+  <g filter="url(#shadow)" transform="translate(32,32)">
+    <!-- Large magnifying glass -->
+    <circle cx="-2" cy="-2" r="14" fill="none" stroke="#fff" stroke-width="3"/>
+    <circle cx="-2" cy="-2" r="11" fill="#fff" opacity="0.15"/>
+    <!-- Handle -->
+    <line x1="8" y1="8" x2="17" y2="17" stroke="#fff" stroke-width="3.5" stroke-linecap="round"/>
+    <!-- Eye inside magnifier (scrutiny) -->
+    <ellipse cx="-2" cy="-2" rx="8" ry="5" fill="none" stroke="#4080d0" stroke-width="1.5"/>
+    <circle cx="-2" cy="-2" r="3" fill="#4080d0"/>
+    <circle cx="-1" cy="-3" r="1" fill="#fff"/>
+    <!-- Small seal stamp at bottom-right -->
+    <rect x="6" y="-14" width="10" height="10" rx="1" fill="url(#seal)" opacity="0.8" transform="rotate(8 11 -9)"/>
+    <line x1="8" y1="-11" x2="14" y2="-11" stroke="#fff" stroke-width="0.8" opacity="0.8"/>
+    <line x1="8" y1="-8" x2="12" y2="-8" stroke="#fff" stroke-width="0.8" opacity="0.8"/>
+  </g>
+</svg>

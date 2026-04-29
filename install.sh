@@ -8,7 +8,7 @@ REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 OC_HOME="$HOME/.openclaw"
 OC_CFG="$OC_HOME/openclaw.json"
 
-RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'; BLUE='\033[0;34m'; NC='\033[0m'
+RED='\033'; GREEN='\033'; YELLOW='\033'; BLUE='\033'; NC='\033'
 
 banner() {
   echo ""
@@ -27,7 +27,7 @@ info()  { echo -e "${BLUE}ℹ️  $1${NC}"; }
 # ── Step 0: 依赖检查 ──────────────────────────────────────────
 check_deps() {
   info "检查依赖..."
-  
+
   if ! command -v openclaw &>/dev/null; then
     error "未找到 openclaw CLI。请先安装 OpenClaw: https://openclaw.ai"
     exit 1
@@ -91,7 +91,7 @@ backup_existing() {
 # ── Step 1: 创建 Workspace ──────────────────────────────────
 create_workspaces() {
   info "创建 Agent Workspace..."
-  
+
   AGENTS=(taizi zhongshu menxia shangshu hubu libu bingbu xingbu gongbu libu_hr zaochao jiancha)
   for agent in "${AGENTS[@]}"; do
     ws="$OC_HOME/workspace-$agent"
@@ -131,6 +131,19 @@ create_workspaces() {
       log "IDENTITY.md 已复制: $OC_HOME/workspace-$agent/IDENTITY.md"
     else
       warn "未找到 $REPO_DIR/agents/$agent/IDENTITY.md，跳过"
+    fi
+  done
+  # 从 agents/$agent/ 复制头像文件
+  for agent in "${AGENTS[@]}"; do
+    if [ -f "$REPO_DIR/agents/$agent/avatar.svg" ]; then
+      if [ -f "$OC_HOME/workspace-$agent/avatar.svg" ]; then
+        cp "$OC_HOME/workspace-$agent/avatar.svg" "$OC_HOME/workspace-$agent/avatar.svg.bak.$(date +%Y%m%d-%H%M%S)"
+        warn "已备份旧 avatar.svg → $OC_HOME/workspace-$agent/avatar.svg.bak.*"
+      fi
+      cp "$REPO_DIR/agents/$agent/avatar.svg" "$OC_HOME/workspace-$agent/avatar.svg"
+      log "avatar.svg 已复制: $OC_HOME/workspace-$agent/avatar.svg"
+    else
+      warn "未找到 $REPO_DIR/agents/$agent/avatar.svg，跳过"
     fi
   done
 }
@@ -204,9 +217,9 @@ PYEOF
 # ── Step 3: 初始化 Data ─────────────────────────────────────
 init_data() {
   info "初始化数据目录..."
-  
+
   mkdir -p "$REPO_DIR/data"
-  
+
   # 初始化空文件
   for f in live_status.json agent_config.json model_change_log.json; do
     if [ ! -f "$REPO_DIR/data/$f" ]; then
@@ -254,7 +267,7 @@ PYEOF
 # ── Step 3.3: 创建 data 软链接确保数据一致 (Fix #88) ─────────
 link_resources() {
   info "创建 data/scripts 软链接以确保 Agent 数据一致..."
-  
+
   AGENTS=(taizi zhongshu menxia shangshu hubu libu bingbu xingbu gongbu libu_hr zaochao jiancha)
   LINKED=0
   for agent in "${AGENTS[@]}"; do
@@ -409,11 +422,11 @@ build_frontend() {
 first_sync() {
   info "执行首次数据同步..."
   cd "$REPO_DIR"
-  
+
   REPO_DIR="$REPO_DIR" python3 scripts/sync_agent_config.py || warn "sync_agent_config 有警告"
   python3 scripts/sync_officials_stats.py || warn "sync_officials_stats 有警告"
   python3 scripts/refresh_live_data.py || warn "refresh_live_data 有警告"
-  
+
   log "首次同步完成"
 }
 
