@@ -74,7 +74,7 @@ def _compute_checksum(content: str) -> str:
 def _check_hub_available(timeout: int = 10) -> bool:
     """检测 ClawHub 是否可达（请求 API 健康检查端点）"""
     try:
-        health_url = _get_clawhub_api_url('/health')
+        health_url = _get_clawhub_api_url('/skills')
         req = urllib.request.Request(health_url, method='HEAD',
                                       headers={'User-Agent': 'OpenClaw-SkillManager/1.0'})
         with urllib.request.urlopen(req, timeout=timeout) as resp:
@@ -280,15 +280,15 @@ CLAWHUB_API_BASE = 'https://clawhub.ai'
 _CLAWHUB_ENV = 'OPENCLAW_CLAWHUB_BASE'
 
 def _get_clawhub_url(skill_name):
-    """获取 skill 在 ClawHub 上的下载 URL
+    """获取 skill 在 ClawHub 上的 SKILL.md 文件内容 URL
     
-    URL 格式: https://clawhub.ai/api/v1/skills/{name}/download
+    端点: GET /api/v1/skills/{slug}/file?path=SKILL.md
     优先级: 本地配置文件 > 环境变量 > 默认值
     """
     base = (OCLAW_HOME / 'clawhub-url').read_text().strip() \
         if (OCLAW_HOME / 'clawhub-url').exists() else None
     base = base or os.environ.get(_CLAWHUB_ENV) or CLAWHUB_API_BASE
-    return f'{base.rstrip("/")}/api/v1/skills/{skill_name}/download'
+    return f'{base.rstrip("/")}/api/v1/skills/{skill_name}/file?path=SKILL.md'
 
 
 def _get_clawhub_api_url(path=''):
@@ -352,15 +352,15 @@ def import_official_hub(agent_ids: list) -> bool:
         req = urllib.request.Request(list_url, headers={'User-Agent': 'OpenClaw-SkillManager/1.0'})
         with urllib.request.urlopen(req, timeout=15) as resp:
             api_data = json.loads(resp.read().decode('utf-8'))
-        # API 返回格式: {"skills": [{"name": "...", "description": "...", "download_url": "..."}]}
+        # API 返回格式: {"skills": [{"slug": "...", "name": "...", "description": "..."}]}
+        # 使用 /api/v1/skills/{slug}/file?path=SKILL.md 获取文件内容
         api_skills = api_data.get('skills', [])
         if api_skills:
             print(f'   📦 从 ClawHub 获取到 {len(api_skills)} 个官方 skills\n')
             for sk in api_skills:
-                name = sk.get('name', '')
-                url = sk.get('download_url', _get_clawhub_url(name))
-                if name:
-                    skills_to_import[name] = url
+                slug = sk.get('slug', '') or sk.get('name', '')
+                if slug:
+                    skills_to_import[slug] = _get_clawhub_url(slug)
     except Exception:
         print(f'   ⚠️ ClawHub API 获取列表失败，使用内置默认列表\n')
 
