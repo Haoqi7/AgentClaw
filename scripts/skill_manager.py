@@ -2,19 +2,24 @@
 """
 三省六部 · Skill 管理工具
 支持从本地或远程 URL 添加、更新、查看和移除 skills
+集成 ClawHub 官方技能商店 (https://clawhub.ai/)
 
 Usage:
+  # 远程 URL 添加（单个 SKILL.md 文件）
   python3 scripts/skill_manager.py add-remote --agent zhongshu --name code_review \\
     --source https://raw.githubusercontent.com/org/skills/main/code_review/SKILL.md \\
     --description "代码审查"
-  
+
+  # ClawHub 商店操作（搜索 → 下载 zip → 解压安装）
+  python3 scripts/skill_manager.py search-hub --query calendar
+  python3 scripts/skill_manager.py install-hub --agent menxia --slug caldav-calendar
+  python3 scripts/skill_manager.py import-official-hub --agents zhongshu,menxia
+
+  # 通用操作
   python3 scripts/skill_manager.py list-remote
-  
   python3 scripts/skill_manager.py update-remote --agent zhongshu --name code_review
-  
   python3 scripts/skill_manager.py remove-remote --agent zhongshu --name code_review
-  
-  python3 scripts/skill_manager.py import-official-hub --agents zhongshu,menxia,shangshu
+  python3 scripts/skill_manager.py check-updates
 """
 import sys
 import json
@@ -22,6 +27,7 @@ import pathlib
 import argparse
 import os
 import urllib.request
+import urllib.parse
 import urllib.error
 from pathlib import Path
 
@@ -48,13 +54,13 @@ def _download_file(url: str, timeout: int = 30, retries: int = 3) -> str:
             last_error = f'网络错误: {e.reason}'
         except Exception as e:
             last_error = f'{type(e).__name__}: {e}'
-        
+
         if attempt < retries:
             import time
             wait = attempt * 3  # 3s, 6s
             print(f'   ⚠️ 第 {attempt} 次下载失败({last_error})，{wait}秒后重试...')
             time.sleep(wait)
-    
+
     # 所有重试失败
     hint = ''
     if 'timed out' in str(last_error).lower() or '超时' in str(last_error):
@@ -65,31 +71,19 @@ def _download_file(url: str, timeout: int = 30, retries: int = 3) -> str:
 
 
 def _compute_checksum(content: str) -> str:
-    """计算内容的简单校验和"""
+    """计算文本内容的校验和"""
     import hashlib
     return hashlib.sha256(content.encode()).hexdigest()[:16]
 
 
-# ClawHub 可用性预检
-def _check_hub_available(timeout: int = 10) -> bool:
-    """检测 ClawHub 是否可达（请求 API 健康检查端点）"""
-    try:
-        health_url = _get_clawhub_api_url('/skills')
-        req = urllib.request.Request(health_url, method='HEAD',
-                                      headers={'User-Agent': 'OpenClaw-SkillManager/1.0'})
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
-            return resp.status == 200
-    except urllib.error.HTTPError as e:
-        # 404 也说明服务端可达（只是该端点不存在）
-        if e.code < 500:
-            return True
-        return False
-    except Exception:
-        return False
+def _compute_binary_checksum(data: bytes) -> str:
+    """计算二进制数据的校验和"""
+    import hashlib
+    return hashlib.sha256(data).hexdigest()[:16]
 
 
 def add_remote(agent_id: str, name: str, source_url: str, description: str = '') -> bool:
-    """从远程 URL 为 Agent 添加 skill"""
+    """从远程 URL 为 Agent 添加 skill（下载单个文件，适用于 GitHub raw 等 URL）"""
     if not safe_name(agent_id) or not safe_name(name):
         print(f'❌ 错误：agent_id 或 skill 名称含非法字符')
         return False
@@ -103,7 +97,7 @@ def add_remote(agent_id: str, name: str, source_url: str, description: str = '')
     workspace = OCLAW_HOME / f'workspace-{agent_id}' / 'skills' / name
     workspace.mkdir(parents=True, exist_ok=True)
     skill_md = workspace / 'SKILL.md'
-    
+
     # 下载文件
     print(f'⏳ 正在从 {source_url} 下载...')
     try:
@@ -112,15 +106,15 @@ def add_remote(agent_id: str, name: str, source_url: str, description: str = '')
         print(f'❌ 下载失败：{e}')
         print(f'   URL: {source_url}')
         return False
-    
+
     # 基础验证（放宽检查：有些 skill 不以 --- 开头）
     if len(content.strip()) < 10:
         print(f'❌ 文件内容过短或为空')
         return False
-    
+
     # 保存 SKILL.md
     skill_md.write_text(content)
-    
+
     # 保存源信息
     source_info = {
         'skillName': name,
@@ -133,7 +127,7 @@ def add_remote(agent_id: str, name: str, source_url: str, description: str = '')
     }
     source_json = workspace / '.source.json'
     source_json.write_text(json.dumps(source_info, ensure_ascii=False, indent=2))
-    
+
     print(f'✅ 技能 {name} 已添加到 {agent_id}')
     print(f'   路径: {skill_md}')
     print(f'   大小: {len(content)} 字节')
@@ -145,104 +139,130 @@ def list_remote() -> bool:
     if not OCLAW_HOME.exists():
         print('❌ OCLAW_HOME 不存在')
         return False
-    
+
     remote_skills = []
-    
+
     for ws_dir in OCLAW_HOME.glob('workspace-*'):
         agent_id = ws_dir.name.replace('workspace-', '')
         skills_dir = ws_dir / 'skills'
         if not skills_dir.exists():
             continue
-        
+
         for skill_dir in skills_dir.iterdir():
             if not skill_dir.is_dir():
                 continue
             skill_name = skill_dir.name
             source_json = skill_dir / '.source.json'
-            
+
             if not source_json.exists():
                 continue
-            
+
             try:
                 source_info = json.loads(source_json.read_text())
+                slug = source_info.get('sourceSlug', '')
+                source_label = f'ClawHub:{slug}' if slug else source_info.get('sourceUrl', 'N/A')
                 remote_skills.append({
                     'agent': agent_id,
                     'skill': skill_name,
-                    'source': source_info.get('sourceUrl', 'N/A'),
+                    'source': source_label,
+                    'slug': slug,
                     'desc': source_info.get('description', ''),
                     'added': source_info.get('addedAt', 'N/A'),
                 })
             except Exception:
                 pass
-    
+
     if not remote_skills:
         print('📭 暂无远程 skills')
         return True
-    
+
     print(f'📋 共 {len(remote_skills)} 个远程 skills：\n')
-    print(f'{"Agent":<12} | {"Skill 名称":<20} | {"描述":<30} | 添加时间')
+    print(f'{"Agent":<12} | {"Skill 名称":<20} | {"来源":<30} | 添加时间')
     print('-' * 100)
-    
+
     for sk in remote_skills:
-        desc = (sk['desc'] or sk['source'])[:30].ljust(30)
+        desc = (sk['desc'] or sk['source'])[:28].ljust(28)
         print(f"{sk['agent']:<12} | {sk['skill']:<20} | {desc} | {sk['added'][:10]}")
-    
+
     print()
     return True
 
 
 # [Fix 2] update_remote 不再委托给 add_remote，独立下载并保留原始 addedAt
 def update_remote(agent_id: str, name: str) -> bool:
-    """更新远程 skill 为最新版本（保留原始 addedAt）"""
+    """更新远程 skill 为最新版本（保留原始 addedAt）
+
+    自动识别来源:
+    - ClawHub 技能 (sourceSlug): 重新下载 zip 并解压
+    - 通用 URL 技能: 重新下载单个文件
+    """
     if not safe_name(agent_id) or not safe_name(name):
         print(f'❌ 错误：agent_id 或 skill 名称含非法字符')
         return False
-    
+
     workspace = OCLAW_HOME / f'workspace-{agent_id}' / 'skills' / name
     source_json = workspace / '.source.json'
-    skill_md = workspace / 'SKILL.md'
-    
+
     if not source_json.exists():
         print(f'❌ 技能不存在或不是远程 skill: {name}')
         return False
-    
+
     try:
         source_info = json.loads(source_json.read_text())
+        source_slug = source_info.get('sourceSlug')
+
+        if source_slug:
+            # ── ClawHub 技能：重新下载 zip 包并解压 ──
+            original_added_at = source_info.get('addedAt', now_iso())
+            old_checksum = source_info.get('checksum', '')
+            ok = _install_from_hub_zip(
+                agent_id, source_slug, skill_name=name,
+                description=source_info.get('description', ''),
+                preserve_added_at=original_added_at,
+            )
+            if ok:
+                # 检查是否有变化
+                try:
+                    new_info = json.loads(source_json.read_text())
+                    if new_info.get('checksum') == old_checksum:
+                        print(f'   ℹ️ 内容未变化（已是最新版本）')
+                except Exception:
+                    pass
+            return ok
+
+        # ── 通用 URL 技能：重新下载单个文件 ──
         source_url = source_info.get('sourceUrl')
         if not source_url:
             print(f'❌ 无效的源 URL')
             return False
-        
+
         original_added_at = source_info.get('addedAt', now_iso())
         description = source_info.get('description', '')
         old_checksum = source_info.get('checksum', '')
-        
-        # 下载最新版本
+
         print(f'⏳ 正在从 {source_url} 更新...')
         content = _download_file(source_url)
-        
-        # 基础验证
+
         if len(content.strip()) < 10:
             print(f'❌ 下载内容过短或为空')
             return False
-        
+
         new_checksum = _compute_checksum(content)
-        
-        # 保存 SKILL.md
+
+        skill_md = workspace / 'SKILL.md'
         skill_md.write_text(content)
-        
-        # 保留原始 addedAt，只更新 lastUpdated 和 checksum
+
         source_info['lastUpdated'] = now_iso()
         source_info['checksum'] = new_checksum
         source_info['status'] = 'valid'
         source_json.write_text(json.dumps(source_info, ensure_ascii=False, indent=2))
-        
+
         if new_checksum == old_checksum:
             print(f'✅ 技能 {name} 已是最新版本')
         else:
             print(f'✅ 技能 {name} 已更新')
             print(f'   大小: {len(content)} 字节')
-        
+
         return True
     except Exception as e:
         print(f'❌ 更新失败：{e}')
@@ -254,14 +274,14 @@ def remove_remote(agent_id: str, name: str) -> bool:
     if not safe_name(agent_id) or not safe_name(name):
         print(f'❌ 错误：agent_id 或 skill 名称含非法字符')
         return False
-    
+
     workspace = OCLAW_HOME / f'workspace-{agent_id}' / 'skills' / name
     source_json = workspace / '.source.json'
-    
+
     if not source_json.exists():
         print(f'❌ 技能不存在或不是远程 skill: {name}')
         return False
-    
+
     try:
         import shutil
         shutil.rmtree(workspace)
@@ -272,145 +292,410 @@ def remove_remote(agent_id: str, name: str) -> bool:
         return False
 
 
-# ── 官方 Skill 商店 ─────────────────────────────────────────────────
-# ClawHub: https://clawhub.ai/
-CLAWHUB_API_BASE = 'https://clawhub.ai'
+# ═══════════════════════════════════════════════════════════════════════
+# ClawHub 官方技能商店
+# https://clawhub.ai/
+# 国内镜像: https://mirror-cn.clawhub.com/ (推荐，速度快 10 倍+)
+#
+# 安装流程: 搜索获取 slug → /api/v1/download 下载 zip → 解压到 skills 目录
+#
+# API 端点:
+#   GET /api/v1/search?q=xxx          搜索技能
+#   GET /api/v1/skills                列出技能（支持分页、排序）
+#   GET /api/v1/skills/{slug}         获取技能详情
+#   GET /api/v1/skills/{slug}/file    获取技能文件内容（需 path 参数）
+#   GET /api/v1/download?slug=xxx     下载技能压缩包
+#   GET /api/v1/skills/{slug}/versions  版本历史
+# ═══════════════════════════════════════════════════════════════════════
 
-# 支持通过环境变量覆盖 ClawHub 地址
+CLAWHUB_API_BASE = 'https://mirror-cn.clawhub.com'  # 国内镜像（默认）
+CLAWHUB_MAIN = 'https://clawhub.ai'                  # 主站备用
+
+# 支持通过环境变量或配置文件覆盖 ClawHub 地址
 _CLAWHUB_ENV = 'OPENCLAW_CLAWHUB_BASE'
 
-def _get_clawhub_url(skill_name):
-    """获取 skill 在 ClawHub 上的 SKILL.md 文件内容 URL
-    
-    端点: GET /api/v1/skills/{slug}/file?path=SKILL.md
-    优先级: 本地配置文件 > 环境变量 > 默认值
+
+def _get_clawhub_base():
+    """获取 ClawHub API 基础地址
+
+    优先级: 本地配置文件 > 环境变量 > 国内镜像
+    配置方式:
+      echo "https://clawhub.ai" > ~/.openclaw/clawhub-url
+      export OPENCLAW_CLAWHUB_BASE=https://clawhub.ai
     """
-    base = (OCLAW_HOME / 'clawhub-url').read_text().strip() \
-        if (OCLAW_HOME / 'clawhub-url').exists() else None
-    base = base or os.environ.get(_CLAWHUB_ENV) or CLAWHUB_API_BASE
-    return f'{base.rstrip("/")}/api/v1/skills/{skill_name}/file?path=SKILL.md'
+    cfg_file = OCLAW_HOME / 'clawhub-url'
+    if cfg_file.exists():
+        base = cfg_file.read_text().strip()
+        if base:
+            return base
+    return os.environ.get(_CLAWHUB_ENV) or CLAWHUB_API_BASE
 
 
-def _get_clawhub_api_url(path=''):
-    """获取 ClawHub API URL"""
-    base = (OCLAW_HOME / 'clawhub-url').read_text().strip() \
-        if (OCLAW_HOME / 'clawhub-url').exists() else None
-    base = base or os.environ.get(_CLAWHUB_ENV) or CLAWHUB_API_BASE
-    return f'{base.rstrip("/")}/api/v1{path}'
+def _get_clawhub_download_url(slug, tag='latest'):
+    """技能包下载 URL: GET /api/v1/download?slug=xxx&tag=latest"""
+    return f'{_get_clawhub_base()}/api/v1/download?slug={urllib.parse.quote(slug)}&tag={tag}'
 
 
-# 官方内置 skill 列表（可从 ClawHub API 动态获取，此处为默认值）
-OFFICIAL_SKILLS_HUB = {
-    'code_review': _get_clawhub_url('code_review'),
-    'api_design': _get_clawhub_url('api_design'),
-    'security_audit': _get_clawhub_url('security_audit'),
-    'data_analysis': _get_clawhub_url('data_analysis'),
-    'doc_generation': _get_clawhub_url('doc_generation'),
-    'test_framework': _get_clawhub_url('test_framework'),
+def _get_clawhub_file_url(slug, path='SKILL.md'):
+    """获取技能单个文件内容 URL: GET /api/v1/skills/{slug}/file?path=xxx
+
+    注意: 此 URL 返回文本内容，用于 server.py 的 update_remote_skill（兼容无需改 server.py）
+    """
+    return f'{_get_clawhub_base()}/api/v1/skills/{urllib.parse.quote(slug)}/file?path={urllib.parse.quote(path)}'
+
+
+def _get_clawhub_search_url(query):
+    """技能搜索 URL: GET /api/v1/search?q=xxx"""
+    return f'{_get_clawhub_base()}/api/v1/search?q={urllib.parse.quote(query)}'
+
+
+def _get_clawhub_list_url():
+    """技能列表 URL: GET /api/v1/skills"""
+    return f'{_get_clawhub_base()}/api/v1/skills'
+
+
+def _check_hub_available(timeout: int = 10) -> bool:
+    """检测 ClawHub 是否可达"""
+    try:
+        url = _get_clawhub_list_url()
+        req = urllib.request.Request(url, method='HEAD',
+                                      headers={'User-Agent': 'OpenClaw-SkillManager/1.0'})
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            return resp.status == 200
+    except urllib.error.HTTPError as e:
+        # 4xx 说明服务端可达（只是该端点可能不存在或需要参数）
+        if e.code < 500:
+            return True
+        return False
+    except Exception:
+        return False
+
+
+def _download_bytes(url, timeout=60, retries=2):
+    """下载二进制内容（用于 zip 包）"""
+    import time
+    last_error = None
+    for attempt in range(1, retries + 1):
+        try:
+            req = urllib.request.Request(url, headers={'User-Agent': 'OpenClaw-SkillManager/1.0'})
+            with urllib.request.urlopen(req, timeout=timeout) as resp:
+                return resp.read()
+        except urllib.error.HTTPError as e:
+            last_error = f'HTTP {e.code}'
+            if e.code in (404, 403):
+                break
+        except Exception as e:
+            last_error = str(e)
+        if attempt < retries:
+            time.sleep(attempt * 3)
+    raise Exception(last_error)
+
+
+def _install_from_hub_zip(agent_id, slug, skill_name=None, description='',
+                           preserve_added_at=None):
+    """从 ClawHub 下载技能 zip 并解压安装到 agent workspace
+
+    完整流程:
+    1. GET /api/v1/download?slug=xxx&tag=latest → 下载 zip
+    2. 安全校验 (zip 格式、路径穿越防护)
+    3. 解压到 ~/.openclaw/workspace-{agent_id}/skills/{skill_name}/
+    4. 写入 .source.json (含 sourceUrl 指向 file 端点，兼容 server.py 更新)
+
+    Args:
+        agent_id: 目标 Agent ID
+        slug: ClawHub 技能唯一标识 (从搜索 API 获取)
+        skill_name: 本地技能目录名 (默认用 slug 转换)
+        description: 技能描述
+        preserve_added_at: 保留原始添加时间 (更新时使用)
+    """
+    import zipfile
+    import tempfile
+    import shutil
+    import io
+
+    skill_name = skill_name or slug.replace('-', '_')
+    download_url = _get_clawhub_download_url(slug)
+
+    print(f'⏳ 正在从 ClawHub 下载 {slug} (tag=latest) ...')
+    print(f'   镜像: {_get_clawhub_base()}')
+
+    # ── Step 1: 下载 zip 包 ──
+    try:
+        zip_data = _download_bytes(download_url, timeout=60)
+    except Exception as e:
+        last_err = str(e)
+        hint = ''
+        if 'timed out' in last_err.lower() or '超时' in last_err:
+            hint = '\n   💡 提示: 超时，可切换主站:\n      echo "https://clawhub.ai" > ~/.openclaw/clawhub-url'
+        elif '404' in last_err:
+            hint = f'\n   💡 提示: 在 ClawHub 搜索确认 slug:\n      curl "{_get_clawhub_search_url(slug)}"'
+        print(f'❌ 下载失败: {last_err}{hint}')
+        return False
+
+    if len(zip_data) < 100:
+        print(f'❌ 下载内容过短 ({len(zip_data)} bytes)，无效')
+        return False
+
+    # ── Step 2: 校验 zip 格式 ──
+    if not zipfile.is_zipfile(io.BytesIO(zip_data)):
+        print(f'❌ 下载的文件不是有效的 zip 格式')
+        return False
+
+    zip_checksum = _compute_binary_checksum(zip_data)
+
+    # ── Step 3: 安全解压 ──
+    try:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            zip_path = os.path.join(tmpdir, f'{slug}.zip')
+            extract_dir = os.path.join(tmpdir, 'extract')
+            os.makedirs(extract_dir, exist_ok=True)
+
+            with open(zip_path, 'wb') as f:
+                f.write(zip_data)
+
+            # 安全解压（防止路径穿越攻击）
+            with zipfile.ZipFile(zip_path, 'r') as zf:
+                for member in zf.namelist():
+                    member_path = pathlib.PurePosixPath(member)
+                    if '..' in member_path.parts or str(member_path).startswith('/'):
+                        print(f'⚠️ 跳过不安全路径: {member}')
+                        continue
+                    zf.extract(member, extract_dir)
+
+            # 确定解压后的实际内容
+            extracted = pathlib.Path(extract_dir)
+            entries = [e for e in extracted.iterdir() if not e.name.startswith('.')]
+
+            if not entries:
+                print(f'❌ 解压后目录为空')
+                return False
+
+            # 如果只有一个顶层目录（如 slug-name/），使用其内容
+            if len(entries) == 1 and entries[0].is_dir():
+                content_dir = entries[0]
+            else:
+                content_dir = extracted
+
+            # ── Step 4: 写入目标 workspace ──
+            workspace = OCLAW_HOME / f'workspace-{agent_id}' / 'skills' / skill_name
+            if workspace.exists():
+                shutil.rmtree(workspace)
+            workspace.mkdir(parents=True, exist_ok=True)
+
+            # 复制文件到目标目录
+            for item in content_dir.iterdir():
+                dest = workspace / item.name
+                if item.is_dir():
+                    shutil.copytree(item, dest)
+                else:
+                    shutil.copy2(item, dest)
+
+            # ── Step 5: 写入 .source.json ──
+            added_at = preserve_added_at or now_iso()
+            source_info = {
+                'skillName': skill_name,
+                'sourceSlug': slug,
+                # sourceUrl 指向 file 端点（返回文本），兼容 server.py 的 update_remote_skill
+                'sourceUrl': _get_clawhub_file_url(slug),
+                'downloadUrl': download_url,
+                'description': description or f'ClawHub: {slug}',
+                'addedAt': added_at,
+                'lastUpdated': now_iso(),
+                'checksum': zip_checksum,
+                'status': 'valid',
+            }
+            source_json = workspace / '.source.json'
+            source_json.write_text(json.dumps(source_info, ensure_ascii=False, indent=2))
+
+            # 统计
+            file_count = sum(1 for _ in workspace.rglob('*')
+                            if _.is_file() and _.name != '.source.json')
+            print(f'✅ 技能 {skill_name} 已安装到 {agent_id} ({file_count} 个文件, {len(zip_data) // 1024}KB)')
+            return True
+
+    except Exception as e:
+        print(f'❌ 安装失败: {e}')
+        return False
+
+
+# 内置 skill slug 列表（当 ClawHub API 不可达时的兜底）
+# 格式: slug → (推荐安装的 agents)
+# 注意: 实际 slug 需从 ClawHub 搜索确认，此处为示例
+BUILTIN_SKILL_SLUGS = {
+    'code-review': ('bingbu', 'xingbu', 'menxia'),
+    'api-design': ('bingbu', 'gongbu', 'menxia'),
+    'security-audit': ('xingbu', 'menxia'),
+    'data-analysis': ('hubu', 'menxia'),
+    'doc-generation': ('libu', 'menxia'),
+    'test-framework': ('gongbu', 'xingbu', 'menxia'),
 }
 
-SKILL_AGENT_MAPPING = {
-    'code_review': ('bingbu', 'xingbu', 'menxia'),
-    'api_design': ('bingbu', 'gongbu', 'menxia'),
-    'security_audit': ('xingbu', 'menxia'),
-    'data_analysis': ('hubu', 'menxia'),
-    'doc_generation': ('libu', 'menxia'),
-    'test_framework': ('gongbu', 'xingbu', 'menxia'),
-}
+
+def search_hub(query, limit=10):
+    """搜索 ClawHub 技能商店
+
+    API: GET /api/v1/search?q=xxx
+    """
+    if not query:
+        print('❌ 请提供搜索关键词')
+        return False
+
+    print(f'🔍 正在搜索: {query}')
+    print(f'   API: {_get_clawhub_base()}\n')
+
+    try:
+        search_url = _get_clawhub_search_url(query)
+        req = urllib.request.Request(search_url, headers={'User-Agent': 'OpenClaw-SkillManager/1.0'})
+        with urllib.request.urlopen(req, timeout=15) as resp:
+            data = json.loads(resp.read().decode('utf-8'))
+
+        # API 可能返回 "skills" 或 "results" 字段
+        results = data.get('skills', data.get('results', []))
+
+        if not results:
+            print(f'📭 未找到匹配的技能')
+            print(f'   💡 直接浏览商店: https://clawhub.ai/')
+            return True
+
+        results = results[:limit]
+
+        print(f'找到 {len(results)} 个技能：\n')
+        print(f'{"Slug":<30} | {"名称":<20} | 描述')
+        print('-' * 100)
+
+        for sk in results:
+            slug = sk.get('slug', '')
+            name = (sk.get('name', '') or slug)[:20].ljust(20)
+            desc = (sk.get('description', '') or '')[:40]
+            print(f'{slug:<30} | {name} | {desc}')
+
+        print(f'\n💡 安装命令:')
+        print(f'   python3 scripts/skill_manager.py install-hub --agent <agent> --slug <slug>')
+        return True
+
+    except Exception as e:
+        print(f'❌ 搜索失败: {e}')
+        print(f'   💡 提示: 检查网络或直接浏览 https://clawhub.ai/')
+        return False
 
 
-def import_official_hub(agent_ids: list) -> bool:
-    """从 ClawHub 官方商店 (https://clawhub.ai/) 导入 skills"""
+def install_hub(agent_id, slug, skill_name=None):
+    """从 ClawHub 安装指定技能
+
+    流程: /api/v1/download?slug=xxx&tag=latest → 下载 zip → 解压安装
+    """
+    if not safe_name(agent_id):
+        print(f'❌ agent_id 含非法字符')
+        return False
+    if not slug or not slug.strip():
+        print(f'❌ 请提供 skill slug（通过 search-hub 获取）')
+        return False
+    slug = slug.strip()
+    skill_name = skill_name or slug.replace('-', '_')
+
+    return _install_from_hub_zip(agent_id, slug, skill_name=skill_name)
+
+
+def import_official_hub(agent_ids=None):
+    """从 ClawHub 官方商店导入 skills
+
+    流程: /api/v1/skills 获取列表 → /api/v1/download?slug=xxx 下载 zip → 解压安装
+    """
+    if agent_ids is None:
+        agent_ids = []
     use_recommended = not agent_ids
 
     if use_recommended:
         print('📋 未指定 agent，使用推荐配置...\n')
 
     # 预检 ClawHub 可用性
-    print('🔍 正在检测 ClawHub (https://clawhub.ai/) 可用性...')
+    print(f'🔍 正在检测 ClawHub ({_get_clawhub_base()}) ...')
     hub_reachable = _check_hub_available()
 
     if not hub_reachable:
-        print(f'\n⚠️ ClawHub (https://clawhub.ai/) 当前不可达')
+        print(f'\n⚠️ ClawHub 当前不可达')
         print(f'   可能原因：')
         print(f'   1. 网络问题（需要代理访问外网）')
         print(f'   2. ClawHub 服务暂时不可用')
         print(f'\n   建议：')
-        print(f'   1. 检查网络: curl -I https://clawhub.ai/')
-        print(f'   2. 设置代理: export https_proxy=http://your-proxy:port')
-        print(f'   3. 自定义地址: export {_CLAWHUB_ENV}=https://your-mirror')
-        print(f'   4. 或写文件: echo "https://your-mirror" > ~/.openclaw/clawhub-url')
-        print(f'   5. 手动添加: python3 scripts/skill_manager.py add-remote --agent <agent> --name <skill> --source <url>')
+        print(f'   1. 检查网络: curl -I {_get_clawhub_list_url()}')
+        print(f'   2. 切换主站: echo "https://clawhub.ai" > ~/.openclaw/clawhub-url')
+        print(f'   3. 设置代理: export https_proxy=http://your-proxy:port')
+        print(f'   4. 搜索并手动安装:')
+        print(f'      python3 scripts/skill_manager.py search-hub --query <关键词>')
         return False
 
-    print(f'   ✅ ClawHub 可达，开始导入...\n')
+    print(f'   ✅ ClawHub 可达\n')
 
-    # 尝试从 ClawHub API 动态获取 skill 列表
+    # ── 从 API 获取技能列表 ──
     skills_to_import = {}
     try:
-        list_url = _get_clawhub_api_url('/skills')
+        list_url = _get_clawhub_list_url()
         req = urllib.request.Request(list_url, headers={'User-Agent': 'OpenClaw-SkillManager/1.0'})
         with urllib.request.urlopen(req, timeout=15) as resp:
             api_data = json.loads(resp.read().decode('utf-8'))
-        # API 返回格式: {"skills": [{"slug": "...", "name": "...", "description": "..."}]}
-        # 使用 /api/v1/skills/{slug}/file?path=SKILL.md 获取文件内容
+
         api_skills = api_data.get('skills', [])
         if api_skills:
-            print(f'   📦 从 ClawHub 获取到 {len(api_skills)} 个官方 skills\n')
-            for sk in api_skills:
-                slug = sk.get('slug', '') or sk.get('name', '')
+            print(f'   📦 从 ClawHub 获取到 {len(api_skills)} 个技能\n')
+            for sk in api_skills[:20]:  # 最多导入 20 个
+                slug = sk.get('slug', '')
                 if slug:
-                    skills_to_import[slug] = _get_clawhub_url(slug)
+                    skills_to_import[slug] = sk.get('description', '')
     except Exception:
-        print(f'   ⚠️ ClawHub API 获取列表失败，使用内置默认列表\n')
+        print(f'   ⚠️ API 获取列表失败，使用内置推荐列表\n')
 
-    # 如果 API 未返回数据，使用内置列表
+    # 兜底: 使用内置列表
     if not skills_to_import:
-        skills_to_import = dict(OFFICIAL_SKILLS_HUB)
+        skills_to_import = {slug: f'推荐 skill: {slug}' for slug in BUILTIN_SKILL_SLUGS}
+        print(f'   📋 使用内置推荐列表: {len(skills_to_import)} 个技能\n')
 
     total = 0
     success = 0
     failed = []
 
-    for skill_name, url in skills_to_import.items():
+    for slug, desc in skills_to_import.items():
+        skill_name = slug.replace('-', '_')
+
         if use_recommended:
-            target_agents = SKILL_AGENT_MAPPING.get(skill_name, ['menxia'])
+            target_agents = BUILTIN_SKILL_SLUGS.get(slug, ['menxia'])
         else:
             target_agents = agent_ids
 
-        print(f'📥 正在导入 skill: {skill_name}')
+        print(f'📥 [{slug}]')
         print(f'   目标 agents: {", ".join(target_agents)}')
 
-        for agent_id in target_agents:
+        for ag_id in target_agents:
             total += 1
-            ok = add_remote(agent_id, skill_name, url, f'官方 skill (ClawHub): {skill_name}')
+            ok = _install_from_hub_zip(ag_id, slug, skill_name=skill_name, description=desc)
             if ok:
                 success += 1
             else:
-                failed.append(f'{agent_id}/{skill_name}')
+                failed.append(f'{ag_id}/{slug}')
+        print()
 
-    print(f'\n📊 导入完成：{success}/{total} 个 skills 成功')
+    print(f'📊 导入完成: {success}/{total} 个成功')
     if failed:
         print(f'\n❌ 失败列表:')
-        for f in failed:
-            print(f'   - {f}')
+        for f_item in failed:
+            print(f'   - {f_item}')
         print(f'\n💡 排查建议:')
         print(f'   1. 浏览 ClawHub: https://clawhub.ai/')
-        print(f'   2. 设置代理: export https_proxy=http://your-proxy:port')
-        print(f'   3. 自定义地址: export {_CLAWHUB_ENV}=https://your-mirror')
-        print(f'   4. 单独重试: python3 scripts/skill_manager.py add-remote --agent <agent> --name <skill> --source <url>')
+        print(f'   2. 搜索 slug: python3 scripts/skill_manager.py search-hub --query <关键词>')
+        print(f'   3. 切换主站: echo "https://clawhub.ai" > ~/.openclaw/clawhub-url')
+        print(f'   4. 单独安装: python3 scripts/skill_manager.py install-hub --agent <agent> --slug <slug>')
     return success == total
 
 
-# [Fix 6] 实现 check-updates 子命令：遍历所有远程 skill，下载最新版本对比 checksum
+# [Fix 6] check-updates: 自动识别 ClawHub 技能，走 zip 下载对比 checksum
 def check_updates() -> bool:
     """检查所有远程 skill 是否有更新"""
     if not OCLAW_HOME.exists():
         print('📭 OCLAW_HOME 不存在，无已安装的远程 skills')
         return True
-    
+
     remote_skills = []
-    
+
     for ws_dir in OCLAW_HOME.glob('workspace-*'):
         agent_id = ws_dir.name.replace('workspace-', '')
         skills_dir = ws_dir / 'skills'
@@ -430,107 +715,147 @@ def check_updates() -> bool:
                         'agent': agent_id,
                         'name': skill_dir.name,
                         'url': source_url,
+                        'sourceSlug': source_info.get('sourceSlug', ''),
                         'checksum': source_info.get('checksum', ''),
                         'last_updated': source_info.get('lastUpdated', 'N/A'),
                     })
             except Exception:
                 pass
-    
+
     if not remote_skills:
         print('📭 暂无远程 skills，无需检查更新')
         return True
-    
+
     print(f'🔍 正在检查 {len(remote_skills)} 个远程 skills 的更新...\n')
-    
+
     has_update = False
     errors = []
-    
+
     for sk in remote_skills:
+        key = f"{sk['agent']}/{sk['name']}"
         try:
-            content = _download_file(sk['url'], timeout=15, retries=1)
-            new_checksum = _compute_checksum(content)
-            key = f"{sk['agent']}/{sk['name']}"
+            if sk['sourceSlug']:
+                # ClawHub 技能: 下载 zip 对比 checksum
+                download_url = _get_clawhub_download_url(sk['sourceSlug'])
+                zip_data = _download_bytes(download_url, timeout=30)
+                new_checksum = _compute_binary_checksum(zip_data)
+            else:
+                # 通用 URL 技能: 下载文本对比 checksum
+                content = _download_file(sk['url'], timeout=15, retries=1)
+                new_checksum = _compute_checksum(content)
+
             if new_checksum != sk['checksum']:
                 has_update = True
                 print(f'  🔄 {key:<30} 有更新 (checksum: {sk["checksum"]} → {new_checksum})')
             else:
                 print(f'  ✅ {key:<30} 已是最新')
         except Exception as e:
-            errors.append(f"{sk['agent']}/{sk['name']}: {e}")
-            print(f'  ⚠️  {sk["agent"]}/{sk["name"]:<28} 检查失败: {e}')
-    
+            errors.append(key)
+            print(f'  ⚠️  {key:<28} 检查失败: {e}')
+
     print()
     if has_update:
         print(f'💡 发现更新！使用以下命令更新：')
         print(f'   python3 scripts/skill_manager.py update-remote --agent <agent> --name <skill>')
     else:
         print(f'✅ 所有 skills 均为最新版本')
-    
+
     if errors:
         print(f'\n⚠️ {len(errors)} 个 skills 检查失败（可能是网络问题）')
-    
+
     return True
 
 
 def main():
-    parser = argparse.ArgumentParser(description='三省六部 Skill 管理工具', 
-                                     formatter_class=argparse.RawDescriptionHelpFormatter)
+    parser = argparse.ArgumentParser(
+        description='三省六部 Skill 管理工具 (集成 ClawHub 商店)',
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+示例:
+  %(prog)s search-hub --query calendar     搜索 ClawHub 技能
+  %(prog)s install-hub --agent menxia --slug caldav-calendar  安装技能
+  %(prog)s import-official-hub             批量导入官方推荐技能
+  %(prog)s add-remote --agent menxia --name my-skill --source <url>  从 URL 添加
+  %(prog)s list-remote                     列出已安装的远程技能
+  %(prog)s update-remote --agent menxia --name my-skill        更新技能
+  %(prog)s check-updates                   检查所有技能更新
+""",
+    )
     subparsers = parser.add_subparsers(dest='cmd', help='命令')
-    
-    # add-remote
+
+    # add-remote (从 URL 下载单个 SKILL.md)
     add_parser = subparsers.add_parser('add-remote', help='从远程 URL 添加 skill')
     add_parser.add_argument('--agent', required=True, help='目标 Agent ID')
     add_parser.add_argument('--name', required=True, help='Skill 内部名称')
-    add_parser.add_argument('--source', required=True, help='远程 URL 或本地路径')
+    add_parser.add_argument('--source', required=True, help='远程 URL (SKILL.md 文件地址)')
     add_parser.add_argument('--description', default='', help='Skill 描述')
-    
+
     # list-remote
     subparsers.add_parser('list-remote', help='列出所有远程 skills')
-    
+
     # update-remote
     update_parser = subparsers.add_parser('update-remote', help='更新远程 skill')
     update_parser.add_argument('--agent', required=True, help='Agent ID')
     update_parser.add_argument('--name', required=True, help='Skill 名称')
-    
+
     # remove-remote
     remove_parser = subparsers.add_parser('remove-remote', help='移除远程 skill')
     remove_parser.add_argument('--agent', required=True, help='Agent ID')
     remove_parser.add_argument('--name', required=True, help='Skill 名称')
-    
-    # import-official-hub
-    import_parser = subparsers.add_parser('import-official-hub', help='从官方库导入 skills')
-    import_parser.add_argument('--agents', default='', help='逗号分隔的 Agent IDs（可选）')
-    
+
+    # search-hub (搜索 ClawHub)
+    search_parser = subparsers.add_parser('search-hub', help='搜索 ClawHub 技能商店')
+    search_parser.add_argument('--query', required=True, help='搜索关键词')
+    search_parser.add_argument('--limit', type=int, default=10, help='返回数量上限 (默认 10)')
+
+    # install-hub (从 ClawHub 安装)
+    install_parser = subparsers.add_parser('install-hub', help='从 ClawHub 安装技能 (slug)')
+    install_parser.add_argument('--agent', required=True, help='目标 Agent ID')
+    install_parser.add_argument('--slug', required=True, help='技能 slug (从 search-hub 获取)')
+    install_parser.add_argument('--name', default='', help='本地技能名称 (默认从 slug 转换)')
+
+    # import-official-hub (批量导入)
+    import_parser = subparsers.add_parser('import-official-hub', help='从 ClawHub 批量导入推荐 skills')
+    import_parser.add_argument('--agents', default='', help='逗号分隔的 Agent IDs（可选，不指定则用推荐配置）')
+
     # check-updates
-    check_parser = subparsers.add_parser('check-updates', help='检查所有远程 skills 是否有更新')
-    
+    subparsers.add_parser('check-updates', help='检查所有远程 skills 是否有更新')
+
     args = parser.parse_args()
-    
+
     if not args.cmd:
         parser.print_help()
         return
-    
+
     if args.cmd == 'add-remote':
         success = add_remote(args.agent, args.name, args.source, args.description)
         sys.exit(0 if success else 1)
-    
+
     elif args.cmd == 'list-remote':
         success = list_remote()
         sys.exit(0 if success else 1)
-    
+
     elif args.cmd == 'update-remote':
         success = update_remote(args.agent, args.name)
         sys.exit(0 if success else 1)
-    
+
     elif args.cmd == 'remove-remote':
         success = remove_remote(args.agent, args.name)
         sys.exit(0 if success else 1)
-    
+
+    elif args.cmd == 'search-hub':
+        success = search_hub(args.query, args.limit)
+        sys.exit(0 if success else 1)
+
+    elif args.cmd == 'install-hub':
+        success = install_hub(args.agent, args.slug, args.name or None)
+        sys.exit(0 if success else 1)
+
     elif args.cmd == 'import-official-hub':
         agent_list = [a.strip() for a in args.agents.split(',') if a.strip()] if args.agents else []
         success = import_official_hub(agent_list)
         sys.exit(0 if success else 1)
-    
+
     elif args.cmd == 'check-updates':
         success = check_updates()
         sys.exit(0 if success else 1)
