@@ -4,10 +4,11 @@
 每日 06:00 自动运行，抓取全球新闻 RSS → data/morning_brief_YYYYMMDD.json
 覆盖: 政治 | 军事 | 经济 | AI大模型
 """
-import json, pathlib, datetime, subprocess, re, sys, os, logging
+import json, pathlib, datetime, subprocess, re, sys, os, logging, time
 from xml.etree import ElementTree as ET
 from file_lock import atomic_json_write
 from utils import validate_url
+from urllib.request import Request, urlopen
 
 log = logging.getLogger('朝报')
 logging.basicConfig(level=logging.INFO, format='%(asctime)s [%(name)s] %(message)s', datefmt='%H:%M:%S')
@@ -15,21 +16,23 @@ logging.basicConfig(level=logging.INFO, format='%(asctime)s [%(name)s] %(message
 DATA = pathlib.Path(__file__).resolve().parent.parent / 'data'
 
 # ── RSS 源配置 ──────────────────────────────────────────────────────────
+# [Fix 1] 替换死掉的 Reuters RSS (404) 和不稳定的 RSSHub 公共实例
+# 使用验证可达的公开 RSS 源
 FEEDS = {
     '政治': [
         ('BBC World', 'https://feeds.bbci.co.uk/news/world/rss.xml'),
-        ('Reuters World', 'https://feeds.reuters.com/reuters/worldNews'),
-        ('AP Top News', 'https://rsshub.app/apnews/topics/ap-top-news'),
+        ('Al Jazeera', 'https://www.aljazeera.com/xml/rss/all.xml'),
+        ('CNN World', 'http://rss.cnn.com/rss/edition_world.rss'),
     ],
     '军事': [
         ('Defense News', 'https://www.defensenews.com/rss/'),
         ('BBC World', 'https://feeds.bbci.co.uk/news/world/rss.xml'),
-        ('Reuters', 'https://feeds.reuters.com/reuters/worldNews'),
+        ('Al Jazeera', 'https://www.aljazeera.com/xml/rss/all.xml'),
     ],
     '经济': [
-        ('Reuters Business', 'https://feeds.reuters.com/reuters/businessNews'),
-        ('BBC Business', 'https://feeds.bbci.co.uk/news/business/rss.xml'),
         ('CNBC', 'https://search.cnbc.com/rs/search/combinedcms/view.xml?partnerId=wrss01&id=100003114'),
+        ('BBC Business', 'https://feeds.bbci.co.uk/news/business/rss.xml'),
+        ('Financial Times', 'https://www.ft.com/rss/home'),
     ],
     'AI大模型': [
         ('Hacker News', 'https://hnrss.org/newest?q=AI+LLM+model&points=50'),
@@ -45,15 +48,30 @@ CATEGORY_KEYWORDS = {
                 'machine learning', 'neural', 'model', '大模型', '人工智能', 'chatgpt'],
 }
 
-def curl_rss(url, timeout=10):
-    """用 curl 抓取 RSS"""
-    try:
-        from urllib.request import Request, urlopen
-        req = Request(url, headers={'User-Agent': 'Mozilla/5.0 (compatible; MorningBrief/1.0)'})
-        response = urlopen(req, timeout=timeout)
-        return response.read().decode('utf-8', errors='ignore')
-    except Exception:
-        return ''
+# [Fix 2] curl_rss 增加 2 次重试 + 20s 超时 + Accept 头
+def curl_rss(url, timeout=20, retries=2):
+    """用 urllib 抓取 RSS，支持重试"""
+    last_err = None
+    for attempt in range(1, retries + 1):
+        try:
+            from urllib.request import Request, urlopen
+            req = Request(url, headers={
+                'User-Agent': 'Mozilla/5.0 (compatible; MorningBrief/1.0)',
+                'Accept': 'application/rss+xml, application/xml, text/xml, */*',
+            })
+            response = urlopen(req, timeout=timeout)
+            data = response.read().decode('utf-8', errors='ignore')
+            if len(data) < 50:
+                raise ValueError(f'RSS 内容过短 ({len(data)} bytes)')
+            return data
+        except Exception as e:
+            last_err = e
+            if attempt < retries:
+                wait = attempt * 2
+                log.debug(f'RSS 抓取失败 ({url}): {e}, {wait}s 后重试...')
+                time.sleep(wait)
+    log.warning(f'RSS 抓取最终失败 ({url}): {last_err}')
+    return ''
 
 def _safe_parse_xml(xml_text, max_size=5*1024*1024):
     """安全解析 XML：限制大小，禁用外部实体（防 XXE）。"""
@@ -108,9 +126,10 @@ def match_category(item, category):
     text = (item['title'] + ' ' + item['desc']).lower()
     return any(k in text for k in kws)
 
-def fetch_category(category, feeds, max_items=5):
+# [Fix 3] fetch_category 接受 global_seen 参数实现跨分类去重
+def fetch_category(category, feeds, max_items=5, global_seen=None):
     """抓取一个分类的新闻"""
-    seen_urls = set()
+    seen_urls = global_seen if global_seen is not None else set()
     results = []
     for source_name, url in feeds:
         if len(results) >= max_items:
@@ -205,9 +224,13 @@ def main():
         'categories': {}
     }
 
+    # [Fix 3] 全局 seen_urls 实现跨分类去重
+    # 例如 BBC World 同时出现在政治和军事，同一条新闻不会在两个分类中重复
+    global_seen = set()
+
     for category, feeds in merged_feeds.items():
         log.info(f'  采集 {category}...')
-        items = fetch_category(category, feeds)
+        items = fetch_category(category, feeds, global_seen=global_seen)
         # Boost items matching user keywords
         if user_keywords:
             for item in items:
@@ -232,6 +255,147 @@ def main():
 
     # 采集成功后才写入幂等锁
     lock_file.touch()
+
+    # ── 推送通知 ─────────────────────────────────────────────────────────
+    _push_notification(result)
+
+
+# ── 通知推送（企业微信 / 钉钉 / 飞书 / 通用 Webhook）────────────────────
+
+def _push_notification(result):
+    """采集成功后，按配置推送通知（纯脚本端，不依赖 server.py）"""
+    config_file = DATA / 'morning_brief_config.json'
+    try:
+        config = json.loads(config_file.read_text())
+    except Exception:
+        return
+
+    # 兼容旧配置 (feishu_webhook) 和新配置 (notification)
+    notification = config.get('notification', {})
+    if not notification and config.get('feishu_webhook'):
+        notification = {'enabled': True, 'channel': 'feishu', 'webhook': config['feishu_webhook']}
+    if not notification.get('enabled', False):
+        return
+
+    channel = notification.get('channel', '').strip().lower()
+    webhook = notification.get('webhook', '').strip()
+    if not webhook:
+        return
+
+    # 构造摘要消息
+    date_str = result.get('date', '')
+    total = sum(len(v) for v in result.get('categories', {}).values())
+    if not total:
+        return
+
+    cat_lines = []
+    for cat, items in result.get('categories', {}).items():
+        if items:
+            cat_lines.append(f'  {cat}: {len(items)} 条')
+    date_fmt = f'{date_str[:4]}年{date_str[4:6]}月{date_str[6:]}日' if len(date_str) == 8 else date_str
+    title = f'📰 天下要闻 · {date_fmt}'
+    summary = f'共 {total} 条要闻已更新\n' + '\n'.join(cat_lines)
+
+    # 按渠道分发
+    _senders = {
+        'wechat_work': _send_wechat_work,
+        'wecom': _send_wechat_work,        # 别名
+        'dingtalk': _send_dingtalk,
+        'feishu': _send_feishu,
+        'lark': _send_feishu,               # 别名
+        'generic': _send_generic_webhook,
+    }
+    sender = _senders.get(channel)
+    if not sender:
+        log.warning(f'未知通知渠道: {channel}，可选: {", ".join(_senders.keys())}')
+        return
+
+    try:
+        ok = sender(webhook, title, summary)
+        label = {'wechat_work': '企业微信', 'wecom': '企业微信', 'dingtalk': '钉钉',
+                 'feishu': '飞书', 'lark': '飞书', 'generic': 'Webhook'}.get(channel, channel)
+        log.info(f'  [{label}] 推送{"成功" if ok else "失败"}')
+    except Exception as e:
+        log.warning(f'  通知推送异常: {e}')
+
+
+def _post_json(url, payload, timeout=10):
+    """通用 JSON POST 请求"""
+    data = json.dumps(payload, ensure_ascii=False).encode('utf-8')
+    req = Request(url, data=data, headers={
+        'Content-Type': 'application/json; charset=utf-8',
+        'User-Agent': 'MorningBrief/1.0',
+    })
+    resp = urlopen(req, timeout=timeout)
+    body = resp.read().decode('utf-8', errors='ignore')
+    return resp.status, body
+
+
+def _send_wechat_work(webhook, title, content):
+    """企业微信机器人 Webhook 推送
+    https://developer.work.weixin.qq.com/document/path/91770
+    """
+    # 企业微信 markdown 不支持 \n，需要用 <br> 或换行
+    md_content = content.replace('\\n', '\n')
+    payload = {
+        'msgtype': 'markdown',
+        'markdown': {
+            'content': f'## {title}\n{md_content}',
+        },
+    }
+    status, body = _post_json(webhook, payload)
+    resp = json.loads(body)
+    return resp.get('errcode', -1) == 0
+
+
+def _send_dingtalk(webhook, title, content):
+    """钉钉机器人 Webhook 推送
+    https://open.dingtalk.com/document/robots/custom-robot-access
+    """
+    payload = {
+        'msgtype': 'markdown',
+        'markdown': {
+            'title': title,
+            'text': f'## {title}\n\n{content}',
+        },
+    }
+    status, body = _post_json(webhook, payload)
+    resp = json.loads(body)
+    return resp.get('errcode', -1) == 0
+
+
+def _send_feishu(webhook, title, content):
+    """飞书机器人 Webhook 推送
+    https://open.feishu.cn/document/client-docs/bot-v3/add-custom-bot
+    """
+    # 飞书使用富文本消息
+    payload = {
+        'msg_type': 'interactive',
+        'card': {
+            'header': {
+                'title': {'tag': 'plain_text', 'content': title},
+                'template': 'blue',
+            },
+            'elements': [
+                {'tag': 'markdown', 'content': content.replace('\\n', '\n')},
+            ],
+        },
+    }
+    status, body = _post_json(webhook, payload)
+    resp = json.loads(body)
+    return resp.get('code', -1) == 0 or resp.get('StatusCode', -1) == 0
+
+
+def _send_generic_webhook(webhook, title, content):
+    """通用 Webhook 推送（发送 JSON 格式）"""
+    payload = {
+        'title': title,
+        'content': content,
+        'timestamp': datetime.datetime.now().isoformat(),
+    }
+    status, body = _post_json(webhook, payload)
+    return 200 <= status < 300
+
 
 if __name__ == '__main__':
     main()

@@ -756,33 +756,75 @@ def get_remote_skills_list():
 
 
 def update_remote_skill(agent_id, skill_name):
-    """更新已添加的远程 skill 为最新版本（重新从源 URL 下载）"""
+    """更新已添加的远程 skill 为最新版本（保留原始 addedAt）
+
+    [Fix] 不再委托给 add_remote_skill（会重置 addedAt），
+    而是独立下载并只更新 lastUpdated/checksum。
+    """
     if not _SAFE_NAME_RE.match(agent_id):
         return {'ok': False, 'error': f'agentId 含非法字符: {agent_id}'}
     if not _SAFE_NAME_RE.match(skill_name):
         return {'ok': False, 'error': f'skillName 含非法字符: {skill_name}'}
-    
+
     workspace = OCLAW_HOME / f'workspace-{agent_id}' / 'skills' / skill_name
     source_json = workspace / '.source.json'
     skill_md = workspace / 'SKILL.md'
-    
+
     if not source_json.exists():
         return {'ok': False, 'error': f'技能 {skill_name} 不是远程 skill（无 .source.json）'}
-    
+
     try:
         source_info = json.loads(source_json.read_text())
         source_url = source_info.get('sourceUrl', '')
         if not source_url:
             return {'ok': False, 'error': '源 URL 不存在'}
-        
-        # 重新下载
-        result = add_remote_skill(agent_id, skill_name, source_url, 
-                                  source_info.get('description', ''))
-        if result['ok']:
-            result['message'] = f'技能已更新'
-            source_info_updated = json.loads(source_json.read_text())
-            result['newVersion'] = source_info_updated.get('checksum', 'unknown')
-        return result
+
+        old_checksum = source_info.get('checksum', '')
+
+        # 独立下载（不委托 add_remote_skill，避免重置 addedAt）
+        if source_url.startswith('https://'):
+            if not validate_url(source_url, allowed_schemes=('https',)):
+                return {'ok': False, 'error': 'URL 无效或不安全（仅支持 HTTPS）'}
+            try:
+                req = Request(source_url, headers={'User-Agent': 'OpenClaw-SkillManager/1.0'})
+                resp = urlopen(req, timeout=15)
+                raw = resp.read(10 * 1024 * 1024 + 1)
+                if len(raw) > 10 * 1024 * 1024:
+                    return {'ok': False, 'error': '文件过大（最大 10MB）'}
+                content = raw.decode('utf-8', errors='replace')
+            except Exception as e:
+                return {'ok': False, 'error': f'URL 无法访问: {str(e)[:100]}'}
+        else:
+            return {'ok': False, 'error': '仅支持 HTTPS 远程源更新'}
+
+        # 基础验证
+        if not content.startswith('---'):
+            return {'ok': False, 'error': '文件格式无效（缺少 YAML frontmatter）'}
+
+        new_checksum = _compute_checksum(content)
+
+        # 保存 SKILL.md
+        skill_md.write_text(content)
+
+        # 只更新 lastUpdated 和 checksum，保留原始 addedAt
+        source_info['lastUpdated'] = now_iso()
+        source_info['checksum'] = new_checksum
+        source_info['status'] = 'valid'
+        source_json.write_text(json.dumps(source_info, ensure_ascii=False, indent=2))
+
+        # Re-sync agent config
+        try:
+            subprocess.run(['python3', str(SCRIPTS / 'sync_agent_config.py')], timeout=10)
+        except Exception:
+            pass
+
+        is_changed = new_checksum != old_checksum
+        return {
+            'ok': True,
+            'message': f'技能{"已更新" if is_changed else "已是最新版本"}',
+            'newVersion': new_checksum,
+            'changed': is_changed,
+        }
     except Exception as e:
         return {'ok': False, 'error': f'更新失败: {str(e)[:100]}'}
 

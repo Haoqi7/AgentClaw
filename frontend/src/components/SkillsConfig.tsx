@@ -2,56 +2,98 @@ import { useEffect, useState } from 'react';
 import { useStore } from '../store';
 import { api, RemoteSkillItem } from '../api';
 
-// 社区知名 Skills 源快选列表
-const COMMUNITY_SOURCES = [
+// [Fix 5] 社区技能源：从硬编码 URL 重构为 repo/branch/path 结构，动态获取 stars
+// 这样 stars 数不会过时，维护者也不用手动更新
+interface CommunitySource {
+  label: string;
+  emoji: string;
+  repo: string;       // GitHub owner/repo
+  branch: string;
+  basePath: string;   // 相对于 repo root 的路径前缀
+  stars: string;      // 默认值，会被动态获取的值覆盖
+  desc: string;
+  skills: { name: string; path: string }[];  // path 是相对于 basePath 的
+}
+
+const COMMUNITY_SOURCES_RAW: CommunitySource[] = [
   {
     label: 'obra/superpowers',
     emoji: '⚡',
-    stars: '66.9k',
+    repo: 'obra/superpowers',
+    branch: 'main',
+    basePath: 'skills',
+    stars: '...',
     desc: '完整开发工作流技能集',
     skills: [
-      { name: 'brainstorming', url: 'https://raw.githubusercontent.com/obra/superpowers/refs/heads/main/skills/brainstorming/SKILL.md' },
-      { name: 'test-driven-development', url: 'https://raw.githubusercontent.com/obra/superpowers/refs/heads/main/skills/test-driven-development/SKILL.md' },
-      { name: 'systematic-debugging', url: 'https://raw.githubusercontent.com/obra/superpowers/refs/heads/main/skills/systematic-debugging/SKILL.md' },
-      { name: 'subagent-driven-development', url: 'https://raw.githubusercontent.com/obra/superpowers/refs/heads/main/skills/subagent-driven-development/SKILL.md' },
-      { name: 'writing-plans', url: 'https://raw.githubusercontent.com/obra/superpowers/refs/heads/main/skills/writing-plans/SKILL.md' },
-      { name: 'executing-plans', url: 'https://raw.githubusercontent.com/obra/superpowers/refs/heads/main/skills/executing-plans/SKILL.md' },
-      { name: 'requesting-code-review', url: 'https://raw.githubusercontent.com/obra/superpowers/refs/heads/main/skills/requesting-code-review/SKILL.md' },
-      { name: 'root-cause-tracing', url: 'https://raw.githubusercontent.com/obra/superpowers/refs/heads/main/skills/root-cause-tracing/SKILL.md' },
-      { name: 'verification-before-completion', url: 'https://raw.githubusercontent.com/obra/superpowers/refs/heads/main/skills/verification-before-completion/SKILL.md' },
-      { name: 'dispatching-parallel-agents', url: 'https://raw.githubusercontent.com/obra/superpowers/refs/heads/main/skills/dispatching-parallel-agents/SKILL.md' },
+      { name: 'brainstorming', path: 'brainstorming/SKILL.md' },
+      { name: 'test-driven-development', path: 'test-driven-development/SKILL.md' },
+      { name: 'systematic-debugging', path: 'systematic-debugging/SKILL.md' },
+      { name: 'subagent-driven-development', path: 'subagent-driven-development/SKILL.md' },
+      { name: 'writing-plans', path: 'writing-plans/SKILL.md' },
+      { name: 'executing-plans', path: 'executing-plans/SKILL.md' },
+      { name: 'requesting-code-review', path: 'requesting-code-review/SKILL.md' },
+      { name: 'root-cause-tracing', path: 'root-cause-tracing/SKILL.md' },
+      { name: 'verification-before-completion', path: 'verification-before-completion/SKILL.md' },
+      { name: 'dispatching-parallel-agents', path: 'dispatching-parallel-agents/SKILL.md' },
     ],
   },
   {
     label: 'anthropics/skills',
     emoji: '🏛️',
-    stars: '官方',
+    repo: 'anthropics/skills',
+    branch: 'main',
+    basePath: 'skills',
+    stars: '...',
     desc: 'Anthropic 官方技能库',
     skills: [
-      { name: 'docx', url: 'https://raw.githubusercontent.com/anthropics/skills/main/skills/docx/SKILL.md' },
-      { name: 'pdf', url: 'https://raw.githubusercontent.com/anthropics/skills/main/skills/pdf/SKILL.md' },
-      { name: 'xlsx', url: 'https://raw.githubusercontent.com/anthropics/skills/main/skills/xlsx/SKILL.md' },
-      { name: 'pptx', url: 'https://raw.githubusercontent.com/anthropics/skills/main/skills/pptx/SKILL.md' },
-      { name: 'mcp-builder', url: 'https://raw.githubusercontent.com/anthropics/skills/main/skills/mcp-builder/SKILL.md' },
-      { name: 'frontend-design', url: 'https://raw.githubusercontent.com/anthropics/skills/main/skills/frontend-design/SKILL.md' },
-      { name: 'web-artifacts-builder', url: 'https://raw.githubusercontent.com/anthropics/skills/main/skills/web-artifacts-builder/SKILL.md' },
-      { name: 'webapp-testing', url: 'https://raw.githubusercontent.com/anthropics/skills/main/skills/webapp-testing/SKILL.md' },
-      { name: 'algorithmic-art', url: 'https://raw.githubusercontent.com/anthropics/skills/main/skills/algorithmic-art/SKILL.md' },
-      { name: 'canvas-design', url: 'https://raw.githubusercontent.com/anthropics/skills/main/skills/canvas-design/SKILL.md' },
+      { name: 'docx', path: 'docx/SKILL.md' },
+      { name: 'pdf', path: 'pdf/SKILL.md' },
+      { name: 'xlsx', path: 'xlsx/SKILL.md' },
+      { name: 'pptx', path: 'pptx/SKILL.md' },
+      { name: 'mcp-builder', path: 'mcp-builder/SKILL.md' },
+      { name: 'frontend-design', path: 'frontend-design/SKILL.md' },
+      { name: 'web-artifacts-builder', path: 'web-artifacts-builder/SKILL.md' },
+      { name: 'webapp-testing', path: 'webapp-testing/SKILL.md' },
+      { name: 'algorithmic-art', path: 'algorithmic-art/SKILL.md' },
+      { name: 'canvas-design', path: 'canvas-design/SKILL.md' },
     ],
   },
   {
     label: 'ComposioHQ/awesome-claude-skills',
     emoji: '🌐',
-    stars: '39.2k',
+    repo: 'ComposioHQ/awesome-claude-skills',
+    branch: 'master',
+    basePath: '',
+    stars: '...',
     desc: '100+ 社区精选技能',
     skills: [
-      { name: 'github-integration', url: 'https://raw.githubusercontent.com/ComposioHQ/awesome-claude-skills/master/github-integration/SKILL.md' },
-      { name: 'data-analysis', url: 'https://raw.githubusercontent.com/ComposioHQ/awesome-claude-skills/master/data-analysis/SKILL.md' },
-      { name: 'code-review', url: 'https://raw.githubusercontent.com/ComposioHQ/awesome-claude-skills/master/code-review/SKILL.md' },
+      { name: 'github-integration', path: 'github-integration/SKILL.md' },
+      { name: 'data-analysis', path: 'data-analysis/SKILL.md' },
+      { name: 'code-review', path: 'code-review/SKILL.md' },
     ],
   },
 ];
+
+/** 从 repo/branch/basePath/path 构造完整 raw URL */
+function buildSkillUrl(source: CommunitySource, skill: { path: string }): string {
+  return `https://raw.githubusercontent.com/${source.repo}/refs/heads/${source.branch}/${source.basePath ? source.basePath + '/' : ''}${skill.path}`;
+}
+
+/** 动态获取 GitHub repo stars 数 */
+function fetchGitHubStars(repo: string): Promise<string> {
+  return fetch(`https://api.github.com/repos/${repo}`, {
+    headers: { 'Accept': 'application/vnd.github.v3+json' },
+  })
+    .then(r => r.json())
+    .then(data => {
+      const stargazers = data?.stargazers_count;
+      if (typeof stargazers === 'number') {
+        return stargazers >= 1000 ? `${(stargazers / 1000).toFixed(1)}k` : String(stargazers);
+      }
+      return '?';
+    })
+    .catch(() => '?');
+}
 
 export default function SkillsConfig() {
   const agentConfig = useStore((s) => s.agentConfig);
@@ -75,12 +117,31 @@ export default function SkillsConfig() {
   const [remoteSubmitting, setRemoteSubmitting] = useState(false);
   const [updatingSkill, setUpdatingSkill] = useState<string | null>(null);
   const [removingSkill, setRemovingSkill] = useState<string | null>(null);
-  const [quickPickSource, setQuickPickSource] = useState<(typeof COMMUNITY_SOURCES)[0] | null>(null);
+  const [quickPickSource, setQuickPickSource] = useState<(typeof COMMUNITY_SOURCES_RAW)[0] | null>(null);
   const [quickPickAgent, setQuickPickAgent] = useState('');
+
+  // [Fix 5] 社区源的动态 stars（从 GitHub API 获取）
+  const [communitySources, setCommunitySources] = useState(COMMUNITY_SOURCES_RAW);
 
   useEffect(() => {
     loadAgentConfig();
   }, [loadAgentConfig]);
+
+  // [Fix 5] 组件挂载时并行获取所有社区源的 stars
+  useEffect(() => {
+    let cancelled = false;
+    const promises = COMMUNITY_SOURCES_RAW.map(async (src) => {
+      if (src.repo) {
+        const stars = await fetchGitHubStars(src.repo);
+        return { ...src, stars };
+      }
+      return src;
+    });
+    Promise.all(promises).then((results) => {
+      if (!cancelled) setCommunitySources(results);
+    });
+    return () => { cancelled = true; };
+  }, []);
 
   useEffect(() => {
     if (activeTab === 'remote') loadRemoteSkills();
@@ -267,13 +328,42 @@ export default function SkillsConfig() {
         </span>
       </div>
 
+      {/* ClawHub 官方商店入口 */}
+      <div style={{
+        marginBottom: 24, padding: '16px 20px', borderRadius: 12,
+        background: 'linear-gradient(135deg, #0d1f45 0%, #1a1040 100%)',
+        border: '1px solid var(--line)', display: 'flex', alignItems: 'center',
+        justifyContent: 'space-between', flexWrap: 'wrap', gap: 12,
+      }}>
+        <div>
+          <div style={{ fontSize: 14, fontWeight: 700, color: 'var(--text)', marginBottom: 4 }}>
+            🏪 ClawHub 官方 Skill 商店
+          </div>
+          <div style={{ fontSize: 12, color: 'var(--muted)', lineHeight: 1.6 }}>
+            浏览、搜索和安装官方认证技能 — <a href="https://clawhub.ai/" target="_blank" rel="noreferrer" style={{ color: 'var(--acc)', textDecoration: 'none', fontWeight: 600 }}>clawhub.ai</a>
+          </div>
+        </div>
+        <a
+          href="https://clawhub.ai/"
+          target="_blank"
+          rel="noreferrer"
+          style={{
+            padding: '8px 20px', background: 'var(--acc)', color: '#fff',
+            border: 'none', borderRadius: 8, cursor: 'pointer', fontWeight: 600,
+            fontSize: 13, textDecoration: 'none', whiteSpace: 'nowrap',
+          }}
+        >
+          访问商店 →
+        </a>
+      </div>
+
       {/* 社区快选区 */}
       <div style={{ marginBottom: 24 }}>
         <div style={{ fontSize: 12, fontWeight: 700, color: 'var(--muted)', letterSpacing: '.06em', marginBottom: 10 }}>
           🌐 社区技能源 — 一键导入
         </div>
         <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap' }}>
-          {COMMUNITY_SOURCES.map((src) => (
+          {communitySources.map((src) => (
             <div
               key={src.label}
               onClick={() => setQuickPickSource(quickPickSource?.label === src.label ? null : src)}
@@ -312,6 +402,7 @@ export default function SkillsConfig() {
             </div>
             <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(260px, 1fr))', gap: 8 }}>
               {quickPickSource.skills.map((sk) => {
+                const skillUrl = buildSkillUrl(quickPickSource, sk);
                 const alreadyAdded = remoteSkills.some((r) => r.skillName === sk.name && r.agentId === quickPickAgent);
                 return (
                   <div
@@ -324,13 +415,13 @@ export default function SkillsConfig() {
                   >
                     <div>
                       <div style={{ fontSize: 12, fontWeight: 600 }}>📦 {sk.name}</div>
-                      <div style={{ fontSize: 10, color: 'var(--muted)', wordBreak: 'break-all', maxWidth: 180 }}>{sk.url.split('/').slice(-2).join('/')}</div>
+                      <div style={{ fontSize: 10, color: 'var(--muted)', wordBreak: 'break-all', maxWidth: 180 }}>{skillUrl.split('/').slice(-2).join('/')}</div>
                     </div>
                     {alreadyAdded ? (
                       <span style={{ fontSize: 10, color: '#4caf88', fontWeight: 600 }}>✓ 已导入</span>
                     ) : (
                       <button
-                        onClick={() => handleQuickImport(sk.url, sk.name)}
+                        onClick={() => handleQuickImport(skillUrl, sk.name)}
                         style={{ padding: '4px 10px', background: 'var(--acc)', color: '#fff', border: 'none', borderRadius: 6, cursor: 'pointer', fontSize: 11, whiteSpace: 'nowrap' }}
                       >
                         导入
