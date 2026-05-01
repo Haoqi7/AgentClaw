@@ -2,7 +2,7 @@
 """
 早朝简报采集脚本
 每日 06:00 自动运行，抓取全球新闻 RSS → data/morning_brief_YYYYMMDD.json
-覆盖: 政治 | 军事 | 经济 | AI大模型
+覆盖分类由配置文件决定，信息源全部从配置读取
 """
 import json, pathlib, datetime, subprocess, re, sys, os, logging, time
 from xml.etree import ElementTree as ET
@@ -15,32 +15,14 @@ logging.basicConfig(level=logging.INFO, format='%(asctime)s [%(name)s] %(message
 
 DATA = pathlib.Path(__file__).resolve().parent.parent / 'data'
 
-# ── RSS 源配置 ──────────────────────────────────────────────────────────
-# [Fix 1] 替换死掉的 Reuters RSS (404) 和不稳定的 RSSHub 公共实例
-# 使用验证可达的公开 RSS 源
-FEEDS = {
-    '政治': [
-        ('BBC World', 'https://feeds.bbci.co.uk/news/world/rss.xml'),
-        ('Al Jazeera', 'https://www.aljazeera.com/xml/rss/all.xml'),
-        ('CNN World', 'http://rss.cnn.com/rss/edition_world.rss'),
-    ],
-    '军事': [
-        ('Defense News', 'https://www.defensenews.com/rss/'),
-        ('BBC World', 'https://feeds.bbci.co.uk/news/world/rss.xml'),
-        ('Al Jazeera', 'https://www.aljazeera.com/xml/rss/all.xml'),
-    ],
-    '经济': [
-        ('CNBC', 'https://search.cnbc.com/rs/search/combinedcms/view.xml?partnerId=wrss01&id=100003114'),
-        ('BBC Business', 'https://feeds.bbci.co.uk/news/business/rss.xml'),
-        ('Financial Times', 'https://www.ft.com/rss/home'),
-    ],
-    'AI大模型': [
-        ('Hacker News', 'https://hnrss.org/newest?q=AI+LLM+model&points=50'),
-        ('VentureBeat AI', 'https://venturebeat.com/category/ai/feed/'),
-        ('MIT Tech Review', 'https://www.technologyreview.com/feed/'),
-    ],
-}
+# ── 受保护 RSS 源（始终存在于配置中，不可删除）──────────────────────────
+PROTECTED_FEEDS = [
+    {'name': '微博热搜', 'url': 'https://rsshub.app/weibo/search/hot', 'category': '社会', 'protected': True},
+    {'name': '知乎日报', 'url': 'https://rsshub.app/zhihu/daily', 'category': '科技', 'protected': True},
+    {'name': '少数派',   'url': 'https://sspai.com/feed', 'category': '科技', 'protected': True},
+]
 
+# ── 关键词过滤（用于军事/AI等需要精准分类的场景）────────────────────────
 CATEGORY_KEYWORDS = {
     '军事': ['war', 'military', 'troops', 'attack', 'missile', 'army', 'navy', 'weapons',
               '战', '军', '导弹', '士兵', 'ukraine', 'russia', 'china sea', 'nato'],
@@ -48,13 +30,12 @@ CATEGORY_KEYWORDS = {
                 'machine learning', 'neural', 'model', '大模型', '人工智能', 'chatgpt'],
 }
 
-# [Fix 2] curl_rss 增加 2 次重试 + 20s 超时 + Accept 头
+# ── RSS 抓取 ──────────────────────────────────────────────────────────
 def curl_rss(url, timeout=20, retries=2):
     """用 urllib 抓取 RSS，支持重试"""
     last_err = None
     for attempt in range(1, retries + 1):
         try:
-            from urllib.request import Request, urlopen
             req = Request(url, headers={
                 'User-Agent': 'Mozilla/5.0 (compatible; MorningBrief/1.0)',
                 'Accept': 'application/rss+xml, application/xml, text/xml, */*',
@@ -126,7 +107,6 @@ def match_category(item, category):
     text = (item['title'] + ' ' + item['desc']).lower()
     return any(k in text for k in kws)
 
-# [Fix 3] fetch_category 接受 global_seen 参数实现跨分类去重
 def fetch_category(category, feeds, max_items=5, global_seen=None):
     """抓取一个分类的新闻"""
     seen_urls = global_seen if global_seen is not None else set()
@@ -159,6 +139,37 @@ def fetch_category(category, feeds, max_items=5, global_seen=None):
                 break
     return results
 
+def _ensure_protected_feeds(config):
+    """确保受保护源始终存在于配置中"""
+    feeds = config.get('feeds', [])
+    existing_urls = {f.get('url') for f in feeds}
+    changed = False
+    for pf in PROTECTED_FEEDS:
+        if pf['url'] not in existing_urls:
+            feeds.insert(0, pf)
+            changed = True
+    if changed:
+        config['feeds'] = feeds
+    return config, changed
+
+def _migrate_config(config):
+    """迁移旧配置格式 → 新格式"""
+    changed = False
+    # 1. custom_feeds → feeds
+    if 'custom_feeds' in config and 'feeds' not in config:
+        config['feeds'] = [{'name': f.get('name', ''), 'url': f.get('url', ''),
+                            'category': f.get('category', ''), 'protected': False}
+                           for f in config.pop('custom_feeds') if f.get('url')]
+        changed = True
+    # 2. feishu_webhook → notification
+    if 'feishu_webhook' in config and 'notification' not in config:
+        webhook = config.pop('feishu_webhook', '').strip()
+        config['notification'] = {'enabled': bool(webhook), 'channel': 'feishu', 'webhook': webhook}
+        changed = True
+    # 3. 确保受保护源存在
+    config, prot_changed = _ensure_protected_feeds(config)
+    return config, changed or prot_changed
+
 def main():
     import argparse
     parser = argparse.ArgumentParser()
@@ -173,7 +184,6 @@ def main():
         if age < 3600:  # 1小时内不重复
             log.info(f'今日已采集（{today}），跳过（使用 --force 强制采集）')
             return
-    # 注意：lock 放到采集成功后再 touch，防止失败也锁定
 
     # 读取用户配置
     config_file = DATA / 'morning_brief_config.json'
@@ -183,6 +193,15 @@ def main():
     except Exception:
         pass
 
+    # 迁移旧配置 + 确保受保护源
+    config, config_changed = _migrate_config(config)
+    if config_changed:
+        try:
+            atomic_json_write(config_file, config)
+            log.info('已自动迁移/补全配置')
+        except Exception as e:
+            log.warning(f'配置迁移写入失败: {e}')
+
     # 已启用的分类
     enabled_cats = set()
     if config.get('categories'):
@@ -190,33 +209,39 @@ def main():
             if c.get('enabled', True):
                 enabled_cats.add(c['name'])
     else:
-        enabled_cats = set(FEEDS.keys())
+        # 默认启用所有在 feeds 中出现的分类
+        for f in config.get('feeds', []):
+            cat = f.get('category', '')
+            if cat:
+                enabled_cats.add(cat)
+        if not enabled_cats:
+            enabled_cats = {'社会', '科技'}
 
     # 用户自定义关键词（全局加权）
     user_keywords = [kw.lower() for kw in config.get('keywords', [])]
 
-    # 合并自定义 RSS 源
-    custom_feeds = config.get('custom_feeds', [])
+    # 从配置中读取 feeds 列表，按分类分组
     merged_feeds = {}
-    for cat, feeds in FEEDS.items():
-        if cat in enabled_cats:
-            merged_feeds[cat] = list(feeds)
-    for cf in custom_feeds:
-        cat = cf.get('category', '')
-        feed_url = cf.get('url', '')
-        if cat in enabled_cats and feed_url:
-            # 校验自定义源 URL（SSRF 防护）
-            if validate_url(feed_url):
-                merged_feeds.setdefault(cat, []).append((cf.get('name', '自定义'), feed_url))
+    for f in config.get('feeds', []):
+        cat = f.get('category', '')
+        url = f.get('url', '')
+        name = f.get('name', '未命名')
+        if cat in enabled_cats and url:
+            if validate_url(url):
+                merged_feeds.setdefault(cat, []).append((name, url))
             else:
-                log.warning(f'自定义源 URL 不合法，跳过: {feed_url}')
+                log.warning(f'源 URL 不合法，跳过: {url}')
 
     log.info(f'开始采集 {today}...')
     log.info(f'  启用分类: {", ".join(enabled_cats)}')
     if user_keywords:
         log.info(f'  关注词: {", ".join(user_keywords)}')
-    if custom_feeds:
-        log.info(f'  自定义源: {len(custom_feeds)} 个')
+    total_feeds = sum(len(v) for v in merged_feeds.values())
+    log.info(f'  信息源: {total_feeds} 个')
+
+    if not merged_feeds:
+        log.warning('当前无可用信息源，请在前端添加 RSS 源')
+        return
 
     result = {
         'date': today,
@@ -224,8 +249,7 @@ def main():
         'categories': {}
     }
 
-    # [Fix 3] 全局 seen_urls 实现跨分类去重
-    # 例如 BBC World 同时出现在政治和军事，同一条新闻不会在两个分类中重复
+    # 全局 seen_urls 实现跨分类去重
     global_seen = set()
 
     for category, feeds in merged_feeds.items():
@@ -257,13 +281,14 @@ def main():
     lock_file.touch()
 
     # ── 推送通知 ─────────────────────────────────────────────────────────
-    _push_notification(result)
+    if os.environ.get('SKIP_PUSH') != '1':
+        _push_notification(result)
 
 
-# ── 通知推送（企业微信 / 钉钉 / 飞书 / 通用 Webhook）────────────────────
+# ── 通知推送（使用 channels 模块统一发送）────────────────────────────────
 
 def _push_notification(result):
-    """采集成功后，按配置推送通知（纯脚本端，不依赖 server.py）"""
+    """采集成功后，按配置推送通知（使用 channels 模块）"""
     config_file = DATA / 'morning_brief_config.json'
     try:
         config = json.loads(config_file.read_text())
@@ -277,7 +302,7 @@ def _push_notification(result):
     if not notification.get('enabled', False):
         return
 
-    channel = notification.get('channel', '').strip().lower()
+    channel_type = notification.get('channel', '').strip().lower()
     webhook = notification.get('webhook', '').strip()
     if not webhook:
         return
@@ -294,107 +319,27 @@ def _push_notification(result):
             cat_lines.append(f'  {cat}: {len(items)} 条')
     date_fmt = f'{date_str[:4]}年{date_str[4:6]}月{date_str[6:]}日' if len(date_str) == 8 else date_str
     title = f'📰 天下要闻 · {date_fmt}'
-    summary = f'共 {total} 条要闻已更新\n' + '\n'.join(cat_lines)
+    content = f'共 {total} 条要闻已更新\n' + '\n'.join(cat_lines)
 
-    # 按渠道分发
-    _senders = {
-        'wechat_work': _send_wechat_work,
-        'wecom': _send_wechat_work,        # 别名
-        'dingtalk': _send_dingtalk,
-        'feishu': _send_feishu,
-        'lark': _send_feishu,               # 别名
-        'generic': _send_generic_webhook,
-    }
-    sender = _senders.get(channel)
-    if not sender:
-        log.warning(f'未知通知渠道: {channel}，可选: {", ".join(_senders.keys())}')
-        return
-
+    # 使用 channels 模块统一发送
+    channels_dir = pathlib.Path(__file__).resolve().parent.parent / 'dashboard' / 'channels'
     try:
-        ok = sender(webhook, title, summary)
-        label = {'wechat_work': '企业微信', 'wecom': '企业微信', 'dingtalk': '钉钉',
-                 'feishu': '飞书', 'lark': '飞书', 'generic': 'Webhook'}.get(channel, channel)
-        log.info(f'  [{label}] 推送{"成功" if ok else "失败"}')
+        if channels_dir.is_dir() and str(channels_dir.parent) not in sys.path:
+            sys.path.insert(0, str(channels_dir.parent))
+        from channels import get_channel
+        channel_cls = get_channel(channel_type)
+        if not channel_cls:
+            log.warning(f'未知通知渠道: {channel_type}')
+            return
+        if not channel_cls.validate_webhook(webhook):
+            log.warning(f'{channel_cls.label} Webhook URL 无效: {webhook[:50]}')
+            return
+        ok = channel_cls.send(webhook, title, content)
+        log.info(f'[{channel_cls.label}] 推送{"成功" if ok else "失败"}')
+    except ImportError:
+        log.warning('channels 模块不可用，跳过通知推送')
     except Exception as e:
-        log.warning(f'  通知推送异常: {e}')
-
-
-def _post_json(url, payload, timeout=10):
-    """通用 JSON POST 请求"""
-    data = json.dumps(payload, ensure_ascii=False).encode('utf-8')
-    req = Request(url, data=data, headers={
-        'Content-Type': 'application/json; charset=utf-8',
-        'User-Agent': 'MorningBrief/1.0',
-    })
-    resp = urlopen(req, timeout=timeout)
-    body = resp.read().decode('utf-8', errors='ignore')
-    return resp.status, body
-
-
-def _send_wechat_work(webhook, title, content):
-    """企业微信机器人 Webhook 推送
-    https://developer.work.weixin.qq.com/document/path/91770
-    """
-    # 企业微信 markdown 不支持 \n，需要用 <br> 或换行
-    md_content = content.replace('\\n', '\n')
-    payload = {
-        'msgtype': 'markdown',
-        'markdown': {
-            'content': f'## {title}\n{md_content}',
-        },
-    }
-    status, body = _post_json(webhook, payload)
-    resp = json.loads(body)
-    return resp.get('errcode', -1) == 0
-
-
-def _send_dingtalk(webhook, title, content):
-    """钉钉机器人 Webhook 推送
-    https://open.dingtalk.com/document/robots/custom-robot-access
-    """
-    payload = {
-        'msgtype': 'markdown',
-        'markdown': {
-            'title': title,
-            'text': f'## {title}\n\n{content}',
-        },
-    }
-    status, body = _post_json(webhook, payload)
-    resp = json.loads(body)
-    return resp.get('errcode', -1) == 0
-
-
-def _send_feishu(webhook, title, content):
-    """飞书机器人 Webhook 推送
-    https://open.feishu.cn/document/client-docs/bot-v3/add-custom-bot
-    """
-    # 飞书使用富文本消息
-    payload = {
-        'msg_type': 'interactive',
-        'card': {
-            'header': {
-                'title': {'tag': 'plain_text', 'content': title},
-                'template': 'blue',
-            },
-            'elements': [
-                {'tag': 'markdown', 'content': content.replace('\\n', '\n')},
-            ],
-        },
-    }
-    status, body = _post_json(webhook, payload)
-    resp = json.loads(body)
-    return resp.get('code', -1) == 0 or resp.get('StatusCode', -1) == 0
-
-
-def _send_generic_webhook(webhook, title, content):
-    """通用 Webhook 推送（发送 JSON 格式）"""
-    payload = {
-        'title': title,
-        'content': content,
-        'timestamp': datetime.datetime.now().isoformat(),
-    }
-    status, body = _post_json(webhook, payload)
-    return 200 <= status < 300
+        log.warning(f'通知推送异常: {e}')
 
 
 if __name__ == '__main__':

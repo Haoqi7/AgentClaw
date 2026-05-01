@@ -308,17 +308,20 @@ def remove_remote(agent_id: str, name: str) -> bool:
 #   GET /api/v1/skills/{slug}/versions  版本历史
 # ═══════════════════════════════════════════════════════════════════════
 
-CLAWHUB_API_BASE = 'https://mirror-cn.clawhub.com'  # 国内镜像（默认）
-CLAWHUB_MAIN = 'https://clawhub.ai'                  # 主站备用
+CLAWHUB_MIRROR = 'https://mirror-cn.clawhub.com'  # 国内镜像
+CLAWHUB_MAIN = 'https://clawhub.ai'                  # 主站
 
 # 支持通过环境变量或配置文件覆盖 ClawHub 地址
 _CLAWHUB_ENV = 'OPENCLAW_CLAWHUB_BASE'
+
+# 两个地址互补：镜像优先，主站备用
+CLAWHUB_FALLBACK_ORDER = [CLAWHUB_MIRROR, CLAWHUB_MAIN]
 
 
 def _get_clawhub_base():
     """获取 ClawHub API 基础地址
 
-    优先级: 本地配置文件 > 环境变量 > 国内镜像
+    优先级: 本地配置文件 > 环境变量 > 国内镜像 > 主站
     配置方式:
       echo "https://clawhub.ai" > ~/.openclaw/clawhub-url
       export OPENCLAW_CLAWHUB_BASE=https://clawhub.ai
@@ -328,7 +331,42 @@ def _get_clawhub_base():
         base = cfg_file.read_text().strip()
         if base:
             return base
-    return os.environ.get(_CLAWHUB_ENV) or CLAWHUB_API_BASE
+    env_base = os.environ.get(_CLAWHUB_ENV)
+    if env_base:
+        return env_base
+    return CLAWHUB_MIRROR
+
+
+def _clawhub_request_with_fallback(url_builder, timeout=15, retries=1):
+    """带镜像回退的 ClawHub API 请求
+
+    优先使用镜像 (mirror-cn.clawhub.com)，失败后回退到主站 (clawhub.ai)。
+    如果用户自定义了地址则不回退。
+    """
+    # 判断是否使用用户自定义地址
+    cfg_file = OCLAW_HOME / 'clawhub-url'
+    env_base = os.environ.get(_CLAWHUB_ENV)
+    user_custom = (cfg_file.exists() and cfg_file.read_text().strip()) or env_base
+
+    bases_to_try = [_get_clawhub_base()]
+    if not user_custom:
+        # 未自定义时，尝试所有回退地址
+        for b in CLAWHUB_FALLBACK_ORDER:
+            if b not in bases_to_try:
+                bases_to_try.append(b)
+
+    last_error = None
+    for base in bases_to_try:
+        try:
+            url = url_builder(base)
+            req = urllib.request.Request(url, headers={'User-Agent': 'OpenClaw-SkillManager/1.0'})
+            with urllib.request.urlopen(req, timeout=timeout) as resp:
+                return json.loads(resp.read().decode('utf-8'))
+        except Exception as e:
+            last_error = e
+            continue
+
+    raise Exception(f'ClawHub API 请求失败（已尝试 {len(bases_to_try)} 个地址）: {last_error}')
 
 
 def _get_clawhub_download_url(slug, tag='latest'):
@@ -531,8 +569,31 @@ BUILTIN_SKILL_SLUGS = {
 }
 
 
+def search_hub_dict(query, limit=20):
+    """搜索 ClawHub 技能商店，返回 dict（供 server.py API 调用）
+
+    API: GET /api/v1/search?q=xxx (官方文档)
+    返回: skills 数组，每项含 slug/name/description/downloads 等
+    带镜像回退：镜像不可达时自动使用主站
+    """
+    if not query:
+        return {'ok': False, 'error': 'q 参数必填'}
+
+    def build_url(base):
+        return f'{base}/api/v1/search?q={urllib.parse.quote(query)}&limit={limit}'
+
+    try:
+        data = _clawhub_request_with_fallback(build_url, timeout=15)
+        results = data.get('skills', data.get('results', []))[:limit]
+        return {'ok': True, 'results': results, 'query': query, 'total': len(results)}
+    except urllib.error.HTTPError as e:
+        return {'ok': False, 'error': f'ClawHub API HTTP {e.code}: {e.reason}'}
+    except Exception as e:
+        return {'ok': False, 'error': f'搜索失败: {str(e)[:100]}'}
+
+
 def search_hub(query, limit=10):
-    """搜索 ClawHub 技能商店
+    """搜索 ClawHub 技能商店（CLI 版本，打印到终端）
 
     API: GET /api/v1/search?q=xxx
     """
@@ -543,40 +604,33 @@ def search_hub(query, limit=10):
     print(f'🔍 正在搜索: {query}')
     print(f'   API: {_get_clawhub_base()}\n')
 
-    try:
-        search_url = _get_clawhub_search_url(query)
-        req = urllib.request.Request(search_url, headers={'User-Agent': 'OpenClaw-SkillManager/1.0'})
-        with urllib.request.urlopen(req, timeout=15) as resp:
-            data = json.loads(resp.read().decode('utf-8'))
+    result = search_hub_dict(query, limit)
 
-        # API 可能返回 "skills" 或 "results" 字段
-        results = data.get('skills', data.get('results', []))
-
-        if not results:
-            print(f'📭 未找到匹配的技能')
-            print(f'   💡 直接浏览商店: https://clawhub.ai/')
-            return True
-
-        results = results[:limit]
-
-        print(f'找到 {len(results)} 个技能：\n')
-        print(f'{"Slug":<30} | {"名称":<20} | 描述')
-        print('-' * 100)
-
-        for sk in results:
-            slug = sk.get('slug', '')
-            name = (sk.get('name', '') or slug)[:20].ljust(20)
-            desc = (sk.get('description', '') or '')[:40]
-            print(f'{slug:<30} | {name} | {desc}')
-
-        print(f'\n💡 安装命令:')
-        print(f'   python3 scripts/skill_manager.py install-hub --agent <agent> --slug <slug>')
-        return True
-
-    except Exception as e:
-        print(f'❌ 搜索失败: {e}')
+    if not result.get('ok'):
+        print(f'❌ 搜索失败: {result.get("error", "未知错误")}')
         print(f'   💡 提示: 检查网络或直接浏览 https://clawhub.ai/')
         return False
+
+    results = result.get('results', [])
+
+    if not results:
+        print(f'📭 未找到匹配的技能')
+        print(f'   💡 直接浏览商店: https://clawhub.ai/')
+        return True
+
+    print(f'找到 {len(results)} 个技能：\n')
+    print(f'{"Slug":<30} | {"名称":<20} | 描述')
+    print('-' * 100)
+
+    for sk in results:
+        slug = sk.get('slug', '')
+        name = (sk.get('name', '') or slug)[:20].ljust(20)
+        desc = (sk.get('description', '') or '')[:40]
+        print(f'{slug:<30} | {name} | {desc}')
+
+    print(f'\n💡 安装命令:')
+    print(f'   python3 scripts/skill_manager.py install-hub --agent <agent> --slug <slug>')
+    return True
 
 
 def install_hub(agent_id, slug, skill_name=None):

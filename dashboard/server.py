@@ -866,6 +866,33 @@ def _compute_checksum(content: str) -> str:
     return hashlib.sha256(content.encode()).hexdigest()[:16]
 
 
+def _migrate_morning_config(cfg):
+    """迁移旧配置格式 → 新格式（feeds + notification）"""
+    if not cfg:
+        return cfg, False
+    changed = False
+    # 1. custom_feeds → feeds
+    if 'custom_feeds' in cfg and 'feeds' not in cfg:
+        cfg['feeds'] = [{'name': f.get('name', ''), 'url': f.get('url', ''),
+                          'category': f.get('category', ''), 'protected': False}
+                         for f in cfg.pop('custom_feeds') if f.get('url')]
+        changed = True
+    # 2. 确保受保护源存在
+    PROTECTED_FEEDS = [
+        {'name': '微博热搜', 'url': 'https://rsshub.app/weibo/search/hot', 'category': '社会', 'protected': True},
+        {'name': '知乎日报', 'url': 'https://rsshub.app/zhihu/daily', 'category': '科技', 'protected': True},
+        {'name': '少数派',   'url': 'https://sspai.com/feed', 'category': '科技', 'protected': True},
+    ]
+    feeds = cfg.get('feeds', [])
+    existing_urls = {f.get('url') for f in feeds}
+    for pf in PROTECTED_FEEDS:
+        if pf['url'] not in existing_urls:
+            feeds.insert(0, pf)
+            changed = True
+    cfg['feeds'] = feeds
+    return cfg, changed
+
+
 def migrate_notification_config():
     """自动迁移旧配置 (feishu_webhook) 到新结构 (notification)"""
     cfg_path = DATA / 'morning_brief_config.json'
@@ -3681,16 +3708,44 @@ class Handler(BaseHTTPRequestHandler):
             self.send_json(audit)
         elif p == '/api/morning-config':
             migrate_notification_config()
-            self.send_json(read_json(DATA / 'morning_brief_config.json', {
-                'categories': [
-                    {'name': '政治', 'enabled': True},
-                    {'name': '军事', 'enabled': True},
-                    {'name': '经济', 'enabled': True},
-                    {'name': 'AI大模型', 'enabled': True},
-                ],
-                'keywords': [], 'custom_feeds': [],
-                'notification': {'enabled': True, 'channel': 'feishu', 'webhook': ''},
-            }))
+            cfg = read_json(DATA / 'morning_brief_config.json', {})
+            # 迁移旧配置
+            cfg, changed = _migrate_morning_config(cfg)
+            if changed:
+                try:
+                    atomic_json_write(DATA / 'morning_brief_config.json', cfg)
+                except Exception:
+                    pass
+            self.send_json(cfg)
+        elif p == '/api/clawhub/search':
+            # 代理 ClawHub 搜索 API
+            parsed_qs = urlparse(self.path).query
+            from urllib.parse import parse_qs
+            qs = parse_qs(parsed_qs)
+            query = qs.get('q', [''])[0].strip()
+            limit = int(qs.get('limit', ['20'])[0])
+            if not query:
+                self.send_json({'ok': False, 'error': 'q 参数必填'}, 400)
+                return
+            try:
+                if str(SCRIPTS) not in sys.path:
+                    sys.path.insert(0, str(SCRIPTS))
+                from skill_manager import search_hub_dict
+                result = search_hub_dict(query, limit)
+                self.send_json(result)
+            except Exception as e:
+                self.send_json({'ok': False, 'error': str(e)[:200]}, 500)
+        elif p == '/api/clawhub/info':
+            # 返回 ClawHub 配置状态
+            try:
+                if str(SCRIPTS) not in sys.path:
+                    sys.path.insert(0, str(SCRIPTS))
+                from skill_manager import _get_clawhub_base, _check_hub_available
+                base = _get_clawhub_base()
+                reachable = _check_hub_available(timeout=5)
+                self.send_json({'ok': True, 'base': base, 'reachable': reachable})
+            except Exception as e:
+                self.send_json({'ok': False, 'error': str(e)[:100]})
         elif p == '/api/notification-channels':
             self.send_json({'ok': True, 'channels': get_channel_info()})
         elif p.startswith('/api/morning-brief/'):
@@ -3821,7 +3876,7 @@ class Handler(BaseHTTPRequestHandler):
             if not isinstance(body, dict):
                 self.send_json({'ok': False, 'error': '请求体必须是 JSON 对象'}, 400)
                 return
-            allowed_keys = {'categories', 'keywords', 'custom_feeds', 'notification', 'feishu_webhook'}
+            allowed_keys = {'categories', 'keywords', 'feeds', 'custom_feeds', 'notification', 'feishu_webhook'}
             unknown = set(body.keys()) - allowed_keys
             if unknown:
                 self.send_json({'ok': False, 'error': f'未知字段: {", ".join(unknown)}'}, 400)
@@ -3832,6 +3887,28 @@ class Handler(BaseHTTPRequestHandler):
             if 'keywords' in body and not isinstance(body['keywords'], list):
                 self.send_json({'ok': False, 'error': 'keywords 必须是数组'}, 400)
                 return
+            if 'feeds' in body:
+                if not isinstance(body['feeds'], list):
+                    self.send_json({'ok': False, 'error': 'feeds 必须是数组'}, 400)
+                    return
+                for i, f in enumerate(body['feeds']):
+                    if not isinstance(f, dict):
+                        self.send_json({'ok': False, 'error': f'feeds[{i}] 必须是对象'}, 400)
+                        return
+                    if not f.get('url'):
+                        self.send_json({'ok': False, 'error': f'feeds[{i}] 缺少 url'}, 400)
+                        return
+                    if not f.get('category'):
+                        self.send_json({'ok': False, 'error': f'feeds[{i}] 缺少 category'}, 400)
+                        return
+                    if not validate_url(f.get('url', '')):
+                        self.send_json({'ok': False, 'error': f'feeds[{i}] URL 不合法: {f.get("url", "")[:50]}'}, 400)
+                        return
+            # 兼容旧 custom_feeds 字段
+            if 'custom_feeds' in body and 'feeds' not in body:
+                body['feeds'] = [{'name': f.get('name', ''), 'url': f.get('url', ''),
+                                  'category': f.get('category', ''), 'protected': False}
+                                 for f in body.pop('custom_feeds') if f.get('url')]
             if 'notification' in body:
                 noti = body['notification']
                 if not isinstance(noti, dict):
@@ -3850,6 +3927,23 @@ class Handler(BaseHTTPRequestHandler):
             webhook_legacy = body.get('feishu_webhook', '').strip()
             if webhook_legacy and 'notification' not in body:
                 body['notification'] = {'enabled': True, 'channel': 'feishu', 'webhook': webhook_legacy}
+            body.pop('feishu_webhook', None)
+            body.pop('custom_feeds', None)
+            # 确保受保护源存在
+            PROTECTED_FEEDS = [
+                {'name': '微博热搜', 'url': 'https://rsshub.app/weibo/search/hot', 'category': '社会', 'protected': True},
+                {'name': '知乎日报', 'url': 'https://rsshub.app/zhihu/daily', 'category': '科技', 'protected': True},
+                {'name': '少数派',   'url': 'https://sspai.com/feed', 'category': '科技', 'protected': True},
+            ]
+            feeds = body.get('feeds', [])
+            existing_urls = {f.get('url') for f in feeds}
+            for pf in PROTECTED_FEEDS:
+                if pf['url'] not in existing_urls:
+                    feeds.insert(0, pf)
+            body['feeds'] = feeds
+            # 确保默认 notification 字段
+            if 'notification' not in body:
+                body['notification'] = {'enabled': False, 'channel': 'feishu', 'webhook': ''}
             cfg_path = DATA / 'morning_brief_config.json'
             cfg_path.write_text(json.dumps(body, ensure_ascii=False, indent=2))
             self.send_json({'ok': True, 'message': '订阅配置已保存'})
@@ -3905,12 +3999,73 @@ class Handler(BaseHTTPRequestHandler):
                     cmd = ['python3', str(SCRIPTS / 'fetch_morning_news.py')]
                     if force:
                         cmd.append('--force')
-                    subprocess.run(cmd, timeout=120)
-                    push_to_feishu()
+                    env = os.environ.copy()
+                    env['SKIP_PUSH'] = '1'  # 脚本端不推送，由 server 统一推送
+                    subprocess.run(cmd, timeout=120, env=env)
+                    push_notification()
                 except Exception as e:
                     print(f'[refresh error] {e}', file=sys.stderr)
             threading.Thread(target=do_refresh, daemon=True).start()
             self.send_json({'ok': True, 'message': '采集已触发，约30-60秒后刷新'})
+            return
+
+        if p == '/api/clawhub/install':
+            agent_id = body.get('agentId', '').strip()
+            slug = body.get('slug', '').strip()
+            if not agent_id or not slug:
+                self.send_json({'ok': False, 'error': 'agentId and slug required'}, 400)
+                return
+            try:
+                if str(SCRIPTS) not in sys.path:
+                    sys.path.insert(0, str(SCRIPTS))
+                from skill_manager import install_hub
+                ok = install_hub(agent_id, slug)
+                # 重新同步 agent 配置
+                try:
+                    subprocess.run(['python3', str(SCRIPTS / 'sync_agent_config.py')], timeout=10)
+                except Exception:
+                    pass
+                if ok:
+                    self.send_json({'ok': True, 'message': f'技能 {slug} 已安装到 {agent_id}'})
+                else:
+                    self.send_json({'ok': False, 'error': f'安装失败: {slug}'})
+            except Exception as e:
+                self.send_json({'ok': False, 'error': str(e)[:200]}, 500)
+            return
+
+        if p == '/api/morning-brief/check-feeds':
+            # 批量检测 RSS 源可用性
+            urls = body.get('urls', [])
+            if not isinstance(urls, list) or not urls:
+                self.send_json({'ok': False, 'error': 'urls 必须是非空数组'}, 400)
+                return
+            if len(urls) > 30:
+                self.send_json({'ok': False, 'error': '最多检测 30 个源'}, 400)
+                return
+            try:
+                if str(SCRIPTS) not in sys.path:
+                    sys.path.insert(0, str(SCRIPTS))
+                from fetch_morning_news import curl_rss, parse_rss, _safe_parse_xml
+                results = []
+                for url in urls:
+                    try:
+                        xml = curl_rss(url, timeout=10, retries=1)
+                        if not xml:
+                            results.append({'url': url, 'status': 'error', 'error': '返回内容为空'})
+                            continue
+                        items = parse_rss(xml)
+                        title = ''
+                        root = _safe_parse_xml(xml)
+                        if root is not None:
+                            ch_title = root.find('.//channel/title')
+                            if ch_title is not None:
+                                title = (ch_title.text or '').strip()
+                        results.append({'url': url, 'status': 'ok', 'title': title, 'itemCount': len(items)})
+                    except Exception as e:
+                        results.append({'url': url, 'status': 'error', 'error': str(e)[:100]})
+                self.send_json({'ok': True, 'results': results})
+            except Exception as e:
+                self.send_json({'ok': False, 'error': str(e)[:200]}, 500)
             return
 
         if p == '/api/add-skill':

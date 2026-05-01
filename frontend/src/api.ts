@@ -159,6 +159,10 @@ export const api = {
     postJ<ActionResult>(`${API_BASE}/api/morning-brief/refresh`, {}),
   saveMorningConfig: (config: SubConfig) =>
     postJ<ActionResult>(`${API_BASE}/api/morning-config`, config),
+  notificationChannels: () =>
+    fetchJ<{ok: boolean; channels: ChannelInfo[]}>(`${API_BASE}/api/notification-channels`),
+  checkFeeds: (urls: string[]) =>
+    postJ<{ok: boolean; results: FeedCheckResult[]}>(`${API_BASE}/api/morning-brief/check-feeds`, {urls}),
   addSkill: (agentId: string, skillName: string, description: string, trigger: string) =>
     postJ<ActionResult>(`${API_BASE}/api/add-skill`, { agentId, skillName, description, trigger }),
 
@@ -173,6 +177,16 @@ export const api = {
     postJ<ActionResult>(`${API_BASE}/api/update-remote-skill`, { agentId, skillName }),
   removeRemoteSkill: (agentId: string, skillName: string) =>
     postJ<ActionResult>(`${API_BASE}/api/remove-remote-skill`, { agentId, skillName }),
+
+  // ClawHub 技能商店
+  clawhubSearch: (query: string, limit?: number) =>
+    fetchJ<{ok: boolean; results: ClawHubSkill[]; query: string; total: number}>(
+      `${API_BASE}/api/clawhub/search?q=${encodeURIComponent(query)}&limit=${limit || 20}`
+    ),
+  clawhubInstall: (agentId: string, slug: string) =>
+    postJ<ActionResult>(`${API_BASE}/api/clawhub/install`, { agentId, slug }),
+  clawhubInfo: () =>
+    fetchJ<{ok: boolean; base: string; reachable: boolean}>(`${API_BASE}/api/clawhub/info`),
 
   createTask: (data: CreateTaskPayload) =>
     postJ<ActionResult & { taskId?: string }>(`${API_BASE}/api/create-task`, data),
@@ -401,11 +415,51 @@ export interface CustomFeed {
   category: string;
 }
 
+export interface FeedSource {
+  name: string;
+  url: string;
+  category: string;
+  protected: boolean;
+}
+
+export interface NotificationConfig {
+  enabled: boolean;
+  channel: string;
+  webhook: string;
+}
+
 export interface SubConfig {
   categories: SubCategoryConfig[];
   keywords: string[];
-  custom_feeds: CustomFeed[];
-  feishu_webhook: string;
+  feeds: FeedSource[];
+  custom_feeds?: CustomFeed[];      // 兼容旧数据
+  notification: NotificationConfig;
+  feishu_webhook?: string;          // 兼容旧数据
+}
+
+export interface ChannelInfo {
+  id: string;
+  label: string;
+  icon: string;
+  placeholder: string;
+}
+
+export interface FeedCheckResult {
+  url: string;
+  status: 'ok' | 'error';
+  title?: string;
+  itemCount?: number;
+  error?: string;
+}
+
+export interface ClawHubSkill {
+  slug: string;
+  name: string;
+  description: string;
+  downloads?: number;
+  stars?: number;
+  owner?: { handle?: string };
+  version?: string;
 }
 
 export interface ActivityEntry {
