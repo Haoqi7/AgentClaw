@@ -4048,7 +4048,7 @@ class Handler(BaseHTTPRequestHandler):
                     if not f.get('category'):
                         self.send_json({'ok': False, 'error': f'feeds[{i}] 缺少 category'}, 400)
                         return
-                    if not validate_url(f.get('url', '')):
+                    if not validate_url(f.get('url', ''), allowed_schemes=('http', 'https')):
                         self.send_json({'ok': False, 'error': f'feeds[{i}] URL 不合法: {f.get("url", "")[:50]}'}, 400)
                         return
             # 兼容旧 custom_feeds 字段
@@ -4082,7 +4082,14 @@ class Handler(BaseHTTPRequestHandler):
                 body['notification'] = {'enabled': False, 'channel': 'feishu', 'webhook': ''}
             cfg_path = DATA / 'morning_brief_config.json'
             try:
-                atomic_json_write(cfg_path, body)
+                # 合并写入：只更新前端传来的字段，保留其他字段（如 tasks 可能被另一个请求修改）
+                existing = read_json(cfg_path, {})
+                for key in ('feeds', 'notification', 'categories', 'keywords', 'tasks'):
+                    if key in body:
+                        existing[key] = body[key]
+                atomic_json_write(cfg_path, existing)
+                # 设置保存时触发清理过期简报
+                _cleanup_old_briefs(max_days=7)
             except Exception as e:
                 self.send_json({'ok': False, 'error': f'保存失败: {e}'}, 500)
                 return
@@ -4233,6 +4240,11 @@ class Handler(BaseHTTPRequestHandler):
                             cmd.extend(['--categories', ','.join(tc)])
                         if tk:
                             cmd.extend(['--keywords', ','.join(tk)])
+                        tfu = t.get('feedUrls', [])
+                        if tfu:
+                            cmd.extend(['--feed-urls', ','.join(tfu)])
+                        # 采集时触发清理过期简报
+                        _cleanup_old_briefs(max_days=7)
                         env = os.environ.copy()
                         env['SKIP_PUSH'] = '1'
                         subprocess.run(cmd, timeout=120, env=env)
