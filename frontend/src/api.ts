@@ -187,6 +187,26 @@ export const api = {
     postJ<ActionResult>(`${API_BASE}/api/clawhub/install`, { agentId, slug }),
   clawhubInfo: () =>
     fetchJ<{ok: boolean; base: string; reachable: boolean}>(`${API_BASE}/api/clawhub/info`),
+  clawhubPreview: (slug: string) =>
+    fetchJ<{ok: boolean; slug?: string; content?: string; error?: string}>(`${API_BASE}/api/clawhub/preview?slug=${encodeURIComponent(slug)}`),
+  githubSkillPreview: (url: string) =>
+    fetchJ<{ok: boolean; content?: string; error?: string}>(`${API_BASE}/api/github-skill-preview?url=${encodeURIComponent(url)}`),
+
+  // ── 订阅任务管理 ──
+  morningTasks: () =>
+    fetchJ<{ok: boolean; tasks: SubscriptionTask[]}>(`${API_BASE}/api/morning-tasks`),
+  createMorningTask: (task: Omit<SubscriptionTask, 'id' | 'createdAt' | 'updatedAt'>) =>
+    postJ<ActionResult & { task?: SubscriptionTask }>(`${API_BASE}/api/morning-tasks`, task),
+  updateMorningTask: (id: string, updates: Partial<SubscriptionTask>) =>
+    postJ<ActionResult>(`${API_BASE}/api/morning-tasks/${encodeURIComponent(id)}`, { ...updates, _method: 'PUT' }),
+  deleteMorningTask: (id: string) =>
+    postJ<ActionResult>(`${API_BASE}/api/morning-tasks/${encodeURIComponent(id)}`, { _method: 'DELETE' }),
+  collectTask: (id: string) =>
+    postJ<ActionResult>(`${API_BASE}/api/morning-tasks/${encodeURIComponent(id)}/collect`, {}),
+  pushTest: (id: string) =>
+    postJ<ActionResult>(`${API_BASE}/api/morning-tasks/${encodeURIComponent(id)}/push-test`, {}),
+  pushHistory: (id: string) =>
+    fetchJ<{ok: boolean; history: PushHistoryItem[]}>(`${API_BASE}/api/morning-tasks/${encodeURIComponent(id)}/push-history`),
 
   createTask: (data: CreateTaskPayload) =>
     postJ<ActionResult & { taskId?: string }>(`${API_BASE}/api/create-task`, data),
@@ -428,6 +448,28 @@ export interface NotificationConfig {
   webhook: string;
 }
 
+/** 订阅任务卡片 */
+export interface SubscriptionTask {
+  id: string;
+  name: string;
+  emoji: string;
+  categories: string[];
+  feedUrls: string[];
+  notification: NotificationConfig;
+  createdAt: string;
+  updatedAt: string;
+}
+
+/** 推送历史条目 */
+export interface PushHistoryItem {
+  taskId: string;
+  channel: string;
+  status: 'success' | 'failed';
+  itemCount: number;
+  pushedAt: string;
+  error?: string;
+}
+
 export interface SubConfig {
   categories: SubCategoryConfig[];
   keywords: string[];
@@ -435,6 +477,7 @@ export interface SubConfig {
   custom_feeds?: CustomFeed[];      // 兼容旧数据
   notification: NotificationConfig;
   feishu_webhook?: string;          // 兼容旧数据
+  tasks?: SubscriptionTask[];       // 订阅任务卡片（最多12个）
 }
 
 export interface ChannelInfo {

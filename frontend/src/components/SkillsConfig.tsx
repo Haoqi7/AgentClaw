@@ -131,6 +131,10 @@ export default function SkillsConfig() {
   const [clawhubSearching, setClawhubSearching] = useState(false);
   const [clawhubInstalling, setClawhubInstalling] = useState<string | null>(null);
 
+  // Skill preview state
+  const [previewContent, setPreviewContent] = useState<{ title: string; content: string; source: string; slug?: string; sourceUrl?: string } | null>(null);
+  const [previewLoading, setPreviewLoading] = useState(false);
+
   useEffect(() => { loadAgentConfig(); }, [loadAgentConfig]);
 
   useEffect(() => {
@@ -255,6 +259,30 @@ export default function SkillsConfig() {
     setClawhubInstalling(null);
   };
 
+  // Preview a ClawHub skill
+  const handleClawhubPreview = async (slug: string, name: string) => {
+    setPreviewLoading(true);
+    setPreviewContent({ title: name, content: '⟳ 加载中…', source: 'ClawHub', slug });
+    try {
+      const r = await api.clawhubPreview(slug);
+      if (r.ok) setPreviewContent({ title: name, content: r.content || '（空内容）', source: 'ClawHub', slug });
+      else setPreviewContent({ title: name, content: '❌ ' + (r.error || '预览失败'), source: 'ClawHub', slug });
+    } catch { setPreviewContent({ title: name, content: '❌ 网络错误', source: 'ClawHub', slug }); }
+    setPreviewLoading(false);
+  };
+
+  // Preview a GitHub skill
+  const handleGithubPreview = async (url: string, name: string) => {
+    setPreviewLoading(true);
+    setPreviewContent({ title: name, content: '⟳ 加载中…', source: 'GitHub', sourceUrl: url });
+    try {
+      const r = await api.githubSkillPreview(url);
+      if (r.ok) setPreviewContent({ title: name, content: r.content || '（空内容）', source: 'GitHub', sourceUrl: url });
+      else setPreviewContent({ title: name, content: '❌ ' + (r.error || '预览失败'), source: 'GitHub', sourceUrl: url });
+    } catch { setPreviewContent({ title: name, content: '❌ 网络错误', source: 'GitHub', sourceUrl: url }); }
+    setPreviewLoading(false);
+  };
+
   const isClawHubSource = (src: CommunitySource) => src.repo === '' && src.label === 'ClawHub 技能商店';
 
   if (!agentConfig?.agents) {
@@ -373,11 +401,18 @@ export default function SkillsConfig() {
                           {alreadyAdded ? (
                             <span style={{ fontSize: 10, color: '#4caf88', fontWeight: 600, whiteSpace: 'nowrap', marginLeft: 8 }}>✓ 已导入</span>
                           ) : (
-                            <button onClick={() => handleClawhubInstall(sk.slug, sk.name || sk.slug)}
-                              disabled={clawhubInstalling === sk.slug}
-                              style={{ padding: '4px 10px', background: 'var(--acc)', color: '#fff', border: 'none', borderRadius: 6, cursor: 'pointer', fontSize: 11, whiteSpace: 'nowrap', marginLeft: 8, opacity: clawhubInstalling === sk.slug ? 0.5 : 1 }}>
-                              {clawhubInstalling === sk.slug ? '⟳' : '安装'}
-                            </button>
+                            <div style={{ display: 'flex', gap: 4, marginLeft: 8 }}>
+                              <button onClick={() => handleClawhubPreview(sk.slug, sk.name || sk.slug)}
+                                disabled={previewLoading}
+                                style={{ padding: '4px 8px', background: 'transparent', color: 'var(--muted)', border: '1px solid var(--line)', borderRadius: 6, cursor: 'pointer', fontSize: 10, whiteSpace: 'nowrap' }}>
+                                👁 预览
+                              </button>
+                              <button onClick={() => handleClawhubInstall(sk.slug, sk.name || sk.slug)}
+                                disabled={clawhubInstalling === sk.slug}
+                                style={{ padding: '4px 8px', background: 'var(--acc)', color: '#fff', border: 'none', borderRadius: 6, cursor: 'pointer', fontSize: 10, whiteSpace: 'nowrap', opacity: clawhubInstalling === sk.slug ? 0.5 : 1 }}>
+                                {clawhubInstalling === sk.slug ? '⟳' : '安装'}
+                              </button>
+                            </div>
                           )}
                         </div>
                       );
@@ -410,10 +445,17 @@ export default function SkillsConfig() {
                       {alreadyAdded ? (
                         <span style={{ fontSize: 10, color: '#4caf88', fontWeight: 600 }}>✓ 已导入</span>
                       ) : (
-                        <button onClick={() => handleQuickImport(skillUrl, sk.name)}
-                          style={{ padding: '4px 10px', background: 'var(--acc)', color: '#fff', border: 'none', borderRadius: 6, cursor: 'pointer', fontSize: 11, whiteSpace: 'nowrap' }}>
-                          导入
-                        </button>
+                        <div style={{ display: 'flex', gap: 4 }}>
+                          <button onClick={() => handleGithubPreview(skillUrl, sk.name)}
+                            disabled={previewLoading}
+                            style={{ padding: '4px 8px', background: 'transparent', color: 'var(--muted)', border: '1px solid var(--line)', borderRadius: 6, cursor: 'pointer', fontSize: 10, whiteSpace: 'nowrap' }}>
+                            👁 预览
+                          </button>
+                          <button onClick={() => handleQuickImport(skillUrl, sk.name)}
+                            style={{ padding: '4px 10px', background: 'var(--acc)', color: '#fff', border: 'none', borderRadius: 6, cursor: 'pointer', fontSize: 11, whiteSpace: 'nowrap' }}>
+                            导入
+                          </button>
+                        </div>
                       )}
                     </div>
                   );
@@ -522,6 +564,43 @@ export default function SkillsConfig() {
                   <div className="sk-path" style={{ fontSize: 10, color: 'var(--muted)', marginTop: 12 }}>
                     📂 {skillModal.path}
                   </div>
+                )}
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Skill Preview Modal */}
+      {previewContent && (
+        <div className="modal-bg open" onClick={() => setPreviewContent(null)}>
+          <div className="modal" style={{ maxWidth: 640 }} onClick={(e) => e.stopPropagation()}>
+            <button className="modal-close" onClick={() => setPreviewContent(null)}>✕</button>
+            <div className="modal-body">
+              <div style={{ fontSize: 11, color: 'var(--acc)', fontWeight: 700, letterSpacing: '.04em', marginBottom: 4 }}>
+                {previewContent.source}
+              </div>
+              <div style={{ fontSize: 20, fontWeight: 800, marginBottom: 16 }}>📦 {previewContent.title}</div>
+              <div style={{
+                whiteSpace: 'pre-wrap', fontSize: 12, lineHeight: 1.7,
+                maxHeight: 400, overflowY: 'auto', padding: 12,
+                background: 'var(--bg)', borderRadius: 8, border: '1px solid var(--line)',
+              }}>
+                {previewContent.content}
+              </div>
+              <div style={{ marginTop: 16, display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                <span style={{ fontSize: 10, color: 'var(--muted)' }}>来源: {previewContent.source}</span>
+                {previewContent.slug && quickPickAgent && (
+                  <button onClick={() => { handleClawhubInstall(previewContent.slug!, previewContent.title); setPreviewContent(null); }}
+                    style={{ padding: '6px 16px', background: 'var(--acc)', color: '#fff', border: 'none', borderRadius: 8, cursor: 'pointer', fontWeight: 600, fontSize: 12 }}>
+                    📦 安装到此 Agent
+                  </button>
+                )}
+                {previewContent.sourceUrl && quickPickAgent && (
+                  <button onClick={() => { handleQuickImport(previewContent.sourceUrl!, previewContent.title); setPreviewContent(null); }}
+                    style={{ padding: '6px 16px', background: 'var(--acc)', color: '#fff', border: 'none', borderRadius: 8, cursor: 'pointer', fontWeight: 600, fontSize: 12 }}>
+                    📦 安装到此 Agent
+                  </button>
                 )}
               </div>
             </div>

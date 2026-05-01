@@ -337,11 +337,17 @@ def _get_clawhub_base():
     return CLAWHUB_MIRROR
 
 
-def _clawhub_request_with_fallback(url_builder, timeout=15, retries=1):
+def _clawhub_request_with_fallback(url_builder, timeout=15, retries=1, raw_text=False):
     """带镜像回退的 ClawHub API 请求
 
     优先使用镜像 (mirror-cn.clawhub.com)，失败后回退到主站 (clawhub.ai)。
     如果用户自定义了地址则不回退。
+
+    Args:
+        url_builder: 接受 base URL 并返回完整请求 URL 的函数
+        timeout: 请求超时（秒）
+        retries: 重试次数
+        raw_text: 如果 True，返回原始文本而非 JSON 解析
     """
     # 判断是否使用用户自定义地址
     cfg_file = OCLAW_HOME / 'clawhub-url'
@@ -361,7 +367,10 @@ def _clawhub_request_with_fallback(url_builder, timeout=15, retries=1):
             url = url_builder(base)
             req = urllib.request.Request(url, headers={'User-Agent': 'OpenClaw-SkillManager/1.0'})
             with urllib.request.urlopen(req, timeout=timeout) as resp:
-                return json.loads(resp.read().decode('utf-8'))
+                data = resp.read().decode('utf-8')
+                if raw_text:
+                    return data
+                return json.loads(data)
         except Exception as e:
             last_error = e
             continue
@@ -590,6 +599,27 @@ def search_hub_dict(query, limit=20):
         return {'ok': False, 'error': f'ClawHub API HTTP {e.code}: {e.reason}'}
     except Exception as e:
         return {'ok': False, 'error': f'搜索失败: {str(e)[:100]}'}
+
+
+def clawhub_preview_dict(slug):
+    """预览 ClawHub 技能 SKILL.md 内容，返回 dict（供 server.py API 调用）
+
+    API: GET /api/v1/skills/{slug}/file?path=SKILL.md
+    返回 SKILL.md 原始文本内容
+    """
+    if not slug:
+        return {'ok': False, 'error': 'slug 参数必填'}
+
+    def build_url(base):
+        return f'{base}/api/v1/skills/{urllib.parse.quote(slug)}/file?path=SKILL.md'
+
+    try:
+        content = _clawhub_request_with_fallback(build_url, timeout=15, raw_text=True)
+        return {'ok': True, 'slug': slug, 'content': content}
+    except urllib.error.HTTPError as e:
+        return {'ok': False, 'error': f'ClawHub API HTTP {e.code}: {e.reason}'}
+    except Exception as e:
+        return {'ok': False, 'error': f'预览失败: {str(e)[:100]}'}
 
 
 def search_hub(query, limit=10):

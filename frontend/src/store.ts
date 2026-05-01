@@ -13,6 +13,8 @@ import {
   type AgentsStatusData,
   type MorningBrief,
   type SubConfig,
+  type SubscriptionTask,
+  type PushHistoryItem,
   type ChangeLogEntry,
   type PipelineAuditData,
   getConnectionStatus,
@@ -268,6 +270,7 @@ interface AppStore {
   agentsStatusData: AgentsStatusData | null;
   morningBrief: MorningBrief | null;
   subConfig: SubConfig | null;
+  morningTasks: SubscriptionTask[];
   auditData: PipelineAuditData | null;
 
   // UI State
@@ -317,6 +320,7 @@ export const useStore = create<AppStore>((set, get) => ({
   agentsStatusData: null,
   morningBrief: null,
   subConfig: null,
+  morningTasks: [],
   auditData: null,
 
   activeTab: 'edicts',
@@ -401,8 +405,12 @@ export const useStore = create<AppStore>((set, get) => ({
 
   loadMorning: async () => {
     try {
-      const [brief, config] = await Promise.all([api.morningBrief(), api.morningConfig()]);
-      set({ morningBrief: brief, subConfig: config });
+      const [brief, config, tasksR] = await Promise.all([
+        api.morningBrief(),
+        api.morningConfig(),
+        api.morningTasks().catch(() => ({ ok: false, tasks: [] })),
+      ]);
+      set({ morningBrief: brief, subConfig: config, morningTasks: tasksR.tasks || [] });
     } catch (e) {
       console.error('store loadMorning error:', e);
     }
@@ -410,8 +418,11 @@ export const useStore = create<AppStore>((set, get) => ({
 
   loadSubConfig: async () => {
     try {
-      const config = await api.morningConfig();
-      set({ subConfig: config });
+      const [config, tasksR] = await Promise.all([
+        api.morningConfig(),
+        api.morningTasks().catch(() => ({ ok: false, tasks: [] })),
+      ]);
+      set({ subConfig: config, morningTasks: tasksR.tasks || [] });
     } catch (e) {
       console.error('store loadSubConfig error:', e);
     }

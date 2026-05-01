@@ -174,6 +174,7 @@ def main():
     import argparse
     parser = argparse.ArgumentParser()
     parser.add_argument('--force', action='store_true', help='强制采集，忽略幂等锁')
+    parser.add_argument('--categories', type=str, default='', help='仅采集指定分类（逗号分隔，如 科技,经济）')
     args = parser.parse_args()
 
     # 幂等锁：防重复执行
@@ -202,7 +203,8 @@ def main():
         except Exception as e:
             log.warning(f'配置迁移写入失败: {e}')
 
-    # 已启用的分类
+    # 已启用的分类（支持 --categories 过滤）
+    filter_cats = set(c.strip() for c in args.categories.split(',') if c.strip()) if args.categories else set()
     enabled_cats = set()
     if config.get('categories'):
         for c in config['categories']:
@@ -216,6 +218,11 @@ def main():
                 enabled_cats.add(cat)
         if not enabled_cats:
             enabled_cats = {'社会', '科技'}
+    # 如果指定了 --categories，仅采集指定分类
+    if filter_cats:
+        enabled_cats = enabled_cats & filter_cats
+        if not enabled_cats:
+            enabled_cats = filter_cats  # 兜底：使用用户指定的分类
 
     # 用户自定义关键词（全局加权）
     user_keywords = [kw.lower() for kw in config.get('keywords', [])]

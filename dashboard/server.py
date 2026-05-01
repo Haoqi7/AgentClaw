@@ -916,12 +916,49 @@ def migrate_notification_config():
         log.warning(f'迁移配置失败: {e}')
 
 
-def push_notification():
-    """通用消息推送 (支持多渠道)"""
-    cfg = read_json(DATA / 'morning_brief_config.json', {})
-    notification = cfg.get('notification', {})
-    if not notification and cfg.get('feishu_webhook'):
-        notification = {'enabled': True, 'channel': 'feishu', 'webhook': cfg['feishu_webhook']}
+# ── 推送历史管理 ──────────────────────────────────────────────────────
+PUSH_HISTORY_FILE = DATA / 'push_history.json'
+MAX_HISTORY_PER_TASK = 50
+
+def _record_push_history(task_id, channel, status, item_count=0, error=''):
+    """记录推送历史，每任务保留最近50条"""
+    history = read_json(PUSH_HISTORY_FILE, [])
+    history.append({
+        'taskId': task_id,
+        'channel': channel,
+        'status': status,
+        'itemCount': item_count,
+        'pushedAt': datetime.datetime.now().isoformat(),
+        'error': error,
+    })
+    # 按任务分组保留最近50条
+    by_task = {}
+    for h in history:
+        tid = h.get('taskId', '')
+        by_task.setdefault(tid, []).append(h)
+    trimmed = []
+    for tid, items in by_task.items():
+        trimmed.extend(items[-MAX_HISTORY_PER_TASK:])
+    try:
+        atomic_json_write(PUSH_HISTORY_FILE, trimmed)
+    except Exception:
+        pass
+
+
+def push_notification(task=None, is_test=False):
+    """通用消息推送 (支持任务级推送 + 推送历史记录)
+
+    Args:
+        task: SubscriptionTask dict，为 None 时使用全局 notification（兼容）
+        is_test: 是否为测试推送
+    """
+    if task and task.get('notification'):
+        notification = task['notification']
+    else:
+        cfg = read_json(DATA / 'morning_brief_config.json', {})
+        notification = cfg.get('notification', {})
+        if not notification and cfg.get('feishu_webhook'):
+            notification = {'enabled': True, 'channel': 'feishu', 'webhook': cfg['feishu_webhook']}
     if not notification.get('enabled', True):
         return
     channel_type = notification.get('channel', 'feishu')
@@ -935,22 +972,53 @@ def push_notification():
     if not channel_cls.validate_webhook(webhook):
         log.warning(f'{channel_cls.label} Webhook URL 不合法: {webhook}')
         return
+
+    if is_test:
+        title = '🔔 推送测试'
+        content = '推送测试 - 配置验证成功'
+        url = _get_external_dashboard_url()
+        success = channel_cls.send(webhook, title, content, url)
+        _record_push_history(
+            task_id=task.get('id', '') if task else '',
+            channel=channel_type,
+            status='success' if success else 'failed',
+            item_count=0,
+            error='' if success else '推送失败',
+        )
+        print(f'[{channel_cls.label}] 测试推送{"成功" if success else "失败"}')
+        return
+
+    # 正常推送：按任务分类过滤新闻
     brief = read_json(DATA / 'morning_brief.json', {})
     date_str = brief.get('date', '')
-    total = sum(len(v) for v in (brief.get('categories') or {}).values())
+    task_cats = set(task.get('categories', [])) if task else set()
+    # 按分类过滤
+    filtered_items = []
+    for cat, items in (brief.get('categories') or {}).items():
+        if not task_cats or cat in task_cats:
+            filtered_items.extend(items if isinstance(items, list) else [])
+    total = len(filtered_items)
     if not total:
         return
     cat_lines = []
     for cat, items in (brief.get('categories') or {}).items():
-        if items:
-            cat_lines.append(f'  {cat}: {len(items)} 条')
+        if (not task_cats or cat in task_cats) and items:
+            cat_lines.append(f'  {cat}: {len(items) if isinstance(items, list) else 0} 条')
     summary = '\n'.join(cat_lines)
     date_fmt = date_str[:4] + '年' + date_str[4:6] + '月' + date_str[6:] + '日' if len(date_str) == 8 else date_str
-    title = f'📰 天下要闻 · {date_fmt}'
+    task_name = task.get('name', '天下要闻') if task else '天下要闻'
+    title = f'📰 {task_name} · {date_fmt}'
     content = f'共 **{total}** 条要闻已更新\n{summary}'
     url = _get_external_dashboard_url()
     success = channel_cls.send(webhook, title, content, url)
     print(f'[{channel_cls.label}] 推送{"成功" if success else "失败"}')
+    _record_push_history(
+        task_id=task.get('id', '') if task else '',
+        channel=channel_type,
+        status='success' if success else 'failed',
+        item_count=total,
+        error='' if success else '推送失败',
+    )
 
 
 def push_to_feishu():
@@ -3746,6 +3814,58 @@ class Handler(BaseHTTPRequestHandler):
                 self.send_json({'ok': True, 'base': base, 'reachable': reachable})
             except Exception as e:
                 self.send_json({'ok': False, 'error': str(e)[:100]})
+        elif p == '/api/clawhub/preview':
+            # 预览 ClawHub 技能 SKILL.md
+            parsed_qs = urlparse(self.path).query
+            from urllib.parse import parse_qs
+            qs = parse_qs(parsed_qs)
+            slug = qs.get('slug', [''])[0].strip()
+            if not slug:
+                self.send_json({'ok': False, 'error': 'slug 参数必填'}, 400)
+                return
+            try:
+                if str(SCRIPTS) not in sys.path:
+                    sys.path.insert(0, str(SCRIPTS))
+                from skill_manager import clawhub_preview_dict
+                result = clawhub_preview_dict(slug)
+                self.send_json(result)
+            except Exception as e:
+                self.send_json({'ok': False, 'error': str(e)[:200]}, 500)
+        elif p == '/api/github-skill-preview':
+            # 代理获取 GitHub 源技能 SKILL.md（避免 CORS）
+            parsed_qs = urlparse(self.path).query
+            from urllib.parse import parse_qs
+            qs = parse_qs(parsed_qs)
+            skill_url = qs.get('url', [''])[0].strip()
+            if not skill_url:
+                self.send_json({'ok': False, 'error': 'url 参数必填'}, 400)
+                return
+            if not validate_url(skill_url):
+                self.send_json({'ok': False, 'error': 'URL 不合法'}, 400)
+                return
+            try:
+                req = Request(skill_url, headers={
+                    'User-Agent': 'Mozilla/5.0 (compatible; OpenClaw-SkillPreview/1.0)',
+                    'Accept': 'text/plain, text/markdown, */*',
+                })
+                with urlopen(req, timeout=15) as resp:
+                    content = resp.read().decode('utf-8', errors='replace')[:100000]
+                self.send_json({'ok': True, 'content': content})
+            except Exception as e:
+                self.send_json({'ok': False, 'error': f'获取失败: {str(e)[:100]}'}, 500)
+        elif p == '/api/morning-tasks':
+            # 获取订阅任务列表
+            cfg = read_json(DATA / 'morning_brief_config.json', {})
+            tasks = cfg.get('tasks', [])
+            self.send_json({'ok': True, 'tasks': tasks})
+        elif p.startswith('/api/morning-tasks/') and p.endswith('/push-history'):
+            # 获取指定任务的推送历史
+            task_id = p.replace('/api/morning-tasks/', '').replace('/push-history', '')
+            history = read_json(PUSH_HISTORY_FILE, [])
+            task_history = [h for h in history if h.get('taskId') == task_id]
+            # 按时间倒序
+            task_history.sort(key=lambda x: x.get('pushedAt', ''), reverse=True)
+            self.send_json({'ok': True, 'history': task_history[:MAX_HISTORY_PER_TASK]})
         elif p == '/api/notification-channels':
             self.send_json({'ok': True, 'channels': get_channel_info()})
         elif p.startswith('/api/morning-brief/'):
@@ -3876,7 +3996,7 @@ class Handler(BaseHTTPRequestHandler):
             if not isinstance(body, dict):
                 self.send_json({'ok': False, 'error': '请求体必须是 JSON 对象'}, 400)
                 return
-            allowed_keys = {'categories', 'keywords', 'feeds', 'custom_feeds', 'notification', 'feishu_webhook'}
+            allowed_keys = {'categories', 'keywords', 'feeds', 'custom_feeds', 'notification', 'feishu_webhook', 'tasks'}
             unknown = set(body.keys()) - allowed_keys
             if unknown:
                 self.send_json({'ok': False, 'error': f'未知字段: {", ".join(unknown)}'}, 400)
@@ -4002,12 +4122,154 @@ class Handler(BaseHTTPRequestHandler):
                     env = os.environ.copy()
                     env['SKIP_PUSH'] = '1'  # 脚本端不推送，由 server 统一推送
                     subprocess.run(cmd, timeout=120, env=env)
-                    push_notification()
+                    # 对每个已配置推送的任务分别推送
+                    cfg = read_json(DATA / 'morning_brief_config.json', {})
+                    tasks = cfg.get('tasks', [])
+                    if tasks:
+                        for t in tasks:
+                            try:
+                                push_notification(task=t)
+                            except Exception:
+                                pass
+                    else:
+                        push_notification()
                 except Exception as e:
                     print(f'[refresh error] {e}', file=sys.stderr)
             threading.Thread(target=do_refresh, daemon=True).start()
             self.send_json({'ok': True, 'message': '采集已触发，约30-60秒后刷新'})
             return
+
+        # ── 订阅任务 CRUD ──────────────────────────────────────────────
+        if p == '/api/morning-tasks':
+            # 创建订阅任务
+            name = body.get('name', '').strip()
+            emoji = body.get('emoji', '📰')
+            categories = body.get('categories', [])
+            feed_urls = body.get('feedUrls', [])
+            notification = body.get('notification', {'enabled': False, 'channel': 'feishu', 'webhook': ''})
+            if not name:
+                self.send_json({'ok': False, 'error': '卡片名称必填'}, 400)
+                return
+            if not isinstance(categories, list) or not categories:
+                self.send_json({'ok': False, 'error': '至少选择一个分类'}, 400)
+                return
+            cfg_path = DATA / 'morning_brief_config.json'
+            cfg = read_json(cfg_path, {})
+            tasks = cfg.get('tasks', [])
+            if len(tasks) >= MAX_TASKS:
+                self.send_json({'ok': False, 'error': f'最多 {MAX_TASKS} 个订阅卡片'}, 400)
+                return
+            import uuid
+            now = datetime.datetime.now().isoformat()
+            task_id = f't-{uuid.uuid4().hex[:8]}'
+            new_task = {
+                'id': task_id,
+                'name': name,
+                'emoji': emoji,
+                'categories': categories,
+                'feedUrls': feed_urls,
+                'notification': notification,
+                'createdAt': now,
+                'updatedAt': now,
+            }
+            tasks.append(new_task)
+            cfg['tasks'] = tasks
+            try:
+                atomic_json_write(cfg_path, cfg)
+                self.send_json({'ok': True, 'task': new_task})
+            except Exception as e:
+                self.send_json({'ok': False, 'error': f'保存失败: {e}'}, 500)
+            return
+
+        # PUT/DELETE via _method override
+        if p.startswith('/api/morning-tasks/'):
+            task_id_part = p.replace('/api/morning-tasks/', '')
+            # Remove any sub-path segments like /collect, /push-test
+            parts = task_id_part.split('/')
+            task_id = parts[0]
+            action = parts[1] if len(parts) > 1 else ''
+
+            cfg_path = DATA / 'morning_brief_config.json'
+            cfg = read_json(cfg_path, {})
+            tasks = cfg.get('tasks', [])
+            task_idx = next((i for i, t in enumerate(tasks) if t.get('id') == task_id), -1)
+
+            method = body.get('_method', '').upper() if body else ''
+
+            if action == 'collect':
+                # 单任务采集
+                if task_idx < 0:
+                    self.send_json({'ok': False, 'error': '任务不存在'}, 404)
+                    return
+                task = tasks[task_idx]
+                task_cats = task.get('categories', [])
+                def do_task_collect(t=task, tc=task_cats):
+                    try:
+                        cmd = ['python3', str(SCRIPTS / 'fetch_morning_news.py'), '--force']
+                        if tc:
+                            cmd.extend(['--categories', ','.join(tc)])
+                        env = os.environ.copy()
+                        env['SKIP_PUSH'] = '1'
+                        subprocess.run(cmd, timeout=120, env=env)
+                        # 采集后推送（如果配置了）
+                        if t.get('notification', {}).get('enabled') and t['notification'].get('webhook'):
+                            push_notification(task=t)
+                    except Exception as e:
+                        print(f'[task collect error] {e}', file=sys.stderr)
+                threading.Thread(target=do_task_collect, daemon=True).start()
+                self.send_json({'ok': True, 'message': '采集已触发'})
+                return
+
+            elif action == 'push-test':
+                # 测试推送
+                if task_idx < 0:
+                    self.send_json({'ok': False, 'error': '任务不存在'}, 404)
+                    return
+                task = tasks[task_idx]
+                notification = task.get('notification', {})
+                if not notification.get('enabled') or not notification.get('webhook', '').strip():
+                    self.send_json({'ok': False, 'error': '未配置推送或 Webhook 为空'}, 400)
+                    return
+                try:
+                    push_notification(task=task, is_test=True)
+                    self.send_json({'ok': True, 'message': '测试推送已发送'})
+                except Exception as e:
+                    self.send_json({'ok': False, 'error': f'推送失败: {e}'}, 500)
+                return
+
+            elif method == 'PUT':
+                # 更新订阅任务
+                if task_idx < 0:
+                    self.send_json({'ok': False, 'error': '任务不存在'}, 404)
+                    return
+                updates = {k: v for k, v in body.items() if k != '_method'}
+                tasks[task_idx].update(updates)
+                tasks[task_idx]['updatedAt'] = datetime.datetime.now().isoformat()
+                cfg['tasks'] = tasks
+                try:
+                    atomic_json_write(cfg_path, cfg)
+                    self.send_json({'ok': True, 'message': '任务已更新'})
+                except Exception as e:
+                    self.send_json({'ok': False, 'error': f'保存失败: {e}'}, 500)
+                return
+
+            elif method == 'DELETE':
+                # 删除订阅任务
+                if task_idx < 0:
+                    self.send_json({'ok': False, 'error': '任务不存在'}, 404)
+                    return
+                tasks.pop(task_idx)
+                cfg['tasks'] = tasks
+                try:
+                    atomic_json_write(cfg_path, cfg)
+                    self.send_json({'ok': True, 'message': '任务已删除'})
+                except Exception as e:
+                    self.send_json({'ok': False, 'error': f'保存失败: {e}'}, 500)
+                return
+
+            else:
+                self.send_json({'ok': False, 'error': '未知操作'}, 400)
+                return
 
         if p == '/api/clawhub/install':
             agent_id = body.get('agentId', '').strip()
