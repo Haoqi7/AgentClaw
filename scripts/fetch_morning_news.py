@@ -182,7 +182,15 @@ def main():
     parser.add_argument('--force', action='store_true', help='强制采集，忽略幂等锁')
     parser.add_argument('--categories', type=str, default='', help='仅采集指定分类（逗号分隔，如 科技,经济）')
     parser.add_argument('--keywords', type=str, default='', help='仅采集包含指定关键词的新闻（逗号分隔，如 AI,大模型）')
+    parser.add_argument('--feed-urls', type=str, default='', help='仅采集指定URL的信息源（逗号分隔）')
+    parser.add_argument('--cleanup', type=int, nargs='?', const=7, default=None,
+                        help='独立清理模式：删除超过N天的简报（默认7天），不执行采集')
     args = parser.parse_args()
+
+    # 独立清理模式
+    if args.cleanup is not None:
+        _cleanup_old_briefs(max_days=args.cleanup)
+        return
 
     # 幂等锁：防重复执行
     today = datetime.date.today().strftime('%Y%m%d')
@@ -240,12 +248,16 @@ def main():
 
     # 从配置中读取 feeds 列表，按分类分组
     merged_feeds = {}
+    # 支持 --feed-urls 过滤：仅使用指定URL的信息源
+    allowed_feed_urls = set(args.feed_urls.split(',')) if args.feed_urls else None
     for f in config.get('feeds', []):
         cat = f.get('category', '')
         url = f.get('url', '')
         name = f.get('name', '未命名')
+        if allowed_feed_urls and url not in allowed_feed_urls:
+            continue
         if cat in enabled_cats and url:
-            if validate_url(url):
+            if validate_url(url, allowed_schemes=('http', 'https')):
                 merged_feeds.setdefault(cat, []).append((name, url))
             else:
                 log.warning(f'源 URL 不合法，跳过: {url}')

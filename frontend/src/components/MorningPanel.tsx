@@ -1,4 +1,4 @@
-import { useEffect, useState, useCallback } from 'react';
+import { useEffect, useState, useCallback, useRef } from 'react';
 import { useStore } from '../store';
 import { api } from '../api';
 import type { SubConfig, MorningNewsItem, FeedSource, FeedCheckResult, ChannelInfo, SubscriptionTask, PushHistoryItem } from '../api';
@@ -25,6 +25,22 @@ const EMOJI_PRESETS: Record<string, { emoji: string; label: string }[]> = {
 const DEFAULT_EMOJIS = ['📰', '📋', '🔔', '📌', '🎯', '📡', '🌐', '💡', '⭐', '🔥'];
 
 const MAX_TASKS = 12;
+
+/** 获取近7天日期列表（从6天前到今天） */
+function getLast7Days() {
+  const weekdays = ['日', '一', '二', '三', '四', '五', '六'];
+  return Array.from({ length: 7 }, (_, i) => {
+    const d = new Date();
+    d.setDate(d.getDate() - (6 - i));
+    const yyyymmdd = `${d.getFullYear()}${String(d.getMonth() + 1).padStart(2, '0')}${String(d.getDate()).padStart(2, '0')}`;
+    return {
+      yyyymmdd,
+      shortDate: `${d.getMonth() + 1}/${d.getDate()}`,
+      weekday: `周${weekdays[d.getDay()]}`,
+      label: `${d.getMonth() + 1}月${d.getDate()}日`,
+    };
+  });
+}
 
 /** 按卡片配置过滤+排序新闻 */
 function getTaskNews(task: SubscriptionTask, allCats: Record<string, MorningNewsItem[]>): (MorningNewsItem & { _kwHits: number })[] {
@@ -68,6 +84,8 @@ export default function MorningPanel() {
   const [expandedHistoryDay, setExpandedHistoryDay] = useState<Set<string>>(new Set());
   const [historyDayNewsMap, setHistoryDayNewsMap] = useState<Record<string, Record<string, MorningNewsItem[]>>>({});
   const [historyDayDates, setHistoryDayDates] = useState<Record<string, string[]>>({});
+  const [deleteConfirm, setDeleteConfirm] = useState<SubscriptionTask | null>(null);
+  const [selectedHistoryDate, setSelectedHistoryDate] = useState<Record<string, string>>({});
 
   useEffect(() => { loadMorning(); }, [loadMorning]);
   useEffect(() => {
@@ -144,9 +162,8 @@ export default function MorningPanel() {
     }
   };
 
-  // 删除任务（二次确认）
+  // 删除任务（弹框确认）
   const deleteTask = async (task: SubscriptionTask) => {
-    if (!confirm(`确定删除订阅卡片「${task.emoji} ${task.name}」？`)) return;
     setDeletingTaskId(task.id);
     try {
       const r = await api.deleteMorningTask(task.id);
@@ -154,6 +171,7 @@ export default function MorningPanel() {
       else toast(r.error || '删除失败', 'err');
     } catch { toast('删除请求失败', 'err'); }
     setDeletingTaskId(null);
+    setDeleteConfirm(null);
   };
 
   // 加载卡片的历史日报
@@ -192,27 +210,37 @@ export default function MorningPanel() {
             {morningTasks.length}/{MAX_TASKS} 订阅
           </div>
         </div>
-        <button className="btn btn-g" onClick={() => setShowSettings(!showSettings)} style={{ fontSize: 12, padding: '6px 14px' }}>
+        <button className="btn btn-g" onClick={() => setShowSettings(true)} style={{ fontSize: 12, padding: '6px 14px' }}>
           ⚙ 设置
         </button>
       </div>
 
-      {/* Settings Panel */}
+      {/* Settings Modal - 修复6：设置改为弹框 */}
       {showSettings && localConfig && (
-        <SettingsPanel
-          config={localConfig}
-          setConfig={setLocalConfig}
-          onSave={async () => {
-            if (!localConfig) return;
-            try {
-              const r = await api.saveMorningConfig(localConfig);
-              if (r.ok) { toast('配置已保存', 'ok'); loadSubConfig(); }
-              else { toast(r.error || '保存失败', 'err'); }
-            } catch { toast('服务器连接失败', 'err'); }
-          }}
-          onRefreshTasks={() => loadSubConfig()}
-          onClose={() => setShowSettings(false)}
-        />
+        <div className="modal-bg" onClick={() => setShowSettings(false)}>
+          <div className="modal" onClick={(e) => e.stopPropagation()}
+            style={{ width: 640, maxWidth: '92vw', maxHeight: '80vh', display: 'flex', flexDirection: 'column' }}>
+            {/* 弹框头部 */}
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '16px 20px', borderBottom: '1px solid var(--line)' }}>
+              <span style={{ fontSize: 15, fontWeight: 700 }}>⚙ 天下要闻设置</span>
+              <button style={{ background: 'none', border: 'none', color: 'var(--muted)', cursor: 'pointer', fontSize: 18, padding: 4 }} onClick={() => setShowSettings(false)}>✕</button>
+            </div>
+            <SettingsPanel
+              config={localConfig}
+              setConfig={setLocalConfig}
+              onSave={async () => {
+                if (!localConfig) return;
+                try {
+                  const r = await api.saveMorningConfig(localConfig);
+                  if (r.ok) { toast('配置已保存', 'ok'); loadSubConfig(); }
+                  else { toast(r.error || '保存失败', 'err'); }
+                } catch { toast('服务器连接失败', 'err'); }
+              }}
+              onRefreshTasks={() => loadSubConfig()}
+              onClose={() => setShowSettings(false)}
+            />
+          </div>
+        </div>
       )}
 
       {/* 空状态引导 */}
@@ -344,19 +372,17 @@ export default function MorningPanel() {
                   ))}
                 </div>
 
-                {/* ── 推送历史（默认折叠，展开为浮动层）── */}
-                <div style={{ borderTop: '1px solid var(--line)', position: 'relative' }}>
+                {/* ── 推送历史（向下展开的内联面板）── */}
+                <div style={{ borderTop: '1px solid var(--line)' }}>
                   <div onClick={() => toggleHistory(task.id)}
                     style={{ padding: '6px 14px', fontSize: 11, cursor: 'pointer', color: 'var(--muted)', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
                     <span>📋 推送历史{historyCount > 0 ? `(${historyCount})` : ''}</span>
-                    <span style={{ transition: 'transform .15s', transform: isExpanded ? 'rotate(180deg)' : 'rotate(0)' }}>▾</span>
+                    <span style={{ transition: 'transform .15s', transform: isExpanded ? 'rotate(180deg)' : 'rotate(0)', fontSize: 12 }}>▼</span>
                   </div>
                   {isExpanded && (
                     <div style={{
-                      position: 'absolute', bottom: '100%', left: 0, right: 0, zIndex: 20,
-                      background: 'var(--panel2)', border: '1px solid var(--line)', borderRadius: '8px 8px 0 0',
-                      maxHeight: 200, overflowY: 'auto', padding: '6px 14px',
-                      boxShadow: '0 -4px 16px rgba(0,0,0,.25)',
+                      background: 'var(--bg)', maxHeight: 150, overflowY: 'auto', padding: '6px 14px',
+                      borderTop: '1px solid var(--line)',
                     }}>
                       {historyItems.length === 0 ? (
                         <div style={{ fontSize: 10, color: 'var(--muted)', paddingBottom: 4 }}>暂无推送记录</div>
@@ -373,51 +399,80 @@ export default function MorningPanel() {
                   )}
                 </div>
 
-                {/* ── 历史日报（默认折叠，展开为浮动层）── */}
-                <div style={{ borderTop: '1px solid var(--line)', position: 'relative' }}>
+                {/* ── 历史日报（向下展开 + 近7天小格子）── 修复7 */}
+                <div style={{ borderTop: '1px solid var(--line)' }}>
                   <div onClick={() => toggleHistoryDay(task.id)}
                     style={{ padding: '6px 14px', fontSize: 11, cursor: 'pointer', color: 'var(--muted)', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
                     <span>📅 历史日报</span>
-                    <span style={{ transition: 'transform .15s', transform: expandedHistoryDay.has(task.id) ? 'rotate(180deg)' : 'rotate(0)' }}>▾</span>
+                    <span style={{ transition: 'transform .15s', transform: expandedHistoryDay.has(task.id) ? 'rotate(180deg)' : 'rotate(0)', fontSize: 12 }}>▼</span>
                   </div>
-                  {expandedHistoryDay.has(task.id) && (
-                    <div style={{
-                      position: 'absolute', bottom: '100%', left: 0, right: 0, zIndex: 20,
-                      background: 'var(--panel2)', border: '1px solid var(--line)', borderRadius: '8px 8px 0 0',
-                      maxHeight: 250, overflowY: 'auto', padding: '6px 14px',
-                      boxShadow: '0 -4px 16px rgba(0,0,0,.25)',
-                    }}>
-                      {(historyDayDates[task.id] || []).length === 0 ? (
-                        <div style={{ fontSize: 10, color: 'var(--muted)', paddingBottom: 4 }}>暂无历史日报</div>
-                      ) : (historyDayDates[task.id] || []).map(d => {
-                        const dayCats = historyDayNewsMap[`${task.id}_${d}`];
-                        const dayNews = dayCats ? getTaskNews(task, dayCats) : null;
-                        const dateLabel = d.replace(/(\d{4})(\d{2})(\d{2})/, '$1-$2-$3');
-                        return (
-                          <div key={d} style={{ marginBottom: 6 }}>
-                            <div onClick={() => !dayNews && loadHistoryDayNews(task.id, d)}
-                              style={{ fontSize: 11, fontWeight: 600, cursor: 'pointer', color: '#6a9eff', padding: '2px 0', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                              <span>📅 {dateLabel}</span>
-                              {!dayNews && <span style={{ fontSize: 9, color: 'var(--muted)' }}>点击加载</span>}
-                              {dayNews && <span style={{ fontSize: 9, color: 'var(--muted)' }}>{dayNews.length}条</span>}
-                            </div>
-                            {dayNews && dayNews.length > 0 && dayNews.slice(0, 5).map((item, i) => (
+                  {expandedHistoryDay.has(task.id) && (() => {
+                    const historyDates = historyDayDates[task.id] || [];
+                    const last7 = getLast7Days();
+                    const selectedDate = selectedHistoryDate[task.id] || '';
+                    const dayCats = selectedDate ? historyDayNewsMap[`${task.id}_${selectedDate}`] : null;
+                    const dayNews = dayCats ? getTaskNews(task, dayCats) : null;
+                    return (
+                      <div style={{ background: 'var(--bg)', borderTop: '1px solid var(--line)', padding: '8px 14px' }}>
+                        {/* 7天日期小格子 */}
+                        <div style={{ display: 'flex', gap: 4, marginBottom: 8 }}>
+                          {last7.map(dateInfo => {
+                            const hasData = historyDates.includes(dateInfo.yyyymmdd);
+                            const isSelected = selectedDate === dateInfo.yyyymmdd;
+                            return (
+                              <div key={dateInfo.yyyymmdd} onClick={() => {
+                                if (hasData) {
+                                  setSelectedHistoryDate(prev => ({ ...prev, [task.id]: dateInfo.yyyymmdd }));
+                                  loadHistoryDayNews(task.id, dateInfo.yyyymmdd);
+                                }
+                              }}
+                                style={{
+                                  flex: 1, textAlign: 'center', padding: '5px 0',
+                                  borderRadius: 6, fontSize: 11, cursor: hasData ? 'pointer' : 'default',
+                                  background: isSelected ? 'var(--acc)' : hasData ? 'var(--panel2)' : 'transparent',
+                                  color: isSelected ? '#fff' : hasData ? 'var(--text)' : 'var(--muted)',
+                                  border: `1px solid ${isSelected ? 'var(--acc)' : hasData ? 'var(--line)' : 'transparent'}`,
+                                  opacity: hasData ? 1 : 0.4,
+                                  transition: 'all .15s',
+                                }}
+                                title={hasData ? `查看${dateInfo.label}早报` : `${dateInfo.label}无数据`}
+                              >
+                                <div style={{ fontSize: 9, color: isSelected ? '#ffffffaa' : 'var(--muted)' }}>
+                                  {dateInfo.weekday}
+                                </div>
+                                <div style={{ fontWeight: isSelected ? 700 : 500 }}>
+                                  {dateInfo.shortDate}
+                                </div>
+                              </div>
+                            );
+                          })}
+                        </div>
+                        {/* 选中日期的新闻内容 */}
+                        {selectedDate && dayNews && dayNews.length > 0 && (
+                          <div style={{ maxHeight: 120, overflowY: 'auto' }}>
+                            {dayNews.slice(0, 5).map((item, i) => (
                               <div key={i} onClick={() => item.link && window.open(item.link, '_blank')}
-                                style={{ fontSize: 10, padding: '1px 0', display: 'flex', gap: 4, color: 'var(--muted)', cursor: item.link ? 'pointer' : 'default' }}>
+                                style={{ fontSize: 10, padding: '2px 0', display: 'flex', gap: 4, color: 'var(--muted)', cursor: item.link ? 'pointer' : 'default' }}>
                                 {item._kwHits > 0 && <span style={{ color: '#a07aff', flexShrink: 0 }}>⭐</span>}
                                 <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', flex: 1 }}>{item.title}</span>
                               </div>
                             ))}
                           </div>
-                        );
-                      })}
-                    </div>
-                  )}
+                        )}
+                        {selectedDate && dayNews && dayNews.length === 0 && (
+                          <div style={{ fontSize: 10, color: 'var(--muted)', textAlign: 'center', padding: 4 }}>该日无相关新闻</div>
+                        )}
+                        {!selectedDate && (
+                          <div style={{ fontSize: 10, color: 'var(--muted)', textAlign: 'center', padding: 4 }}>点击上方日期查看早报</div>
+                        )}
+                      </div>
+                    );
+                  })()}
                 </div>
 
-                {/* ── 底部删除 ── */}
+                {/* ── 底部删除 - 修复11：改为触发弹框 ── */}
                 <div style={{ display: 'flex', justifyContent: 'flex-end', padding: '4px 14px 8px' }}>
-                  <button onClick={() => deleteTask(task)}
+                  <button onClick={() => setDeleteConfirm(task)}
                     disabled={deletingTaskId === task.id}
                     style={{ fontSize: 10, padding: '2px 8px', background: 'transparent', color: '#ff527088', border: '1px solid #ff527022', borderRadius: 4, cursor: 'pointer', opacity: deletingTaskId === task.id ? 0.5 : 1 }}>
                     ✕ 删除
@@ -426,6 +481,25 @@ export default function MorningPanel() {
               </div>
             );
           })}
+        </div>
+      )}
+
+      {/* 删除确认弹框 - 修复11：使用项目一致弹框 */}
+      {deleteConfirm && (
+        <div className="confirm-bg" onClick={() => setDeleteConfirm(null)}>
+          <div className="confirm-box" onClick={(e) => e.stopPropagation()}>
+            <div style={{ fontSize: 14, fontWeight: 700, marginBottom: 8 }}>🗑️ 确认删除</div>
+            <div style={{ fontSize: 12, color: 'var(--muted)', marginBottom: 16 }}>
+              确定要删除订阅卡片「{deleteConfirm.emoji} {deleteConfirm.name}」吗？此操作不可撤销。
+            </div>
+            <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8 }}>
+              <button className="btn btn-g" onClick={() => setDeleteConfirm(null)}>取消</button>
+              <button className="btn" style={{ background: 'var(--danger)', color: '#fff' }}
+                onClick={() => deleteTask(deleteConfirm)}>
+                确认删除
+              </button>
+            </div>
+          </div>
         </div>
       )}
 
@@ -464,23 +538,17 @@ function SettingsPanel({
   const toast = useStore((s) => s.toast);
 
   return (
-    <div style={{ marginBottom: 20, padding: 16, background: 'var(--panel2)', borderRadius: 12, border: '1px solid var(--line)' }}>
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 }}>
-        <div style={{ fontSize: 14, fontWeight: 700 }}>⚙ 设置</div>
-        <span style={{ cursor: 'pointer', fontSize: 16, color: 'var(--muted)' }} onClick={onClose}>✕</span>
-      </div>
-
+    <>
       {/* Tab Bar */}
-      <div style={{ display: 'flex', gap: 4, marginBottom: 16, borderBottom: '1px solid var(--line)' }}>
+      <div style={{ display: 'flex', gap: 4, borderBottom: '1px solid var(--line)', padding: '0 20px' }}>
         {[
           { key: 'feeds' as SettingsTab, label: '📡 信息源' },
           { key: 'subscribe' as SettingsTab, label: '📋 添加订阅' },
         ].map((t) => (
           <div key={t.key} onClick={() => setActiveTab(t.key)}
             style={{
-              padding: '6px 14px', cursor: 'pointer', fontSize: 12,
-              fontWeight: activeTab === t.key ? 700 : 400,
-              color: activeTab === t.key ? 'var(--text)' : 'var(--muted)',
+              padding: '10px 16px', cursor: 'pointer', fontSize: 12, fontWeight: 600,
+              color: activeTab === t.key ? 'var(--acc)' : 'var(--muted)',
               borderBottom: activeTab === t.key ? '2px solid var(--acc)' : '2px solid transparent',
               transition: 'all .15s',
             }}>
@@ -489,13 +557,16 @@ function SettingsPanel({
         ))}
       </div>
 
-      {activeTab === 'feeds' && (
-        <FeedsTab config={config} setConfig={setConfig} onSave={onSave} />
-      )}
-      {activeTab === 'subscribe' && (
-        <SubscribeTab config={config} onSave={onSave} onRefreshTasks={onRefreshTasks} />
-      )}
-    </div>
+      {/* Tab Content */}
+      <div style={{ padding: 20, overflowY: 'auto', maxHeight: 'calc(80vh - 120px)' }}>
+        {activeTab === 'feeds' && (
+          <FeedsTab config={config} setConfig={setConfig} onSave={onSave} />
+        )}
+        {activeTab === 'subscribe' && (
+          <SubscribeTab config={config} onSave={onSave} onRefreshTasks={onRefreshTasks} />
+        )}
+      </div>
+    </>
   );
 }
 
@@ -518,37 +589,36 @@ function FeedsTab({
   const [feedCat, setFeedCat] = useState('科技');
   const [feedCheckResults, setFeedCheckResults] = useState<Record<string, FeedCheckResult>>({});
   const [feedChecking, setFeedChecking] = useState(false);
-  const [autoChecked, setAutoChecked] = useState(false);
   const [checkingSingleUrl, setCheckingSingleUrl] = useState<string | null>(null);
+  const [checkedCount, setCheckedCount] = useState(0);
 
   const allCats = [...DEFAULT_CATS];
   (config.categories || []).forEach((c) => {
     if (!allCats.includes(c.name)) allCats.push(c.name);
   });
 
+  // 修复5：逐个检测+进度反馈；修复3：移除自动检测
   const checkFeeds = useCallback(async () => {
     const urls = (config.feeds || []).map(f => f.url).filter(Boolean);
     if (!urls.length) return;
     setFeedChecking(true);
-    try {
-      const r = await api.checkFeeds(urls);
-      if (r.ok && r.results) {
-        const map: Record<string, FeedCheckResult> = {};
-        r.results.forEach(res => { map[res.url] = res; });
-        setFeedCheckResults(map);
-        const okCount = r.results.filter(res => res.status === 'ok').length;
-        toast(`✅ 检测完成：${okCount}/${urls.length} 个源可用`, 'ok');
-      }
-    } catch { /* ignore */ }
+    setCheckedCount(0);
+    let okCount = 0;
+    let done = 0;
+    for (const url of urls) {
+      try {
+        const r = await api.checkFeeds([url]);
+        if (r.ok && r.results?.[0]) {
+          setFeedCheckResults(prev => ({ ...prev, [url]: r.results![0] }));
+          if (r.results[0].status === 'ok') okCount++;
+        }
+      } catch { /* 单个失败不影响后续 */ }
+      done++;
+      setCheckedCount(done);
+    }
+    toast(`✅ 检测完成：${okCount}/${urls.length} 个源可用`, 'ok');
     setFeedChecking(false);
   }, [config.feeds, toast]);
-
-  useEffect(() => {
-    if (!autoChecked && (config.feeds || []).length > 0) {
-      setAutoChecked(true);
-      checkFeeds();
-    }
-  }, [autoChecked, checkFeeds]);
 
   const checkSingleFeed = async (url: string) => {
     setCheckingSingleUrl(url);
@@ -604,8 +674,8 @@ function FeedsTab({
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }}>
         <span style={{ fontSize: 12, fontWeight: 600 }}>📡 信息源管理 ({(config.feeds || []).length}个)</span>
         <button className="btn btn-g" onClick={checkFeeds} disabled={feedChecking}
-          style={{ fontSize: 10, padding: '3px 10px', opacity: feedChecking ? 0.5 : 1 }}>
-          {feedChecking ? '⟳ 检测中…' : '🔍 全部检测'}
+          style={{ fontSize: 11, padding: '4px 12px', opacity: feedChecking ? 0.5 : 1 }}>
+          {feedChecking ? `⟳ 检测中(${checkedCount}/${(config.feeds || []).length})` : '🔍 全部检测'}
         </button>
       </div>
 
@@ -640,7 +710,24 @@ function FeedsTab({
             <span style={{ fontSize: 9, color: statusColor, whiteSpace: 'nowrap', maxWidth: 120, overflow: 'hidden', textOverflow: 'ellipsis' }} title={statusText}>
               {statusIcon} {statusText}
             </span>
-            <span style={{ cursor: 'pointer', fontSize: 10, color: 'var(--acc)' }} onClick={() => checkSingleFeed(f.url)} title="检测此源">🔄</span>
+            {/* 修复4：单源检测按钮明显化 */}
+            <button
+              onClick={() => checkSingleFeed(f.url)}
+              disabled={isChecking}
+              title="检测此信息源可用性"
+              style={{
+                fontSize: 10, padding: '2px 8px', borderRadius: 5,
+                background: 'transparent', border: '1px solid var(--line)',
+                color: 'var(--muted)', cursor: 'pointer',
+                transition: 'border-color .15s, color .15s',
+                display: 'flex', alignItems: 'center', gap: 3,
+                opacity: isChecking ? 0.5 : 1,
+              }}
+              onMouseEnter={(e) => { e.currentTarget.style.borderColor = 'var(--acc)'; e.currentTarget.style.color = 'var(--acc)'; }}
+              onMouseLeave={(e) => { e.currentTarget.style.borderColor = 'var(--line)'; e.currentTarget.style.color = 'var(--muted)'; }}
+            >
+              {isChecking ? '⟳' : '🔍'} 检测
+            </button>
             <span style={{ cursor: 'pointer', color: '#ff5270', fontSize: 10 }} onClick={() => removeFeed(i)} title="删除此源">✕</span>
           </div>
         );
@@ -704,15 +791,17 @@ function SubscribeTab({
   const [feedVerifying, setFeedVerifying] = useState(false);
   const [showFeeds, setShowFeeds] = useState(false);
 
+  // 修复12：SubscribeTab 重复验证优化 - 防抖+只在数量变化时触发
+  const feedsCountRef = useRef((config.feeds || []).length);
   useEffect(() => {
-    api.notificationChannels().then(r => {
-      if (r.channels) setChannelList(r.channels);
-    }).catch(() => {});
-  }, []);
+    const feedCount = (config.feeds || []).length;
+    if (feedCount === 0) return;
+    // 只在 feeds 数量变化时才重新验证，已有缓存时不重复请求
+    if (feedCount === feedsCountRef.current && Object.keys(feedStatusCache).length > 0) return;
+    feedsCountRef.current = feedCount;
 
-  useEffect(() => {
-    const feeds = config.feeds || [];
-    if (feeds.length > 0) {
+    const timer = setTimeout(() => {
+      const feeds = config.feeds || [];
       const urls = feeds.map(f => f.url).filter(Boolean);
       if (urls.length > 0) {
         setFeedVerifying(true);
@@ -724,8 +813,15 @@ function SubscribeTab({
           }
         }).catch(() => {}).finally(() => setFeedVerifying(false));
       }
-    }
-  }, [config.feeds]);
+    }, 800);
+    return () => clearTimeout(timer);
+  }, [(config.feeds || []).length]);
+
+  useEffect(() => {
+    api.notificationChannels().then(r => {
+      if (r.channels) setChannelList(r.channels);
+    }).catch(() => {});
+  }, []);
 
   useEffect(() => {
     if (taskCats.length === 1) {
@@ -825,23 +921,39 @@ function SubscribeTab({
           style={{ flex: 1, padding: '8px 10px', background: 'var(--bg)', border: '1px solid var(--line)', borderRadius: 6, color: 'var(--text)', fontSize: 13, outline: 'none' }} />
       </div>
 
-      {/* Categories */}
+      {/* Categories - 修复10：无源分类提醒 */}
       <div style={{ marginBottom: 12 }}>
         <div style={{ fontSize: 12, fontWeight: 600, marginBottom: 6 }}>采集分类（必选）</div>
         <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
           {DEFAULT_CATS.map((cat) => {
             const meta = CAT_META[cat] || { icon: '📰', color: 'var(--acc)' };
             const on = taskCats.includes(cat);
+            const catFeeds = (config.feeds || []).filter(f => f.category === cat);
+            const availableCount = catFeeds.filter(f => {
+              const s = feedStatusCache[f.url];
+              return s?.status === 'ok';
+            }).length;
+            const noSource = catFeeds.length === 0 || availableCount === 0;
             return (
-              <div key={cat} onClick={() => toggleCat(cat)}
+              <div key={cat} onClick={() => {
+                if (!on && noSource) {
+                  toast(`⚠️ 分类「${cat}」当前无可用RSS源，采集可能无法获取新闻`, 'err');
+                }
+                toggleCat(cat);
+              }}
                 style={{
                   cursor: 'pointer', padding: '5px 10px', borderRadius: 8,
-                  border: `1px solid ${on ? meta.color : 'var(--line)'}`,
+                  border: `1px solid ${on ? meta.color : noSource ? '#ff527044' : 'var(--line)'}`,
                   background: on ? `${meta.color}18` : 'transparent',
                   display: 'flex', alignItems: 'center', gap: 4, fontSize: 12,
+                  opacity: noSource && !on ? 0.6 : 1,
                 }}>
                 <span>{meta.icon}</span>
                 <span>{cat}</span>
+                {availableCount > 0
+                  ? <span style={{ fontSize: 9, color: 'var(--ok)' }}>{availableCount}源</span>
+                  : <span style={{ fontSize: 9, color: 'var(--danger)' }}>无源</span>
+                }
                 {on && <span style={{ color: 'var(--ok)' }}>✓</span>}
               </div>
             );
@@ -849,12 +961,36 @@ function SubscribeTab({
         </div>
       </div>
 
-      {/* Feed Selection（默认折叠）*/}
+      {/* Feed Selection - 修复9：信息源按钮明显化+▼符号 */}
       <div style={{ marginBottom: 12 }}>
         <div onClick={() => setShowFeeds(!showFeeds)}
-          style={{ fontSize: 12, fontWeight: 600, cursor: 'pointer', display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '6px 0', borderBottom: '1px solid var(--line)' }}>
-          <span>📡 信息源（不选择则使用分类下所有源）{taskFeedUrls.length > 0 ? ` · 已选${taskFeedUrls.length}个` : ''}</span>
-          <span style={{ transition: 'transform .15s', transform: showFeeds ? 'rotate(180deg)' : 'rotate(0)', fontSize: 10 }}>▾</span>
+          style={{
+            fontSize: 12, fontWeight: 600, cursor: 'pointer',
+            display: 'flex', justifyContent: 'space-between', alignItems: 'center',
+            padding: '8px 12px', marginTop: 4,
+            background: 'var(--panel2)',
+            border: '1px solid var(--line)',
+            borderRadius: 8,
+            transition: 'border-color .15s, background .15s',
+          }}
+          onMouseEnter={(e) => { e.currentTarget.style.borderColor = 'var(--acc)'; e.currentTarget.style.background = '#0d1f45'; }}
+          onMouseLeave={(e) => { e.currentTarget.style.borderColor = 'var(--line)'; e.currentTarget.style.background = 'var(--panel2)'; }}
+        >
+          <span style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+            <span>📡</span>
+            <span>信息源</span>
+            {taskFeedUrls.length > 0
+              ? <span style={{ fontSize: 10, background: 'var(--acc)', color: '#fff', borderRadius: 4, padding: '1px 6px' }}>已选{taskFeedUrls.length}个</span>
+              : <span style={{ fontSize: 10, color: 'var(--muted)' }}>不选择则使用分类下所有源</span>
+            }
+          </span>
+          <span style={{
+            transition: 'transform .2s',
+            transform: showFeeds ? 'rotate(180deg)' : 'rotate(0)',
+            fontSize: 14, color: 'var(--acc)', fontWeight: 700,
+          }}>
+            ▼
+          </span>
         </div>
         {showFeeds && (
           <div style={{ marginTop: 6 }}>
