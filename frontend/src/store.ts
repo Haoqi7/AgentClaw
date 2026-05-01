@@ -269,6 +269,8 @@ interface AppStore {
   officialsData: OfficialsData | null;
   agentsStatusData: AgentsStatusData | null;
   morningBrief: MorningBrief | null;
+  morningBriefDate: string;  // 当前查看的简报日期（YYYYMMDD格式，空=今天）
+  morningBriefHistory: string[];  // 可用的历史日期列表
   subConfig: SubConfig | null;
   morningTasks: SubscriptionTask[];
   auditData: PipelineAuditData | null;
@@ -294,6 +296,7 @@ interface AppStore {
   setTplCatFilter: (f: string) => void;
   setSelectedOfficial: (id: string | null) => void;
   setModalTaskId: (id: string | null) => void;
+  setMorningBriefDate: (date: string) => void;
   setCountdown: (n: number) => void;
   toast: (msg: string, type?: 'ok' | 'err') => void;
   setPollInterval: (s: number) => void;
@@ -306,6 +309,7 @@ interface AppStore {
   loadAgentsStatus: () => Promise<void>;
   loadMorning: () => Promise<void>;
   loadSubConfig: () => Promise<void>;
+  loadMorningByDate: (date: string) => Promise<void>;
   loadAudit: () => Promise<void>;
   loadAll: () => Promise<void>;
 }
@@ -319,6 +323,8 @@ export const useStore = create<AppStore>((set, get) => ({
   officialsData: null,
   agentsStatusData: null,
   morningBrief: null,
+  morningBriefDate: '',
+  morningBriefHistory: [],
   subConfig: null,
   morningTasks: [],
   auditData: null,
@@ -349,6 +355,7 @@ export const useStore = create<AppStore>((set, get) => ({
   setTplCatFilter: (f) => set({ tplCatFilter: f }),
   setSelectedOfficial: (id) => set({ selectedOfficial: id }),
   setModalTaskId: (id) => set({ modalTaskId: id }),
+  setMorningBriefDate: (date) => set({ morningBriefDate: date }),
   setCountdown: (n) => set({ countdown: n }),
   setPollInterval: (s) => set({ pollInterval: s }),
   setConnectionStatus: (s) => set({ connectionStatus: s }),
@@ -405,12 +412,13 @@ export const useStore = create<AppStore>((set, get) => ({
 
   loadMorning: async () => {
     try {
-      const [brief, config, tasksR] = await Promise.all([
+      const [brief, config, tasksR, historyR] = await Promise.all([
         api.morningBrief(),
         api.morningConfig(),
         api.morningTasks().catch(() => ({ ok: false, tasks: [] })),
+        api.morningBriefHistory().catch(() => ({ ok: false, dates: [] })),
       ]);
-      set({ morningBrief: brief, subConfig: config, morningTasks: tasksR.tasks || [] });
+      set({ morningBrief: brief, subConfig: config, morningTasks: tasksR.tasks || [], morningBriefHistory: historyR.dates || [], morningBriefDate: '' });
     } catch (e) {
       console.error('store loadMorning error:', e);
     }
@@ -425,6 +433,15 @@ export const useStore = create<AppStore>((set, get) => ({
       set({ subConfig: config, morningTasks: tasksR.tasks || [] });
     } catch (e) {
       console.error('store loadSubConfig error:', e);
+    }
+  },
+
+  loadMorningByDate: async (date: string) => {
+    try {
+      const brief = await api.morningBrief(date);
+      set({ morningBrief: brief, morningBriefDate: date });
+    } catch (e) {
+      console.error('store loadMorningByDate error:', e);
     }
   },
 

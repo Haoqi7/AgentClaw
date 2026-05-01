@@ -110,7 +110,8 @@ export const api = {
   agentConfig: () => fetchJ<AgentConfig>(`${API_BASE}/api/agent-config`),
   modelChangeLog: () => fetchJ<ChangeLogEntry[]>(`${API_BASE}/api/model-change-log`).catch(() => []),
   officialsStats: () => fetchJ<OfficialsData>(`${API_BASE}/api/officials-stats`),
-  morningBrief: () => fetchJ<MorningBrief>(`${API_BASE}/api/morning-brief`),
+  morningBrief: (date?: string) =>
+    fetchJ<MorningBrief>(date ? `${API_BASE}/api/morning-brief/${date}` : `${API_BASE}/api/morning-brief`),
   morningConfig: () => fetchJ<SubConfig>(`${API_BASE}/api/morning-config`),
   agentsStatus: () => fetchJ<AgentsStatusData>(`${API_BASE}/api/agents-status`),
   pipelineAudit: () => fetchJ<PipelineAuditData>(`${API_BASE}/api/pipeline-audit`),
@@ -157,6 +158,8 @@ export const api = {
     postJ<ActionResult>(`${API_BASE}/api/scheduler-rollback`, { taskId, reason }),
   refreshMorning: () =>
     postJ<ActionResult>(`${API_BASE}/api/morning-brief/refresh`, {}),
+  morningBriefHistory: () =>
+    fetchJ<{ok: boolean; dates: string[]}>(`${API_BASE}/api/morning-brief-history`),
   saveMorningConfig: (config: SubConfig) =>
     postJ<ActionResult>(`${API_BASE}/api/morning-config`, config),
   notificationChannels: () =>
@@ -439,7 +442,7 @@ export interface FeedSource {
   name: string;
   url: string;
   category: string;
-  protected: boolean;
+  protected?: boolean;  // 兼容旧数据，新数据不再使用
 }
 
 export interface NotificationConfig {
@@ -455,6 +458,7 @@ export interface SubscriptionTask {
   emoji: string;
   categories: string[];
   feedUrls: string[];
+  keywords: string[];       // 任务级关键词过滤
   notification: NotificationConfig;
   createdAt: string;
   updatedAt: string;
@@ -492,6 +496,7 @@ export interface FeedCheckResult {
   status: 'ok' | 'error';
   title?: string;
   itemCount?: number;
+  latency_ms?: number;
   error?: string;
 }
 

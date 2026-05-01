@@ -57,6 +57,7 @@ except ImportError:
     log.warning('⚠️ channels 模块未找到（dashboard/channels/），多渠道通知功能不可用')
 
 OCLAW_HOME = pathlib.Path.home() / '.openclaw'
+MAX_TASKS = 12
 MAX_REQUEST_BODY = 1 * 1024 * 1024  # 1 MB
 ALLOWED_ORIGIN = None  # Set via --cors; None means restrict to localhost
 _DASHBOARD_PORT = 7891  # Updated at startup from --port arg
@@ -877,20 +878,37 @@ def _migrate_morning_config(cfg):
                           'category': f.get('category', ''), 'protected': False}
                          for f in cfg.pop('custom_feeds') if f.get('url')]
         changed = True
-    # 2. 确保受保护源存在
-    PROTECTED_FEEDS = [
-        {'name': '微博热搜', 'url': 'https://rsshub.app/weibo/search/hot', 'category': '社会', 'protected': True},
-        {'name': '知乎日报', 'url': 'https://rsshub.app/zhihu/daily', 'category': '科技', 'protected': True},
-        {'name': '少数派',   'url': 'https://sspai.com/feed', 'category': '科技', 'protected': True},
-    ]
+    # 2. 清理受保护标记（所有源均可删除）
     feeds = cfg.get('feeds', [])
-    existing_urls = {f.get('url') for f in feeds}
-    for pf in PROTECTED_FEEDS:
-        if pf['url'] not in existing_urls:
-            feeds.insert(0, pf)
+    for f in feeds:
+        if f.get('protected'):
+            f['protected'] = False
             changed = True
     cfg['feeds'] = feeds
     return cfg, changed
+
+
+def _cleanup_old_briefs(max_days=7):
+    """删除超过 max_days 天的简报 JSON 和 lock 文件"""
+    cutoff = (datetime.date.today() - datetime.timedelta(days=max_days)).strftime('%Y%m%d')
+    count = 0
+    for f in DATA.glob('morning_brief_????????.json'):
+        d = f.stem.replace('morning_brief_', '')
+        if d.isdigit() and len(d) == 8 and d < cutoff:
+            try:
+                f.unlink()
+                count += 1
+            except Exception:
+                pass
+    for f in DATA.glob('morning_brief_????????.lock'):
+        d = f.stem.replace('morning_brief_', '')
+        if d.isdigit() and len(d) == 8 and d < cutoff:
+            try:
+                f.unlink()
+            except Exception:
+                pass
+    if count:
+        log.info(f'已清理 {count} 个超过 {max_days} 天的历史简报')
 
 
 def migrate_notification_config():
@@ -959,7 +977,7 @@ def push_notification(task=None, is_test=False):
         notification = cfg.get('notification', {})
         if not notification and cfg.get('feishu_webhook'):
             notification = {'enabled': True, 'channel': 'feishu', 'webhook': cfg['feishu_webhook']}
-    if not notification.get('enabled', True):
+    if not notification.get('enabled', False):
         return
     channel_type = notification.get('channel', 'feishu')
     webhook = notification.get('webhook', '').strip()
@@ -1989,7 +2007,7 @@ def handle_scheduler_scan(threshold_sec=600):
 
                 if _dispatched_to_liubu and not _liubu_reported_back:
                     # 六部已被派发但尚未回报，不应回滚，改为催办六部
-                    log(f'⚠️ {task_id} 回滚跳过：{_last_dispatch_dept}已在执行中，改为催办')
+                    log.warning(f'⚠️ {task_id} 回滚跳过：{_last_dispatch_dept}已在执行中，改为催办')
                     _scheduler_add_flow(task, f'回滚跳过：{_last_dispatch_dept}已在执行，改为催办')
                     # 重置停滞计数器，避免重复触发
                     sched['retryCount'] = 0
@@ -3868,6 +3886,15 @@ class Handler(BaseHTTPRequestHandler):
             self.send_json({'ok': True, 'history': task_history[:MAX_HISTORY_PER_TASK]})
         elif p == '/api/notification-channels':
             self.send_json({'ok': True, 'channels': get_channel_info()})
+        elif p == '/api/morning-brief-history':
+            # 列出可用的历史简报日期 + 清理超过7天的旧文件
+            _cleanup_old_briefs(max_days=7)
+            dates = []
+            for f in sorted(DATA.glob('morning_brief_????????.json'), reverse=True):
+                d = f.stem.replace('morning_brief_', '')
+                if d.isdigit() and len(d) == 8:
+                    dates.append(d)
+            self.send_json({'ok': True, 'dates': dates[:30]})
         elif p.startswith('/api/morning-brief/'):
             date = p.split('/')[-1]
             # 标准化日期格式为 YYYYMMDD（兼容 YYYY-MM-DD 输入）
@@ -4049,23 +4076,16 @@ class Handler(BaseHTTPRequestHandler):
                 body['notification'] = {'enabled': True, 'channel': 'feishu', 'webhook': webhook_legacy}
             body.pop('feishu_webhook', None)
             body.pop('custom_feeds', None)
-            # 确保受保护源存在
-            PROTECTED_FEEDS = [
-                {'name': '微博热搜', 'url': 'https://rsshub.app/weibo/search/hot', 'category': '社会', 'protected': True},
-                {'name': '知乎日报', 'url': 'https://rsshub.app/zhihu/daily', 'category': '科技', 'protected': True},
-                {'name': '少数派',   'url': 'https://sspai.com/feed', 'category': '科技', 'protected': True},
-            ]
-            feeds = body.get('feeds', [])
-            existing_urls = {f.get('url') for f in feeds}
-            for pf in PROTECTED_FEEDS:
-                if pf['url'] not in existing_urls:
-                    feeds.insert(0, pf)
-            body['feeds'] = feeds
+            # 所有信息源均可删除，不再强制注入受保护源
             # 确保默认 notification 字段
             if 'notification' not in body:
                 body['notification'] = {'enabled': False, 'channel': 'feishu', 'webhook': ''}
             cfg_path = DATA / 'morning_brief_config.json'
-            cfg_path.write_text(json.dumps(body, ensure_ascii=False, indent=2))
+            try:
+                atomic_json_write(cfg_path, body)
+            except Exception as e:
+                self.send_json({'ok': False, 'error': f'保存失败: {e}'}, 500)
+                return
             self.send_json({'ok': True, 'message': '订阅配置已保存'})
             return
 
@@ -4146,6 +4166,7 @@ class Handler(BaseHTTPRequestHandler):
             emoji = body.get('emoji', '📰')
             categories = body.get('categories', [])
             feed_urls = body.get('feedUrls', [])
+            keywords = body.get('keywords', [])
             notification = body.get('notification', {'enabled': False, 'channel': 'feishu', 'webhook': ''})
             if not name:
                 self.send_json({'ok': False, 'error': '卡片名称必填'}, 400)
@@ -4168,6 +4189,7 @@ class Handler(BaseHTTPRequestHandler):
                 'emoji': emoji,
                 'categories': categories,
                 'feedUrls': feed_urls,
+                'keywords': keywords,
                 'notification': notification,
                 'createdAt': now,
                 'updatedAt': now,
@@ -4203,16 +4225,19 @@ class Handler(BaseHTTPRequestHandler):
                     return
                 task = tasks[task_idx]
                 task_cats = task.get('categories', [])
-                def do_task_collect(t=task, tc=task_cats):
+                task_keywords = task.get('keywords', [])
+                def do_task_collect(t=task, tc=task_cats, tk=task_keywords):
                     try:
                         cmd = ['python3', str(SCRIPTS / 'fetch_morning_news.py'), '--force']
                         if tc:
                             cmd.extend(['--categories', ','.join(tc)])
+                        if tk:
+                            cmd.extend(['--keywords', ','.join(tk)])
                         env = os.environ.copy()
                         env['SKIP_PUSH'] = '1'
                         subprocess.run(cmd, timeout=120, env=env)
                         # 采集后推送（如果配置了）
-                        if t.get('notification', {}).get('enabled') and t['notification'].get('webhook'):
+                        if t.get('notification', {}).get('enabled', False) and t['notification'].get('webhook'):
                             push_notification(task=t)
                     except Exception as e:
                         print(f'[task collect error] {e}', file=sys.stderr)
@@ -4227,7 +4252,7 @@ class Handler(BaseHTTPRequestHandler):
                     return
                 task = tasks[task_idx]
                 notification = task.get('notification', {})
-                if not notification.get('enabled') or not notification.get('webhook', '').strip():
+                if not notification.get('enabled', False) or not notification.get('webhook', '').strip():
                     self.send_json({'ok': False, 'error': '未配置推送或 Webhook 为空'}, 400)
                     return
                 try:
@@ -4296,7 +4321,7 @@ class Handler(BaseHTTPRequestHandler):
             return
 
         if p == '/api/morning-brief/check-feeds':
-            # 批量检测 RSS 源可用性
+            # 批量检测 RSS 源可用性（改进：验证有效条目、更短超时、减少重试）
             urls = body.get('urls', [])
             if not isinstance(urls, list) or not urls:
                 self.send_json({'ok': False, 'error': 'urls 必须是非空数组'}, 400)
@@ -4310,21 +4335,30 @@ class Handler(BaseHTTPRequestHandler):
                 from fetch_morning_news import curl_rss, parse_rss, _safe_parse_xml
                 results = []
                 for url in urls:
+                    import time as _time
+                    t0 = _time.time()
                     try:
-                        xml = curl_rss(url, timeout=10, retries=1)
+                        xml = curl_rss(url, timeout=8, retries=0)  # 快速失败：不重试
+                        latency_ms = int((_time.time() - t0) * 1000)
                         if not xml:
-                            results.append({'url': url, 'status': 'error', 'error': '返回内容为空'})
+                            results.append({'url': url, 'status': 'error', 'error': '返回内容为空', 'latency_ms': latency_ms})
                             continue
                         items = parse_rss(xml)
+                        # 验证有有效条目（至少1个有标题的item）
+                        valid_items = [it for it in items if it.get('title')]
                         title = ''
                         root = _safe_parse_xml(xml)
                         if root is not None:
                             ch_title = root.find('.//channel/title')
                             if ch_title is not None:
                                 title = (ch_title.text or '').strip()
-                        results.append({'url': url, 'status': 'ok', 'title': title, 'itemCount': len(items)})
+                        if valid_items:
+                            results.append({'url': url, 'status': 'ok', 'title': title or url, 'itemCount': len(valid_items), 'latency_ms': latency_ms})
+                        else:
+                            results.append({'url': url, 'status': 'error', 'error': f'RSS 已解析但无有效条目（共{len(items)}项）', 'itemCount': 0, 'latency_ms': latency_ms})
                     except Exception as e:
-                        results.append({'url': url, 'status': 'error', 'error': str(e)[:100]})
+                        latency_ms = int((_time.time() - t0) * 1000)
+                        results.append({'url': url, 'status': 'error', 'error': str(e)[:100], 'latency_ms': latency_ms})
                 self.send_json({'ok': True, 'results': results})
             except Exception as e:
                 self.send_json({'ok': False, 'error': str(e)[:200]}, 500)
@@ -4903,6 +4937,9 @@ def main():
     threading.Thread(target=_cleanup_dead_threads, daemon=True).start()
 
     migrate_notification_config()
+
+    # 启动时清理超过7天的历史简报
+    _cleanup_old_briefs(max_days=7)
 
     # 启动恢复：重新派发上次被 kill 中断的 queued 任务
     threading.Timer(3.0, _startup_recover_queued_dispatches).start()

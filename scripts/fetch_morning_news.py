@@ -15,11 +15,11 @@ logging.basicConfig(level=logging.INFO, format='%(asctime)s [%(name)s] %(message
 
 DATA = pathlib.Path(__file__).resolve().parent.parent / 'data'
 
-# ── 受保护 RSS 源（始终存在于配置中，不可删除）──────────────────────────
-PROTECTED_FEEDS = [
-    {'name': '微博热搜', 'url': 'https://rsshub.app/weibo/search/hot', 'category': '社会', 'protected': True},
-    {'name': '知乎日报', 'url': 'https://rsshub.app/zhihu/daily', 'category': '科技', 'protected': True},
-    {'name': '少数派',   'url': 'https://sspai.com/feed', 'category': '科技', 'protected': True},
+# ── 预置 RSS 源（首次使用时自动添加，用户可删除）──────────────────────────
+PRESET_FEEDS = [
+    {'name': '微博热搜', 'url': 'https://rsshub.app/weibo/search/hot', 'category': '社会', 'protected': False},
+    {'name': '知乎日报', 'url': 'https://rsshub.app/zhihu/daily', 'category': '科技', 'protected': False},
+    {'name': '少数派',   'url': 'https://sspai.com/feed', 'category': '科技', 'protected': False},
 ]
 
 # ── 关键词过滤（用于军事/AI等需要精准分类的场景）────────────────────────
@@ -31,8 +31,8 @@ CATEGORY_KEYWORDS = {
 }
 
 # ── RSS 抓取 ──────────────────────────────────────────────────────────
-def curl_rss(url, timeout=20, retries=2):
-    """用 urllib 抓取 RSS，支持重试"""
+def curl_rss(url, timeout=15, retries=1):
+    """用 urllib 抓取 RSS，支持重试。默认减少重试次数和超时防止卡死系统。"""
     last_err = None
     for attempt in range(1, retries + 1):
         try:
@@ -139,15 +139,15 @@ def fetch_category(category, feeds, max_items=5, global_seen=None):
                 break
     return results
 
-def _ensure_protected_feeds(config):
-    """确保受保护源始终存在于配置中"""
+def _ensure_preset_feeds(config):
+    """首次使用时添加预置源（用户可删除）"""
     feeds = config.get('feeds', [])
-    existing_urls = {f.get('url') for f in feeds}
+    if feeds:  # 已有源则不添加
+        return config, False
     changed = False
-    for pf in PROTECTED_FEEDS:
-        if pf['url'] not in existing_urls:
-            feeds.insert(0, pf)
-            changed = True
+    for pf in PRESET_FEEDS:
+        feeds.append(pf)
+        changed = True
     if changed:
         config['feeds'] = feeds
     return config, changed
@@ -166,15 +166,22 @@ def _migrate_config(config):
         webhook = config.pop('feishu_webhook', '').strip()
         config['notification'] = {'enabled': bool(webhook), 'channel': 'feishu', 'webhook': webhook}
         changed = True
-    # 3. 确保受保护源存在
-    config, prot_changed = _ensure_protected_feeds(config)
-    return config, changed or prot_changed
+    # 3. 清理受保护标记
+    feeds = config.get('feeds', [])
+    for f in feeds:
+        if f.get('protected'):
+            f['protected'] = False
+            changed = True
+    # 4. 首次使用添加预置源
+    config, preset_changed = _ensure_preset_feeds(config)
+    return config, changed or preset_changed
 
 def main():
     import argparse
     parser = argparse.ArgumentParser()
     parser.add_argument('--force', action='store_true', help='强制采集，忽略幂等锁')
     parser.add_argument('--categories', type=str, default='', help='仅采集指定分类（逗号分隔，如 科技,经济）')
+    parser.add_argument('--keywords', type=str, default='', help='仅采集包含指定关键词的新闻（逗号分隔，如 AI,大模型）')
     args = parser.parse_args()
 
     # 幂等锁：防重复执行
@@ -224,8 +231,12 @@ def main():
         if not enabled_cats:
             enabled_cats = filter_cats  # 兜底：使用用户指定的分类
 
-    # 用户自定义关键词（全局加权）
+    # 用户自定义关键词（全局加权）+ 命令行关键词过滤
     user_keywords = [kw.lower() for kw in config.get('keywords', [])]
+    cmd_keywords = set(k.strip().lower() for k in args.keywords.split(',') if k.strip()) if args.keywords else set()
+    if cmd_keywords:
+        # 如果指定了 --keywords，仅保留包含关键词的新闻
+        user_keywords = list(cmd_keywords)
 
     # 从配置中读取 feeds 列表，按分类分组
     merged_feeds = {}
@@ -262,14 +273,19 @@ def main():
     for category, feeds in merged_feeds.items():
         log.info(f'  采集 {category}...')
         items = fetch_category(category, feeds, global_seen=global_seen)
-        # Boost items matching user keywords
+        # Boost items matching user keywords; if --keywords specified, filter strictly
         if user_keywords:
-            for item in items:
-                text = (item.get('title', '') + ' ' + item.get('summary', '')).lower()
-                item['_kw_hits'] = sum(1 for kw in user_keywords if kw in text)
-            items.sort(key=lambda x: x.get('_kw_hits', 0), reverse=True)
-            for item in items:
-                item.pop('_kw_hits', None)
+            if cmd_keywords:
+                # 严格过滤：仅保留包含至少一个关键词的新闻
+                items = [item for item in items if any(kw in (item.get('title', '') + ' ' + item.get('summary', '')).lower() for kw in user_keywords)]
+            else:
+                # 加权排序：包含关键词的排前面
+                for item in items:
+                    text = (item.get('title', '') + ' ' + item.get('summary', '')).lower()
+                    item['_kw_hits'] = sum(1 for kw in user_keywords if kw in text)
+                items.sort(key=lambda x: x.get('_kw_hits', 0), reverse=True)
+                for item in items:
+                    item.pop('_kw_hits', None)
         result['categories'][category] = items
         log.info(f'    {category}: {len(items)} 条')
 
@@ -287,9 +303,36 @@ def main():
     # 采集成功后才写入幂等锁
     lock_file.touch()
 
+    # ── 清理超过7天的历史简报 ──────────────────────────────────────────────
+    _cleanup_old_briefs(max_days=7)
+
     # ── 推送通知 ─────────────────────────────────────────────────────────
     if os.environ.get('SKIP_PUSH') != '1':
         _push_notification(result)
+
+
+# ── 清理过期历史简报 ─────────────────────────────────────────────────
+def _cleanup_old_briefs(max_days=7):
+    """删除超过 max_days 天的简报 JSON 和 lock 文件"""
+    cutoff = (datetime.date.today() - datetime.timedelta(days=max_days)).strftime('%Y%m%d')
+    count = 0
+    for f in DATA.glob('morning_brief_????????.json'):
+        d = f.stem.replace('morning_brief_', '')
+        if d.isdigit() and len(d) == 8 and d < cutoff:
+            try:
+                f.unlink()
+                count += 1
+            except Exception:
+                pass
+    for f in DATA.glob('morning_brief_????????.lock'):
+        d = f.stem.replace('morning_brief_', '')
+        if d.isdigit() and len(d) == 8 and d < cutoff:
+            try:
+                f.unlink()
+            except Exception:
+                pass
+    if count:
+        log.info(f'已清理 {count} 个超过 {max_days} 天的历史简报')
 
 
 # ── 通知推送（使用 channels 模块统一发送）────────────────────────────────
