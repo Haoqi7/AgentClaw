@@ -180,7 +180,7 @@ export const api = {
 
   // ClawHub 技能商店
   clawhubSearch: (query: string, limit?: number) =>
-    fetchJ<{ok: boolean; results: ClawHubSkill[]; query: string; total: number}>(
+    fetchJ<{ok: boolean; results: ClawHubSkill[]; query: string; total: number; error?: string}>(
       `${API_BASE}/api/clawhub/search?q=${encodeURIComponent(query)}&limit=${limit || 20}`
     ),
   clawhubInstall: (agentId: string, slug: string) =>
