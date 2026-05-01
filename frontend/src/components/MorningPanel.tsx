@@ -64,6 +64,10 @@ export default function MorningPanel() {
   const [pushHistoryMap, setPushHistoryMap] = useState<Record<string, PushHistoryItem[]>>({});
   const [deletingTaskId, setDeletingTaskId] = useState<string | null>(null);
   const [editingTask, setEditingTask] = useState<SubscriptionTask | null>(null);
+  const [collectingProgress, setCollectingProgress] = useState<Record<string, string>>({});
+  const [expandedHistoryDay, setExpandedHistoryDay] = useState<Set<string>>(new Set());
+  const [historyDayNewsMap, setHistoryDayNewsMap] = useState<Record<string, Record<string, MorningNewsItem[]>>>({});
+  const [historyDayDates, setHistoryDayDates] = useState<Record<string, string[]>>({});
 
   useEffect(() => { loadMorning(); }, [loadMorning]);
   useEffect(() => {
@@ -76,18 +80,39 @@ export default function MorningPanel() {
     : '';
   const isToday = !morningBriefDate;
 
-  // 单任务采集
+  // 单任务采集（带进度反馈）
   const collectTask = async (task: SubscriptionTask) => {
     setCollectingTaskId(task.id);
+    setCollectingProgress(prev => ({ ...prev, [task.id]: '采集中…' }));
     try {
       const r = await api.collectTask(task.id);
       if (r.ok) {
+        setCollectingProgress(prev => ({ ...prev, [task.id]: '采集完成，等待数据刷新' }));
         toast(`✅ ${task.emoji} ${task.name} 采集已触发`, 'ok');
-        setTimeout(() => { loadMorning(); }, 5000);
+        setTimeout(() => {
+          loadMorning();
+          setCollectingProgress(prev => {
+            const next = { ...prev };
+            delete next[task.id];
+            return next;
+          });
+        }, 5000);
       } else {
         toast(r.error || '采集失败', 'err');
+        setCollectingProgress(prev => {
+          const next = { ...prev };
+          delete next[task.id];
+          return next;
+        });
       }
-    } catch { toast('采集请求失败', 'err'); }
+    } catch {
+      toast('采集请求失败', 'err');
+      setCollectingProgress(prev => {
+        const next = { ...prev };
+        delete next[task.id];
+        return next;
+      });
+    }
     setCollectingTaskId(null);
   };
 
@@ -131,14 +156,28 @@ export default function MorningPanel() {
     setDeletingTaskId(null);
   };
 
-  // 获取前一天的日期（使用本地时间，避免UTC时区偏移问题）
-  const getYesterday = () => {
-    const d = new Date();
-    d.setDate(d.getDate() - 1);
-    const y = d.getFullYear();
-    const m = String(d.getMonth() + 1).padStart(2, '0');
-    const day = String(d.getDate()).padStart(2, '0');
-    return `${y}${m}${day}`;
+  // 加载卡片的历史日报
+  const toggleHistoryDay = async (taskId: string) => {
+    setExpandedHistoryDay(prev => {
+      const next = new Set(prev);
+      if (next.has(taskId)) { next.delete(taskId); return next; }
+      next.add(taskId);
+      return next;
+    });
+    if (!historyDayDates[taskId]) {
+      try {
+        const r = await api.morningBriefHistory();
+        if (r.ok && r.dates) setHistoryDayDates(prev => ({ ...prev, [taskId]: r.dates || [] }));
+      } catch { /* ignore */ }
+    }
+  };
+
+  const loadHistoryDayNews = async (taskId: string, date: string) => {
+    try {
+      const brief = await api.morningBrief(date);
+      const cats = brief?.categories || {};
+      setHistoryDayNewsMap(prev => ({ ...prev, [`${taskId}_${date}`]: cats }));
+    } catch { /* ignore */ }
   };
 
   return (
@@ -153,39 +192,10 @@ export default function MorningPanel() {
             {morningTasks.length}/{MAX_TASKS} 订阅
           </div>
         </div>
-        <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
-          {/* 日期导航 */}
-          {!isToday && (
-            <button className="btn btn-g" onClick={() => loadMorning()} style={{ fontSize: 11, padding: '4px 10px' }}>
-              ← 今天
-            </button>
-          )}
-          {isToday && morningBriefHistory.length > 0 && (
-            <button className="btn btn-g" onClick={() => loadMorningByDate(getYesterday())} style={{ fontSize: 11, padding: '4px 10px' }}>
-              📅 昨天
-            </button>
-          )}
-          {morningBriefHistory.length > 0 && (
-            <select value={morningBriefDate} onChange={(e) => e.target.value ? loadMorningByDate(e.target.value) : loadMorning()}
-              style={{ fontSize: 11, padding: '4px 8px', background: 'var(--bg)', border: '1px solid var(--line)', borderRadius: 6, color: 'var(--text)', outline: 'none' }}>
-              <option value="">今天</option>
-              {morningBriefHistory.map(d => (
-                <option key={d} value={d}>{d.replace(/(\d{4})(\d{2})(\d{2})/, '$1-$2-$3')}</option>
-              ))}
-            </select>
-          )}
-          <button className="btn btn-g" onClick={() => setShowSettings(!showSettings)} style={{ fontSize: 12, padding: '6px 14px' }}>
-            ⚙ 设置
-          </button>
-        </div>
+        <button className="btn btn-g" onClick={() => setShowSettings(!showSettings)} style={{ fontSize: 12, padding: '6px 14px' }}>
+          ⚙ 设置
+        </button>
       </div>
-
-      {/* 非今天提示 */}
-      {!isToday && (
-        <div style={{ padding: '8px 12px', marginBottom: 12, background: '#1a2744', borderRadius: 8, fontSize: 12, color: '#6a9eff', border: '1px solid #6a9eff33' }}>
-          📅 正在查看 {dateStr} 的历史简报
-        </div>
-      )}
 
       {/* Settings Panel */}
       {showSettings && localConfig && (
@@ -277,16 +287,14 @@ export default function MorningPanel() {
                   ))}
                 </div>
 
-                {/* ── 操作行 ── */}
-                <div style={{ display: 'flex', gap: 6, padding: '8px 14px', borderBottom: '1px solid var(--line)' }}>
-                  {isToday && (
-                    <button className="btn btn-g" onClick={() => collectTask(task)}
-                      disabled={collectingTaskId === task.id}
-                      style={{ fontSize: 11, padding: '3px 10px', opacity: collectingTaskId === task.id ? 0.5 : 1 }}>
-                      {collectingTaskId === task.id ? '⟳ 采集中…' : '▶ 采集'}
-                    </button>
-                  )}
-                  {hasPush && isToday && (
+                {/* ── 操作行 + 采集进度 ── */}
+                <div style={{ display: 'flex', gap: 6, padding: '8px 14px', borderBottom: '1px solid var(--line)', alignItems: 'center', flexWrap: 'wrap' }}>
+                  <button className="btn btn-g" onClick={() => collectTask(task)}
+                    disabled={collectingTaskId === task.id}
+                    style={{ fontSize: 11, padding: '3px 10px', opacity: collectingTaskId === task.id ? 0.5 : 1 }}>
+                    {collectingTaskId === task.id ? '⟳ 采集中…' : '▶ 采集'}
+                  </button>
+                  {hasPush && (
                     <button className="btn btn-g" onClick={() => testPush(task)}
                       disabled={testingTaskId === task.id}
                       style={{ fontSize: 11, padding: '3px 10px', opacity: testingTaskId === task.id ? 0.5 : 1 }}>
@@ -297,6 +305,11 @@ export default function MorningPanel() {
                     style={{ fontSize: 11, padding: '3px 10px' }}>
                     ✏️ 编辑
                   </button>
+                  {collectingProgress[task.id] && (
+                    <span style={{ fontSize: 10, color: '#4caf88', background: '#0d3322', padding: '2px 8px', borderRadius: 4 }}>
+                      {collectingProgress[task.id]}
+                    </span>
+                  )}
                 </div>
 
                 {/* ── 新闻列表区（固定高度，可滚动）── */}
@@ -356,6 +369,48 @@ export default function MorningPanel() {
                           {h.error && <span style={{ color: '#ff5270', maxWidth: 80, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{h.error}</span>}
                         </div>
                       ))}
+                    </div>
+                  )}
+                </div>
+
+                {/* ── 历史日报（默认折叠，展开为浮动层）── */}
+                <div style={{ borderTop: '1px solid var(--line)', position: 'relative' }}>
+                  <div onClick={() => toggleHistoryDay(task.id)}
+                    style={{ padding: '6px 14px', fontSize: 11, cursor: 'pointer', color: 'var(--muted)', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                    <span>📅 历史日报</span>
+                    <span style={{ transition: 'transform .15s', transform: expandedHistoryDay.has(task.id) ? 'rotate(180deg)' : 'rotate(0)' }}>▾</span>
+                  </div>
+                  {expandedHistoryDay.has(task.id) && (
+                    <div style={{
+                      position: 'absolute', bottom: '100%', left: 0, right: 0, zIndex: 20,
+                      background: 'var(--panel2)', border: '1px solid var(--line)', borderRadius: '8px 8px 0 0',
+                      maxHeight: 250, overflowY: 'auto', padding: '6px 14px',
+                      boxShadow: '0 -4px 16px rgba(0,0,0,.25)',
+                    }}>
+                      {(historyDayDates[task.id] || []).length === 0 ? (
+                        <div style={{ fontSize: 10, color: 'var(--muted)', paddingBottom: 4 }}>暂无历史日报</div>
+                      ) : (historyDayDates[task.id] || []).map(d => {
+                        const dayCats = historyDayNewsMap[`${task.id}_${d}`];
+                        const dayNews = dayCats ? getTaskNews(task, dayCats) : null;
+                        const dateLabel = d.replace(/(\d{4})(\d{2})(\d{2})/, '$1-$2-$3');
+                        return (
+                          <div key={d} style={{ marginBottom: 6 }}>
+                            <div onClick={() => !dayNews && loadHistoryDayNews(task.id, d)}
+                              style={{ fontSize: 11, fontWeight: 600, cursor: 'pointer', color: '#6a9eff', padding: '2px 0', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                              <span>📅 {dateLabel}</span>
+                              {!dayNews && <span style={{ fontSize: 9, color: 'var(--muted)' }}>点击加载</span>}
+                              {dayNews && <span style={{ fontSize: 9, color: 'var(--muted)' }}>{dayNews.length}条</span>}
+                            </div>
+                            {dayNews && dayNews.length > 0 && dayNews.slice(0, 5).map((item, i) => (
+                              <div key={i} onClick={() => item.link && window.open(item.link, '_blank')}
+                                style={{ fontSize: 10, padding: '1px 0', display: 'flex', gap: 4, color: 'var(--muted)', cursor: item.link ? 'pointer' : 'default' }}>
+                                {item._kwHits > 0 && <span style={{ color: '#a07aff', flexShrink: 0 }}>⭐</span>}
+                                <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', flex: 1 }}>{item.title}</span>
+                              </div>
+                            ))}
+                          </div>
+                        );
+                      })}
                     </div>
                   )}
                 </div>
@@ -647,6 +702,7 @@ function SubscribeTab({
 
   const [feedStatusCache, setFeedStatusCache] = useState<Record<string, FeedCheckResult>>({});
   const [feedVerifying, setFeedVerifying] = useState(false);
+  const [showFeeds, setShowFeeds] = useState(false);
 
   useEffect(() => {
     api.notificationChannels().then(r => {
@@ -793,49 +849,52 @@ function SubscribeTab({
         </div>
       </div>
 
-      {/* Feed Selection */}
+      {/* Feed Selection（默认折叠）*/}
       <div style={{ marginBottom: 12 }}>
-        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 6 }}>
-          <span style={{ fontSize: 12, fontWeight: 600 }}>
-            📡 信息源 {feedVerifying ? '(⏳ 验证中…)' : `(已选${taskFeedUrls.length}/${(config.feeds || []).length})`}
-          </span>
+        <div onClick={() => setShowFeeds(!showFeeds)}
+          style={{ fontSize: 12, fontWeight: 600, cursor: 'pointer', display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '6px 0', borderBottom: '1px solid var(--line)' }}>
+          <span>📡 信息源（不选择则使用分类下所有源）{taskFeedUrls.length > 0 ? ` · 已选${taskFeedUrls.length}个` : ''}</span>
+          <span style={{ transition: 'transform .15s', transform: showFeeds ? 'rotate(180deg)' : 'rotate(0)', fontSize: 10 }}>▾</span>
         </div>
-        {(config.feeds || []).length === 0 ? (
-          <div style={{ fontSize: 11, color: 'var(--muted)', padding: '8px 0' }}>
-            暂无信息源，请先在「信息源」标签页添加
-          </div>
-        ) : (
-          Object.entries(feedsByCategory).map(([cat, feeds]) => (
-            <div key={cat} style={{ marginBottom: 6 }}>
-              <div style={{ fontSize: 10, color: 'var(--muted)', marginBottom: 3 }}>{CAT_META[cat]?.icon || '📰'} {cat}</div>
-              <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap' }}>
-                {feeds.map((f, i) => {
-                  const on = taskFeedUrls.includes(f.url);
-                  const status = feedStatusCache[f.url];
-                  const isOk = status?.status === 'ok';
-                  const isErr = status?.status === 'error';
-                  return (
-                    <div key={i} onClick={() => toggleFeed(f.url)}
-                      style={{
-                        cursor: 'pointer', padding: '3px 8px', borderRadius: 6, fontSize: 11,
-                        border: `1px solid ${on ? 'var(--acc)' : isErr ? '#ff527044' : 'var(--line)'}`,
-                        background: on ? '#0d1f45' : 'transparent',
-                        display: 'flex', alignItems: 'center', gap: 3,
-                        opacity: isErr && !on ? 0.6 : 1,
-                      }}>
-                      <span>{isOk ? '🟢' : isErr ? '🔴' : '⚪'}</span>
-                      <span>{f.name}</span>
-                      {on && <span style={{ color: 'var(--ok)' }}>✓</span>}
-                    </div>
-                  );
-                })}
+        {showFeeds && (
+          <div style={{ marginTop: 6 }}>
+            {(config.feeds || []).length === 0 ? (
+              <div style={{ fontSize: 11, color: 'var(--muted)', padding: '8px 0' }}>
+                暂无信息源，请先在「信息源」标签页添加
               </div>
-            </div>
-          ))
+            ) : feedVerifying ? (
+              <div style={{ fontSize: 11, color: 'var(--muted)', padding: '8px 0' }}>⏳ 验证中…</div>
+            ) : (
+              Object.entries(feedsByCategory).map(([cat, feeds]) => (
+                <div key={cat} style={{ marginBottom: 6 }}>
+                  <div style={{ fontSize: 10, color: 'var(--muted)', marginBottom: 3 }}>{CAT_META[cat]?.icon || '📰'} {cat}</div>
+                  <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap' }}>
+                    {feeds.map((f, i) => {
+                      const on = taskFeedUrls.includes(f.url);
+                      const status = feedStatusCache[f.url];
+                      const isOk = status?.status === 'ok';
+                      const isErr = status?.status === 'error';
+                      return (
+                        <div key={i} onClick={() => toggleFeed(f.url)}
+                          style={{
+                            cursor: 'pointer', padding: '3px 8px', borderRadius: 6, fontSize: 11,
+                            border: `1px solid ${on ? 'var(--acc)' : isErr ? '#ff527044' : 'var(--line)'}`,
+                            background: on ? '#0d1f45' : 'transparent',
+                            display: 'flex', alignItems: 'center', gap: 3,
+                            opacity: isErr && !on ? 0.6 : 1,
+                          }}>
+                          <span>{isOk ? '🟢' : isErr ? '🔴' : '⚪'}</span>
+                          <span>{f.name}</span>
+                          {on && <span style={{ color: 'var(--ok)' }}>✓</span>}
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+              ))
+            )}
+          </div>
         )}
-        <div style={{ fontSize: 9, color: 'var(--muted)', marginTop: 4 }}>
-          不选择信息源则使用该分类下所有源
-        </div>
       </div>
 
       {/* Keywords */}

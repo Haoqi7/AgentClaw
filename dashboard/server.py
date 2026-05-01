@@ -4321,7 +4321,7 @@ class Handler(BaseHTTPRequestHandler):
             return
 
         if p == '/api/morning-brief/check-feeds':
-            # 批量检测 RSS 源可用性（改进：验证有效条目、更短超时、减少重试）
+            # 批量检测 RSS 源可用性（并发检测、精确错误分类）
             urls = body.get('urls', [])
             if not isinstance(urls, list) or not urls:
                 self.send_json({'ok': False, 'error': 'urls 必须是非空数组'}, 400)
@@ -4333,18 +4333,18 @@ class Handler(BaseHTTPRequestHandler):
                 if str(SCRIPTS) not in sys.path:
                     sys.path.insert(0, str(SCRIPTS))
                 from fetch_morning_news import curl_rss, parse_rss, _safe_parse_xml
-                results = []
-                for url in urls:
-                    import time as _time
+                from urllib.error import HTTPError, URLError
+                import time as _time
+                import concurrent.futures
+
+                def _check_one(url):
                     t0 = _time.time()
                     try:
-                        xml = curl_rss(url, timeout=8, retries=0)  # 快速失败：不重试
+                        xml = curl_rss(url, timeout=15, retries=1)
                         latency_ms = int((_time.time() - t0) * 1000)
                         if not xml:
-                            results.append({'url': url, 'status': 'error', 'error': '返回内容为空', 'latency_ms': latency_ms})
-                            continue
+                            return {'url': url, 'status': 'error', 'error': '返回内容为空', 'latency_ms': latency_ms}
                         items = parse_rss(xml)
-                        # 验证有有效条目（至少1个有标题的item）
                         valid_items = [it for it in items if it.get('title')]
                         title = ''
                         root = _safe_parse_xml(xml)
@@ -4353,12 +4353,41 @@ class Handler(BaseHTTPRequestHandler):
                             if ch_title is not None:
                                 title = (ch_title.text or '').strip()
                         if valid_items:
-                            results.append({'url': url, 'status': 'ok', 'title': title or url, 'itemCount': len(valid_items), 'latency_ms': latency_ms})
+                            return {'url': url, 'status': 'ok', 'title': title or url, 'itemCount': len(valid_items), 'latency_ms': latency_ms}
                         else:
-                            results.append({'url': url, 'status': 'error', 'error': f'RSS 已解析但无有效条目（共{len(items)}项）', 'itemCount': 0, 'latency_ms': latency_ms})
+                            return {'url': url, 'status': 'error', 'error': 'RSS 已解析但无有效条目', 'itemCount': 0, 'latency_ms': latency_ms}
+                    except HTTPError as e:
+                        latency_ms = int((_time.time() - t0) * 1000)
+                        if e.code == 403:
+                            return {'url': url, 'status': 'error', 'error': '被网站拦截(403)', 'latency_ms': latency_ms}
+                        return {'url': url, 'status': 'error', 'error': f'HTTP {e.code}', 'latency_ms': latency_ms}
+                    except URLError as e:
+                        latency_ms = int((_time.time() - t0) * 1000)
+                        reason = str(e.reason)[:60] if hasattr(e, 'reason') else str(e)[:60]
+                        if 'timed out' in reason.lower() or 'timeout' in reason.lower():
+                            return {'url': url, 'status': 'error', 'error': '连接超时', 'latency_ms': latency_ms}
+                        if 'unreachable' in reason.lower() or 'refused' in reason.lower():
+                            return {'url': url, 'status': 'error', 'error': f'网络不可达: {reason}', 'latency_ms': latency_ms}
+                        return {'url': url, 'status': 'error', 'error': reason, 'latency_ms': latency_ms}
                     except Exception as e:
                         latency_ms = int((_time.time() - t0) * 1000)
-                        results.append({'url': url, 'status': 'error', 'error': str(e)[:100], 'latency_ms': latency_ms})
+                        msg = str(e)[:80]
+                        if 'timeout' in msg.lower():
+                            return {'url': url, 'status': 'error', 'error': '连接超时', 'latency_ms': latency_ms}
+                        return {'url': url, 'status': 'error', 'error': msg, 'latency_ms': latency_ms}
+
+                # 并发检测，最多5线程
+                results = []
+                with concurrent.futures.ThreadPoolExecutor(max_workers=5) as pool:
+                    futs = {pool.submit(_check_one, u): u for u in urls}
+                    for fut in concurrent.futures.as_completed(futs):
+                        try:
+                            results.append(fut.result())
+                        except Exception as e:
+                            results.append({'url': futs[fut], 'status': 'error', 'error': str(e)[:80]})
+                # 按原始URL顺序排列
+                url_order = {u: i for i, u in enumerate(urls)}
+                results.sort(key=lambda r: url_order.get(r.get('url', ''), 999))
                 self.send_json({'ok': True, 'results': results})
             except Exception as e:
                 self.send_json({'ok': False, 'error': str(e)[:200]}, 500)
