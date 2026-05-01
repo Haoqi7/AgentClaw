@@ -412,13 +412,12 @@ export const useStore = create<AppStore>((set, get) => ({
 
   loadMorning: async () => {
     try {
-      const [brief, config, tasksR, historyR] = await Promise.all([
-        api.morningBrief(),
+      const [config, tasksR, historyR] = await Promise.all([
         api.morningConfig(),
         api.morningTasks().catch(() => ({ ok: false, tasks: [] })),
         api.morningBriefHistory().catch(() => ({ ok: false, dates: [] })),
       ]);
-      set({ morningBrief: brief, subConfig: config, morningTasks: tasksR.tasks || [], morningBriefHistory: historyR.dates || [], morningBriefDate: '' });
+      set({ subConfig: config, morningTasks: tasksR.tasks || [], morningBriefHistory: historyR.dates || [], morningBriefDate: '' });
     } catch (e) {
       console.error('store loadMorning error:', e);
     }

@@ -889,12 +889,23 @@ def _migrate_morning_config(cfg):
 
 
 def _cleanup_old_briefs(max_days=7):
-    """删除超过 max_days 天的简报 JSON 和 lock 文件"""
+    """删除超过 max_days 天的简报 JSON 和 lock 文件（包括任务专属简报）"""
     cutoff = (datetime.date.today() - datetime.timedelta(days=max_days)).strftime('%Y%m%d')
     count = 0
     for f in DATA.glob('morning_brief_????????.json'):
         d = f.stem.replace('morning_brief_', '')
         if d.isdigit() and len(d) == 8 and d < cutoff:
+            try:
+                f.unlink()
+                count += 1
+            except Exception:
+                pass
+    # 清理任务专属日期简报
+    for f in DATA.glob('morning_brief_task_*_????????.json'):
+        # 文件名格式: morning_brief_task_{taskId}_{YYYYMMDD}.json
+        name = f.stem
+        parts = name.rsplit('_', 1)
+        if len(parts) == 2 and parts[1].isdigit() and len(parts[1]) == 8 and parts[1] < cutoff:
             try:
                 f.unlink()
                 count += 1
@@ -1007,7 +1018,12 @@ def push_notification(task=None, is_test=False):
         return
 
     # 正常推送：按任务分类过滤新闻
-    brief = read_json(DATA / 'morning_brief.json', {})
+    # 优先读取任务专属简报，兼容全局简报
+    brief = {}
+    if task and task.get('id'):
+        brief = read_json(DATA / f'morning_brief_task_{task["id"]}_latest.json', {})
+    if not brief or not brief.get('categories'):
+        brief = read_json(DATA / 'morning_brief.json', {})
     date_str = brief.get('date', '')
     task_cats = set(task.get('categories', [])) if task else set()
     # 按分类过滤
@@ -3896,7 +3912,36 @@ class Handler(BaseHTTPRequestHandler):
                     dates.append(d)
             self.send_json({'ok': True, 'dates': dates[:30]})
         elif p.startswith('/api/morning-brief/'):
-            date = p.split('/')[-1]
+            # 支持任务专属简报路由: /api/morning-brief/task/{taskId}[/date][/history]
+            path_after = p.replace('/api/morning-brief/', '')
+            if path_after.startswith('task/'):
+                # 任务专属简报
+                task_part = path_after.replace('task/', '')
+                # /api/morning-brief/task/{taskId}/history
+                if task_part.endswith('/history'):
+                    tid = task_part.replace('/history', '')
+                    dates = []
+                    for f in sorted(DATA.glob(f'morning_brief_task_{tid}_????????.json'), reverse=True):
+                        d = f.stem.replace(f'morning_brief_task_{tid}_', '')
+                        if d.isdigit() and len(d) == 8:
+                            dates.append(d)
+                    self.send_json({'ok': True, 'dates': dates[:30]})
+                    return
+                # /api/morning-brief/task/{taskId}/{date}
+                parts_t = task_part.split('/')
+                if len(parts_t) >= 2 and parts_t[1]:
+                    tid = parts_t[0]
+                    date_clean = parts_t[1].replace('-', '')
+                    if not date_clean.isdigit() or len(date_clean) != 8:
+                        self.send_json({'ok': False, 'error': f'日期格式无效: {parts_t[1]}'}, 400)
+                        return
+                    self.send_json(read_json(DATA / f'morning_brief_task_{tid}_{date_clean}.json', {}))
+                    return
+                # /api/morning-brief/task/{taskId} → latest
+                tid = task_part.rstrip('/')
+                self.send_json(read_json(DATA / f'morning_brief_task_{tid}_latest.json', {}))
+                return
+            date = path_after
             # 标准化日期格式为 YYYYMMDD（兼容 YYYY-MM-DD 输入）
             date_clean = date.replace('-', '')
             if not date_clean.isdigit() or len(date_clean) != 8:
@@ -4174,6 +4219,7 @@ class Handler(BaseHTTPRequestHandler):
             categories = body.get('categories', [])
             feed_urls = body.get('feedUrls', [])
             keywords = body.get('keywords', [])
+            category_keywords = body.get('categoryKeywords', {})
             notification = body.get('notification', {'enabled': False, 'channel': 'feishu', 'webhook': ''})
             if not name:
                 self.send_json({'ok': False, 'error': '卡片名称必填'}, 400)
@@ -4197,6 +4243,7 @@ class Handler(BaseHTTPRequestHandler):
                 'categories': categories,
                 'feedUrls': feed_urls,
                 'keywords': keywords,
+                'categoryKeywords': category_keywords,
                 'notification': notification,
                 'createdAt': now,
                 'updatedAt': now,
@@ -4238,8 +4285,20 @@ class Handler(BaseHTTPRequestHandler):
                         cmd = ['python3', str(SCRIPTS / 'fetch_morning_news.py'), '--force']
                         if tc:
                             cmd.extend(['--categories', ','.join(tc)])
-                        if tk:
-                            cmd.extend(['--keywords', ','.join(tk)])
+                        # 支持 categoryKeywords：汇总所有分类的关键词
+                        cat_kw = t.get('categoryKeywords', {})
+                        all_kws = list(tk) if tk else []
+                        for cat_name, cat_kws in (cat_kw or {}).items():
+                            all_kws.extend(cat_kws or [])
+                        if all_kws:
+                            # 去重
+                            seen = set()
+                            unique_kws = []
+                            for k in all_kws:
+                                if k not in seen:
+                                    seen.add(k)
+                                    unique_kws.append(k)
+                            cmd.extend(['--keywords', ','.join(unique_kws)])
                         tfu = t.get('feedUrls', [])
                         if tfu:
                             cmd.extend(['--feed-urls', ','.join(tfu)])
@@ -4248,6 +4307,36 @@ class Handler(BaseHTTPRequestHandler):
                         env = os.environ.copy()
                         env['SKIP_PUSH'] = '1'
                         subprocess.run(cmd, timeout=120, env=env)
+                        # 将全局采集结果重定向到任务专属文件
+                        tid = t.get('id', '')
+                        if tid:
+                            global_brief = read_json(DATA / 'morning_brief.json', {})
+                            if global_brief and global_brief.get('categories'):
+                                today_str = datetime.date.today().strftime('%Y%m%d')
+                                # 按 categoryKeywords 过滤
+                                if cat_kw:
+                                    filtered_cats = {}
+                                    for cat_name, cat_items in (global_brief.get('categories') or {}).items():
+                                        cat_kws_list = cat_kw.get(cat_name, [])
+                                        if cat_kws_list:
+                                            kw_lower = [k.lower() for k in cat_kws_list]
+                                            filtered = []
+                                            for it in (cat_items or []):
+                                                text = ((it.get('title') or '') + (it.get('summary') or '')).lower()
+                                                if any(k in text for k in kw_lower):
+                                                    filtered.append(it)
+                                            if filtered:
+                                                filtered_cats[cat_name] = filtered
+                                        else:
+                                            if cat_items:
+                                                filtered_cats[cat_name] = cat_items
+                                    task_brief = {**global_brief, 'categories': filtered_cats}
+                                else:
+                                    task_brief = global_brief
+                                # 写入任务专属 latest 文件
+                                atomic_json_write(DATA / f'morning_brief_task_{tid}_latest.json', task_brief)
+                                # 写入任务专属日期文件
+                                atomic_json_write(DATA / f'morning_brief_task_{tid}_{today_str}.json', task_brief)
                         # 采集后推送（如果配置了）
                         if t.get('notification', {}).get('enabled', False) and t['notification'].get('webhook'):
                             push_notification(task=t)

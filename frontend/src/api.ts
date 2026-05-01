@@ -211,6 +211,14 @@ export const api = {
   pushHistory: (id: string) =>
     fetchJ<{ok: boolean; history: PushHistoryItem[]}>(`${API_BASE}/api/morning-tasks/${encodeURIComponent(id)}/push-history`),
 
+  // ── 任务专属简报 API（数据隔离） ──
+  morningBriefTask: (taskId: string) =>
+    fetchJ<MorningBrief>(`${API_BASE}/api/morning-brief/task/${encodeURIComponent(taskId)}`),
+  morningBriefTaskDate: (taskId: string, date: string) =>
+    fetchJ<MorningBrief>(`${API_BASE}/api/morning-brief/task/${encodeURIComponent(taskId)}/${date}`),
+  morningBriefTaskHistory: (taskId: string) =>
+    fetchJ<{ok: boolean; dates: string[]}>(`${API_BASE}/api/morning-brief/task/${encodeURIComponent(taskId)}/history`),
+
   createTask: (data: CreateTaskPayload) =>
     postJ<ActionResult & { taskId?: string }>(`${API_BASE}/api/create-task`, data),
 
@@ -458,7 +466,8 @@ export interface SubscriptionTask {
   emoji: string;
   categories: string[];
   feedUrls: string[];
-  keywords: string[];       // 任务级关键词过滤
+  keywords: string[];       // 任务级关键词过滤（兼容旧数据，新任务置空）
+  categoryKeywords?: Record<string, string[]>;  // 分类维度关键词：{"科技": ["AI", "芯片"], "经济": ["GDP"]}
   notification: NotificationConfig;
   createdAt: string;
   updatedAt: string;

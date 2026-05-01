@@ -1,4 +1,4 @@
-import { useEffect, useState, useCallback, useRef } from 'react';
+import { useEffect, useState, useCallback, useMemo } from 'react';
 import { useStore } from '../store';
 import { api } from '../api';
 import type { SubConfig, MorningNewsItem, FeedSource, FeedCheckResult, ChannelInfo, SubscriptionTask, PushHistoryItem } from '../api';
@@ -26,6 +26,9 @@ const DEFAULT_EMOJIS = ['📰', '📋', '🔔', '📌', '🎯', '📡', '🌐', 
 
 const MAX_TASKS = 12;
 
+/** 名称校验：仅允许中文+数字+26个英文字母，最大20字符 */
+const TASK_NAME_RE = /^[\u4e00-\u9fffa-zA-Z0-9]{1,20}$/;
+
 /** 获取近7天日期列表（从6天前到今天） */
 function getLast7Days() {
   const weekdays = ['日', '一', '二', '三', '四', '五', '六'];
@@ -42,17 +45,25 @@ function getLast7Days() {
   });
 }
 
-/** 按卡片配置过滤+排序新闻 */
+/** 按卡片配置过滤+排序新闻（支持 categoryKeywords） */
 function getTaskNews(task: SubscriptionTask, allCats: Record<string, MorningNewsItem[]>): (MorningNewsItem & { _kwHits: number })[] {
   const taskCatSet = new Set(task.categories || []);
-  const taskKws = (task.keywords || []).map(k => k.toLowerCase());
+  const catKwMap = task.categoryKeywords || {};
+  // 汇总所有分类的关键词（用于排序提升）
+  const allKws = Object.values(catKwMap).flat().map(k => k.toLowerCase());
   const items: (MorningNewsItem & { _kwHits: number })[] = [];
   for (const [cat, catItems] of Object.entries(allCats)) {
     if (!taskCatSet.has(cat)) continue;
+    const catKws = (catKwMap[cat] || []).map(k => k.toLowerCase());
     for (const item of catItems) {
       if (!item.title) continue;
+      // 如果该分类设置了关键词，必须匹配任一关键词才纳入
+      if (catKws.length > 0) {
+        const text = ((item.title || '') + (item.summary || '')).toLowerCase();
+        if (!catKws.some(k => text.includes(k))) continue;
+      }
       const text = ((item.title || '') + (item.summary || '')).toLowerCase();
-      const kwHits = taskKws.filter(k => text.includes(k)).length;
+      const kwHits = allKws.filter(k => text.includes(k)).length;
       items.push({ ...item, _kwHits: kwHits });
     }
   }
@@ -62,19 +73,15 @@ function getTaskNews(task: SubscriptionTask, allCats: Record<string, MorningNews
 }
 
 export default function MorningPanel() {
-  const morningBrief = useStore((s) => s.morningBrief);
-  const morningBriefDate = useStore((s) => s.morningBriefDate);
-  const morningBriefHistory = useStore((s) => s.morningBriefHistory);
   const subConfig = useStore((s) => s.subConfig);
   const morningTasks = useStore((s) => s.morningTasks);
-  const loadMorning = useStore((s) => s.loadMorning);
   const loadSubConfig = useStore((s) => s.loadSubConfig);
-  const loadMorningByDate = useStore((s) => s.loadMorningByDate);
   const toast = useStore((s) => s.toast);
 
   const [showSettings, setShowSettings] = useState(false);
   const [localConfig, setLocalConfig] = useState<SubConfig | null>(null);
-  const [collectingTaskId, setCollectingTaskId] = useState<string | null>(null);
+  // 问题7: 并发采集 — 改为 Set<string> 支持多任务同时采集
+  const [collectingTaskIds, setCollectingTaskIds] = useState<Set<string>>(new Set());
   const [testingTaskId, setTestingTaskId] = useState<string | null>(null);
   const [expandedHistory, setExpandedHistory] = useState<Set<string>>(new Set());
   const [pushHistoryMap, setPushHistoryMap] = useState<Record<string, PushHistoryItem[]>>({});
@@ -86,52 +93,73 @@ export default function MorningPanel() {
   const [historyDayDates, setHistoryDayDates] = useState<Record<string, string[]>>({});
   const [deleteConfirm, setDeleteConfirm] = useState<SubscriptionTask | null>(null);
   const [selectedHistoryDate, setSelectedHistoryDate] = useState<Record<string, string>>({});
+  // 问题2&3: 每个任务独立的简报数据
+  const [taskBriefMap, setTaskBriefMap] = useState<Record<string, Record<string, MorningNewsItem[]>>>({});
 
-  useEffect(() => { loadMorning(); }, [loadMorning]);
   useEffect(() => {
     if (subConfig) setLocalConfig(JSON.parse(JSON.stringify(subConfig)));
   }, [subConfig]);
 
-  const cats = morningBrief?.categories || {};
-  const dateStr = morningBrief?.date
-    ? morningBrief.date.replace(/(\d{4})(\d{2})(\d{2})/, '$1年$2月$3日')
-    : '';
-  const isToday = !morningBriefDate;
+  // 问题2&3: 加载所有任务的独立简报
+  const loadAllTaskBriefs = useCallback(async () => {
+    const tasks = morningTasks || [];
+    const newMap: Record<string, Record<string, MorningNewsItem[]>> = {};
+    await Promise.all(tasks.map(async (task) => {
+      try {
+        const brief = await api.morningBriefTask(task.id);
+        if (brief?.categories) {
+          newMap[task.id] = brief.categories;
+        }
+      } catch { /* 任务可能还没采集过 */ }
+    }));
+    setTaskBriefMap(newMap);
+  }, [morningTasks]);
 
-  // 单任务采集（带进度反馈）
+  useEffect(() => { loadAllTaskBriefs(); }, [loadAllTaskBriefs]);
+
+  // 问题7: 智能轮询 — 采集后轮询检测任务专属数据
+  const pollForTaskData = (taskId: string, maxAttempts = 6, interval = 3000) => {
+    let attempts = 0;
+    const timer = setInterval(async () => {
+      attempts++;
+      try {
+        const brief = await api.morningBriefTask(taskId);
+        if (brief?.categories && Object.keys(brief.categories).length > 0) {
+          clearInterval(timer);
+          loadAllTaskBriefs();
+          setCollectingProgress(prev => { const n = { ...prev }; delete n[taskId]; return n; });
+          return;
+        }
+      } catch { /* 继续轮询 */ }
+      if (attempts >= maxAttempts) {
+        clearInterval(timer);
+        toast('⚠️ 采集超时，请稍后手动刷新', 'err');
+        setCollectingProgress(prev => { const n = { ...prev }; delete n[taskId]; return n; });
+      }
+    }, interval);
+  };
+
+  // 单任务采集（带进度反馈 + 智能轮询）
   const collectTask = async (task: SubscriptionTask) => {
-    setCollectingTaskId(task.id);
+    // 问题7: 并发采集 — 使用 Set
+    setCollectingTaskIds(prev => new Set(prev).add(task.id));
     setCollectingProgress(prev => ({ ...prev, [task.id]: '采集中…' }));
     try {
       const r = await api.collectTask(task.id);
       if (r.ok) {
         setCollectingProgress(prev => ({ ...prev, [task.id]: '采集完成，等待数据刷新' }));
         toast(`✅ ${task.emoji} ${task.name} 采集已触发`, 'ok');
-        setTimeout(() => {
-          loadMorning();
-          setCollectingProgress(prev => {
-            const next = { ...prev };
-            delete next[task.id];
-            return next;
-          });
-        }, 5000);
+        // 问题7: 智能轮询替代固定5秒
+        pollForTaskData(task.id);
       } else {
         toast(r.error || '采集失败', 'err');
-        setCollectingProgress(prev => {
-          const next = { ...prev };
-          delete next[task.id];
-          return next;
-        });
+        setCollectingProgress(prev => { const n = { ...prev }; delete n[task.id]; return n; });
       }
     } catch {
       toast('采集请求失败', 'err');
-      setCollectingProgress(prev => {
-        const next = { ...prev };
-        delete next[task.id];
-        return next;
-      });
+      setCollectingProgress(prev => { const n = { ...prev }; delete n[task.id]; return n; });
     }
-    setCollectingTaskId(null);
+    setCollectingTaskIds(prev => { const n = new Set(prev); n.delete(task.id); return n; });
   };
 
   // 测试推送
@@ -153,7 +181,6 @@ export default function MorningPanel() {
       next.add(taskId);
       return next;
     });
-    // 懒加载历史数据
     if (!pushHistoryMap[taskId]) {
       try {
         const r = await api.pushHistory(taskId);
@@ -167,7 +194,7 @@ export default function MorningPanel() {
     setDeletingTaskId(task.id);
     try {
       const r = await api.deleteMorningTask(task.id);
-      if (r.ok) { toast(`🗑️ ${task.name} 已删除`, 'ok'); loadSubConfig(); }
+      if (r.ok) { toast(`🗑️ ${task.name} 已删除`, 'ok'); loadSubConfig(); loadAllTaskBriefs(); }
       else toast(r.error || '删除失败', 'err');
     } catch { toast('删除请求失败', 'err'); }
     setDeletingTaskId(null);
@@ -184,7 +211,8 @@ export default function MorningPanel() {
     });
     if (!historyDayDates[taskId]) {
       try {
-        const r = await api.morningBriefHistory();
+        // 问题2&3: 使用任务专属历史API
+        const r = await api.morningBriefTaskHistory(taskId);
         if (r.ok && r.dates) setHistoryDayDates(prev => ({ ...prev, [taskId]: r.dates || [] }));
       } catch { /* ignore */ }
     }
@@ -192,7 +220,8 @@ export default function MorningPanel() {
 
   const loadHistoryDayNews = async (taskId: string, date: string) => {
     try {
-      const brief = await api.morningBrief(date);
+      // 问题2&3: 使用任务专属日期简报API
+      const brief = await api.morningBriefTaskDate(taskId, date);
       const cats = brief?.categories || {};
       setHistoryDayNewsMap(prev => ({ ...prev, [`${taskId}_${date}`]: cats }));
     } catch { /* ignore */ }
@@ -205,8 +234,6 @@ export default function MorningPanel() {
         <div>
           <div style={{ fontSize: 20, fontWeight: 800, marginBottom: 4 }}>🌅 天下要闻</div>
           <div style={{ fontSize: 12, color: 'var(--muted)' }}>
-            {dateStr && `${dateStr} | `}
-            {morningBrief?.generated_at && `采集于 ${morningBrief.generated_at} | `}
             {morningTasks.length}/{MAX_TASKS} 订阅
           </div>
         </div>
@@ -215,13 +242,13 @@ export default function MorningPanel() {
         </button>
       </div>
 
-      {/* Settings Modal - 修复6：设置改为弹框 */}
+      {/* Settings Modal - 问题4: 优化弹框高度和边距 */}
       {showSettings && localConfig && (
         <div className="modal-bg" onClick={() => setShowSettings(false)}>
           <div className="modal" onClick={(e) => e.stopPropagation()}
-            style={{ width: 640, maxWidth: '92vw', maxHeight: '80vh', display: 'flex', flexDirection: 'column' }}>
-            {/* 弹框头部 */}
-            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '16px 20px', borderBottom: '1px solid var(--line)' }}>
+            style={{ width: 640, maxWidth: '92vw', maxHeight: '90vh', display: 'flex', flexDirection: 'column' }}>
+            {/* 弹框头部 - 问题4: 减小顶部间距 */}
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '12px 20px', borderBottom: '1px solid var(--line)' }}>
               <span style={{ fontSize: 15, fontWeight: 700 }}>⚙ 天下要闻设置</span>
               <button style={{ background: 'none', border: 'none', color: 'var(--muted)', cursor: 'pointer', fontSize: 18, padding: 4 }} onClick={() => setShowSettings(false)}>✕</button>
             </div>
@@ -265,8 +292,9 @@ export default function MorningPanel() {
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(340px, 1fr))', gap: 12 }}>
           {morningTasks.map((task) => {
             const hasPush = task.notification?.enabled && task.notification?.webhook;
-            const taskKws = task.keywords || [];
-            const taskNews = getTaskNews(task, cats);
+            // 问题2&3: 从任务专属数据源获取新闻
+            const taskCats = taskBriefMap[task.id] || {};
+            const taskNews = getTaskNews(task, taskCats);
             const isExpanded = expandedHistory.has(task.id);
             const historyItems = pushHistoryMap[task.id] || [];
             const historyCount = historyItems.length;
@@ -305,22 +333,24 @@ export default function MorningPanel() {
                       </span>
                     );
                   })}
-                  {taskKws.map((kw, i) => (
-                    <span key={i} style={{
-                      fontSize: 9, padding: '1px 5px', borderRadius: 4,
-                      background: '#a07aff18', color: '#a07aff', border: '1px solid #a07aff33',
-                    }}>
-                      🔑{kw}
-                    </span>
-                  ))}
+                  {Object.entries(task.categoryKeywords || {}).flatMap(([cat, kws]) =>
+                    (kws || []).map((kw, i) => (
+                      <span key={`ckw-${cat}-${i}`} style={{
+                        fontSize: 9, padding: '1px 5px', borderRadius: 4,
+                        background: '#a07aff18', color: '#a07aff', border: '1px solid #a07aff33',
+                      }}>
+                        🔑{kw}
+                      </span>
+                    ))
+                  )}
                 </div>
 
                 {/* ── 操作行 + 采集进度 ── */}
                 <div style={{ display: 'flex', gap: 6, padding: '8px 14px', borderBottom: '1px solid var(--line)', alignItems: 'center', flexWrap: 'wrap' }}>
                   <button className="btn btn-g" onClick={() => collectTask(task)}
-                    disabled={collectingTaskId === task.id}
-                    style={{ fontSize: 11, padding: '3px 10px', opacity: collectingTaskId === task.id ? 0.5 : 1 }}>
-                    {collectingTaskId === task.id ? '⟳ 采集中…' : '▶ 采集'}
+                    disabled={collectingTaskIds.has(task.id)}
+                    style={{ fontSize: 11, padding: '3px 10px', opacity: collectingTaskIds.has(task.id) ? 0.5 : 1 }}>
+                    {collectingTaskIds.has(task.id) ? '⟳ 采集中…' : '▶ 采集'}
                   </button>
                   {hasPush && (
                     <button className="btn btn-g" onClick={() => testPush(task)}
@@ -344,7 +374,7 @@ export default function MorningPanel() {
                 <div style={{ flex: 1, overflowY: 'auto', padding: '4px 0' }}>
                   {!taskNews.length ? (
                     <div style={{ padding: '20px 14px', textAlign: 'center', color: 'var(--muted)', fontSize: 12 }}>
-                      {Object.keys(cats).length > 0 ? '该分类暂无新闻' : '暂无数据，点击「采集」获取'}
+                      {Object.keys(taskCats).length > 0 ? '该分类暂无新闻' : '暂无数据，点击「采集」获取'}
                     </div>
                   ) : taskNews.map((item, i) => (
                     <div key={i} onClick={() => item.link && window.open(item.link, '_blank')}
@@ -399,7 +429,7 @@ export default function MorningPanel() {
                   )}
                 </div>
 
-                {/* ── 历史日报（向下展开 + 近7天小格子）── 修复7 */}
+                {/* ── 历史日报（向下展开 + 近7天小格子）── */}
                 <div style={{ borderTop: '1px solid var(--line)' }}>
                   <div onClick={() => toggleHistoryDay(task.id)}
                     style={{ padding: '6px 14px', fontSize: 11, cursor: 'pointer', color: 'var(--muted)', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
@@ -414,7 +444,6 @@ export default function MorningPanel() {
                     const dayNews = dayCats ? getTaskNews(task, dayCats) : null;
                     return (
                       <div style={{ background: 'var(--bg)', borderTop: '1px solid var(--line)', padding: '8px 14px' }}>
-                        {/* 7天日期小格子 */}
                         <div style={{ display: 'flex', gap: 4, marginBottom: 8 }}>
                           {last7.map(dateInfo => {
                             const hasData = historyDates.includes(dateInfo.yyyymmdd);
@@ -447,7 +476,6 @@ export default function MorningPanel() {
                             );
                           })}
                         </div>
-                        {/* 选中日期的新闻内容 */}
                         {selectedDate && dayNews && dayNews.length > 0 && (
                           <div style={{ maxHeight: 120, overflowY: 'auto' }}>
                             {dayNews.slice(0, 5).map((item, i) => (
@@ -470,7 +498,7 @@ export default function MorningPanel() {
                   })()}
                 </div>
 
-                {/* ── 底部删除 - 修复11：改为触发弹框 ── */}
+                {/* ── 底部删除 ── */}
                 <div style={{ display: 'flex', justifyContent: 'flex-end', padding: '4px 14px 8px' }}>
                   <button onClick={() => setDeleteConfirm(task)}
                     disabled={deletingTaskId === task.id}
@@ -484,7 +512,7 @@ export default function MorningPanel() {
         </div>
       )}
 
-      {/* 删除确认弹框 - 修复11：使用项目一致弹框 */}
+      {/* 删除确认弹框 */}
       {deleteConfirm && (
         <div className="confirm-bg" onClick={() => setDeleteConfirm(null)}>
           <div className="confirm-box" onClick={(e) => e.stopPropagation()}>
@@ -508,7 +536,7 @@ export default function MorningPanel() {
         <EditTaskModal
           task={editingTask}
           onClose={() => setEditingTask(null)}
-          onSaved={() => { setEditingTask(null); loadSubConfig(); }}
+          onSaved={() => { setEditingTask(null); loadSubConfig(); loadAllTaskBriefs(); }}
         />
       )}
     </div>
@@ -557,8 +585,8 @@ function SettingsPanel({
         ))}
       </div>
 
-      {/* Tab Content */}
-      <div style={{ padding: 20, overflowY: 'auto', maxHeight: 'calc(80vh - 120px)' }}>
+      {/* Tab Content - 问题4: 匹配新弹框高度 */}
+      <div style={{ padding: 20, overflowY: 'auto', maxHeight: 'calc(90vh - 100px)' }}>
         {activeTab === 'feeds' && (
           <FeedsTab config={config} setConfig={setConfig} onSave={onSave} />
         )}
@@ -597,7 +625,6 @@ function FeedsTab({
     if (!allCats.includes(c.name)) allCats.push(c.name);
   });
 
-  // 修复5：逐个检测+进度反馈；修复3：移除自动检测
   const checkFeeds = useCallback(async () => {
     const urls = (config.feeds || []).map(f => f.url).filter(Boolean);
     if (!urls.length) return;
@@ -710,7 +737,6 @@ function FeedsTab({
             <span style={{ fontSize: 9, color: statusColor, whiteSpace: 'nowrap', maxWidth: 120, overflow: 'hidden', textOverflow: 'ellipsis' }} title={statusText}>
               {statusIcon} {statusText}
             </span>
-            {/* 修复4：单源检测按钮明显化 */}
             <button
               onClick={() => checkSingleFeed(f.url)}
               disabled={isChecking}
@@ -778,44 +804,16 @@ function SubscribeTab({
   const [taskEmoji, setTaskEmoji] = useState('📰');
   const [taskCats, setTaskCats] = useState<string[]>([]);
   const [taskFeedUrls, setTaskFeedUrls] = useState<string[]>([]);
-  const [taskKeywords, setTaskKeywords] = useState<string[]>([]);
-  const [newKeyword, setNewKeyword] = useState('');
+  // 问题6: 分类维度关键词
+  const [catKwMap, setCatKwMap] = useState<Record<string, string[]>>({});
+  const [catNewKw, setCatNewKw] = useState<Record<string, string>>({});
   const [taskNotiEnabled, setTaskNotiEnabled] = useState(false);
   const [taskNotiChannel, setTaskNotiChannel] = useState('feishu');
   const [taskNotiWebhook, setTaskNotiWebhook] = useState('');
   const [channelList, setChannelList] = useState<ChannelInfo[]>([]);
   const [showEmojiPicker, setShowEmojiPicker] = useState(false);
   const [submitting, setSubmitting] = useState(false);
-
-  const [feedStatusCache, setFeedStatusCache] = useState<Record<string, FeedCheckResult>>({});
-  const [feedVerifying, setFeedVerifying] = useState(false);
   const [showFeeds, setShowFeeds] = useState(false);
-
-  // 修复12：SubscribeTab 重复验证优化 - 防抖+只在数量变化时触发
-  const feedsCountRef = useRef((config.feeds || []).length);
-  useEffect(() => {
-    const feedCount = (config.feeds || []).length;
-    if (feedCount === 0) return;
-    // 只在 feeds 数量变化时才重新验证，已有缓存时不重复请求
-    if (feedCount === feedsCountRef.current && Object.keys(feedStatusCache).length > 0) return;
-    feedsCountRef.current = feedCount;
-
-    const timer = setTimeout(() => {
-      const feeds = config.feeds || [];
-      const urls = feeds.map(f => f.url).filter(Boolean);
-      if (urls.length > 0) {
-        setFeedVerifying(true);
-        api.checkFeeds(urls).then(r => {
-          if (r.ok && r.results) {
-            const map: Record<string, FeedCheckResult> = {};
-            r.results.forEach(res => { map[res.url] = res; });
-            setFeedStatusCache(map);
-          }
-        }).catch(() => {}).finally(() => setFeedVerifying(false));
-      }
-    }, 800);
-    return () => clearTimeout(timer);
-  }, [(config.feeds || []).length]);
 
   useEffect(() => {
     api.notificationChannels().then(r => {
@@ -830,28 +828,69 @@ function SubscribeTab({
     }
   }, [taskCats]);
 
+  // 问题5: 统计每个分类的信息源数量（不检测有效性，只看数量）
+  const catFeedCount = useMemo(() => {
+    const map: Record<string, number> = {};
+    (config.feeds || []).forEach(f => {
+      map[f.category] = (map[f.category] || 0) + 1;
+    });
+    return map;
+  }, [config.feeds]);
+
+  // 问题5: 切换分类时检查信息源数量 + 初始化关键词
   const toggleCat = (cat: string) => {
-    setTaskCats(prev => prev.includes(cat) ? prev.filter(c => c !== cat) : [...prev, cat]);
+    if (taskCats.includes(cat)) {
+      setTaskCats(prev => prev.filter(c => c !== cat));
+      // 移除该分类的关键词
+      setCatKwMap(prev => { const m = { ...prev }; delete m[cat]; return m; });
+    } else {
+      // 问题5: 无源分类弹出警告但不阻止
+      const count = catFeedCount[cat] || 0;
+      if (count === 0) {
+        toast(`⚠️ 无可用RSS源：分类「${cat}」下没有信息源，请先在「信息源」Tab 中添加`, 'err');
+      }
+      setTaskCats(prev => [...prev, cat]);
+      // 初始化该分类的关键词条目
+      setCatKwMap(prev => ({ ...prev, [cat]: prev[cat] || [] }));
+    }
   };
 
   const toggleFeed = (url: string) => {
     setTaskFeedUrls(prev => prev.includes(url) ? prev.filter(u => u !== url) : [...prev, url]);
   };
 
-  const addKeyword = () => {
-    if (!newKeyword.trim()) return;
-    if (!taskKeywords.includes(newKeyword.trim())) {
-      setTaskKeywords([...taskKeywords, newKeyword.trim()]);
-    }
-    setNewKeyword('');
+  // 问题6: 分类关键词管理
+  const addCatKw = (cat: string) => {
+    const kw = (catNewKw[cat] || '').trim();
+    if (!kw) return;
+    setCatKwMap(prev => {
+      const arr = prev[cat] || [];
+      if (arr.includes(kw)) return prev;
+      return { ...prev, [cat]: [...arr, kw] };
+    });
+    setCatNewKw(prev => ({ ...prev, [cat]: '' }));
   };
 
-  const removeKeyword = (i: number) => {
-    setTaskKeywords(taskKeywords.filter((_, idx) => idx !== i));
+  const removeCatKw = (cat: string, idx: number) => {
+    setCatKwMap(prev => {
+      const arr = [...(prev[cat] || [])];
+      arr.splice(idx, 1);
+      return { ...prev, [cat]: arr };
+    });
   };
 
   const handleSubmit = async () => {
+    // 问题1: 名称校验
     if (!taskName.trim()) { toast('请输入卡片名称', 'err'); return; }
+    if (!TASK_NAME_RE.test(taskName.trim())) {
+      toast('卡片名称仅支持中文、数字、英文字母，长度1-20', 'err');
+      return;
+    }
+    // 问题1: 去重
+    if (morningTasks.some(t => t.name === taskName.trim())) {
+      toast('该名称已被使用，请换一个', 'err');
+      return;
+    }
     if (!taskCats.length) { toast('请选择至少一个分类', 'err'); return; }
     if (morningTasks.length >= MAX_TASKS) { toast(`最多 ${MAX_TASKS} 个订阅卡片`, 'err'); return; }
     if (taskNotiEnabled && !taskNotiWebhook.trim()) { toast('请输入 Webhook URL', 'err'); return; }
@@ -863,7 +902,8 @@ function SubscribeTab({
         emoji: taskEmoji,
         categories: taskCats,
         feedUrls: taskFeedUrls,
-        keywords: taskKeywords,
+        keywords: [],  // 全局关键词置空
+        categoryKeywords: catKwMap,  // 问题6: 传分类维度关键词
         notification: {
           enabled: taskNotiEnabled,
           channel: taskNotiChannel,
@@ -873,7 +913,7 @@ function SubscribeTab({
       if (r.ok) {
         toast(`✅ 订阅卡片「${taskEmoji} ${taskName}」已创建`, 'ok');
         setTaskName(''); setTaskEmoji('📰'); setTaskCats([]); setTaskFeedUrls([]);
-        setTaskKeywords([]); setNewKeyword('');
+        setCatKwMap({}); setCatNewKw({});
         setTaskNotiEnabled(false); setTaskNotiChannel('feishu'); setTaskNotiWebhook('');
         onRefreshTasks();
       } else {
@@ -896,7 +936,7 @@ function SubscribeTab({
     <div>
       <div style={{ fontSize: 12, fontWeight: 600, marginBottom: 10 }}>📋 创建订阅卡片</div>
 
-      {/* Name + Emoji */}
+      {/* Name + Emoji - 问题1: maxLength=20 + 校验提示 */}
       <div style={{ display: 'flex', gap: 8, marginBottom: 12, alignItems: 'center' }}>
         <div style={{ position: 'relative' }}>
           <span onClick={() => setShowEmojiPicker(!showEmojiPicker)}
@@ -916,31 +956,26 @@ function SubscribeTab({
             </div>
           )}
         </div>
-        <input type="text" value={taskName} onChange={(e) => setTaskName(e.target.value)}
-          placeholder="卡片名称，如「经济要闻」"
-          style={{ flex: 1, padding: '8px 10px', background: 'var(--bg)', border: '1px solid var(--line)', borderRadius: 6, color: 'var(--text)', fontSize: 13, outline: 'none' }} />
+        <div style={{ flex: 1 }}>
+          <input type="text" value={taskName} onChange={(e) => setTaskName(e.target.value)}
+            placeholder="卡片名称（中文/数字/字母，最多20字）"
+            maxLength={20}
+            style={{ width: '100%', padding: '8px 10px', background: 'var(--bg)', border: '1px solid var(--line)', borderRadius: 6, color: 'var(--text)', fontSize: 13, outline: 'none' }} />
+          <div style={{ fontSize: 9, color: 'var(--muted)', marginTop: 2 }}>仅支持中文、数字、英文字母，创建后不可修改</div>
+        </div>
       </div>
 
-      {/* Categories - 修复10：无源分类提醒 */}
+      {/* 问题5: 分类选择 — 只展示信息源数量 + 无源警告 */}
       <div style={{ marginBottom: 12 }}>
         <div style={{ fontSize: 12, fontWeight: 600, marginBottom: 6 }}>采集分类（必选）</div>
         <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
           {DEFAULT_CATS.map((cat) => {
             const meta = CAT_META[cat] || { icon: '📰', color: 'var(--acc)' };
             const on = taskCats.includes(cat);
-            const catFeeds = (config.feeds || []).filter(f => f.category === cat);
-            const availableCount = catFeeds.filter(f => {
-              const s = feedStatusCache[f.url];
-              return s?.status === 'ok';
-            }).length;
-            const noSource = catFeeds.length === 0 || availableCount === 0;
+            const count = catFeedCount[cat] || 0;
+            const noSource = count === 0;
             return (
-              <div key={cat} onClick={() => {
-                if (!on && noSource) {
-                  toast(`⚠️ 分类「${cat}」当前无可用RSS源，采集可能无法获取新闻`, 'err');
-                }
-                toggleCat(cat);
-              }}
+              <div key={cat} onClick={() => toggleCat(cat)}
                 style={{
                   cursor: 'pointer', padding: '5px 10px', borderRadius: 8,
                   border: `1px solid ${on ? meta.color : noSource ? '#ff527044' : 'var(--line)'}`,
@@ -950,9 +985,9 @@ function SubscribeTab({
                 }}>
                 <span>{meta.icon}</span>
                 <span>{cat}</span>
-                {availableCount > 0
-                  ? <span style={{ fontSize: 9, color: 'var(--ok)' }}>{availableCount}源</span>
-                  : <span style={{ fontSize: 9, color: 'var(--danger)' }}>无源</span>
+                {count > 0
+                  ? <span style={{ fontSize: 9, color: '#4caf88' }}>{count}源</span>
+                  : <span style={{ fontSize: 9, color: '#ff5270' }}>无源</span>
                 }
                 {on && <span style={{ color: 'var(--ok)' }}>✓</span>}
               </div>
@@ -961,7 +996,45 @@ function SubscribeTab({
         </div>
       </div>
 
-      {/* Feed Selection - 修复9：信息源按钮明显化+▼符号 */}
+      {/* 问题6: 分类-关键词对应 */}
+      {taskCats.length > 0 && (
+        <div style={{ marginBottom: 12 }}>
+          <div style={{ fontSize: 12, fontWeight: 600, marginBottom: 6 }}>🔑 分类关键词（可选，关键词匹配任一即可）</div>
+          <div style={{ fontSize: 10, color: 'var(--muted)', marginBottom: 6 }}>
+            为每个分类设置关键词，仅采集包含该关键词的新闻；不设置则采集该分类全部新闻
+          </div>
+          {taskCats.map(cat => {
+            const meta = CAT_META[cat] || { icon: '📰', color: 'var(--acc)' };
+            const kws = catKwMap[cat] || [];
+            return (
+              <div key={cat} style={{ marginBottom: 8, padding: '6px 8px', background: 'var(--bg)', borderRadius: 6 }}>
+                <div style={{ fontSize: 11, fontWeight: 600, marginBottom: 4, color: meta.color }}>
+                  {meta.icon} {cat}
+                </div>
+                {kws.length > 0 && (
+                  <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap', marginBottom: 4 }}>
+                    {kws.map((kw, i) => (
+                      <span key={i} style={{ fontSize: 10, padding: '2px 6px', borderRadius: 4, background: '#a07aff18', color: '#a07aff', border: '1px solid #a07aff33' }}>
+                        {kw}
+                        <span style={{ cursor: 'pointer', marginLeft: 3, color: '#ff5270' }} onClick={() => removeCatKw(cat, i)}>✕</span>
+                      </span>
+                    ))}
+                  </div>
+                )}
+                <div style={{ display: 'flex', gap: 4 }}>
+                  <input type="text" value={catNewKw[cat] || ''} onChange={(e) => setCatNewKw(prev => ({ ...prev, [cat]: e.target.value }))}
+                    placeholder={`输入${cat}关键词后回车`}
+                    onKeyDown={(e) => { if (e.key === 'Enter') { addCatKw(cat); } }}
+                    style={{ flex: 1, padding: '3px 8px', background: 'var(--panel2)', border: '1px solid var(--line)', borderRadius: 4, color: 'var(--text)', fontSize: 10, outline: 'none' }} />
+                  <button className="btn btn-g" onClick={() => addCatKw(cat)} style={{ fontSize: 9, padding: '2px 8px' }}>添加</button>
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      )}
+
+      {/* Feed Selection */}
       <div style={{ marginBottom: 12 }}>
         <div onClick={() => setShowFeeds(!showFeeds)}
           style={{
@@ -998,8 +1071,6 @@ function SubscribeTab({
               <div style={{ fontSize: 11, color: 'var(--muted)', padding: '8px 0' }}>
                 暂无信息源，请先在「信息源」标签页添加
               </div>
-            ) : feedVerifying ? (
-              <div style={{ fontSize: 11, color: 'var(--muted)', padding: '8px 0' }}>⏳ 验证中…</div>
             ) : (
               Object.entries(feedsByCategory).map(([cat, feeds]) => (
                 <div key={cat} style={{ marginBottom: 6 }}>
@@ -1007,19 +1078,14 @@ function SubscribeTab({
                   <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap' }}>
                     {feeds.map((f, i) => {
                       const on = taskFeedUrls.includes(f.url);
-                      const status = feedStatusCache[f.url];
-                      const isOk = status?.status === 'ok';
-                      const isErr = status?.status === 'error';
                       return (
                         <div key={i} onClick={() => toggleFeed(f.url)}
                           style={{
                             cursor: 'pointer', padding: '3px 8px', borderRadius: 6, fontSize: 11,
-                            border: `1px solid ${on ? 'var(--acc)' : isErr ? '#ff527044' : 'var(--line)'}`,
+                            border: `1px solid ${on ? 'var(--acc)' : 'var(--line)'}`,
                             background: on ? '#0d1f45' : 'transparent',
                             display: 'flex', alignItems: 'center', gap: 3,
-                            opacity: isErr && !on ? 0.6 : 1,
                           }}>
-                          <span>{isOk ? '🟢' : isErr ? '🔴' : '⚪'}</span>
                           <span>{f.name}</span>
                           {on && <span style={{ color: 'var(--ok)' }}>✓</span>}
                         </div>
@@ -1031,30 +1097,6 @@ function SubscribeTab({
             )}
           </div>
         )}
-      </div>
-
-      {/* Keywords */}
-      <div style={{ marginBottom: 12 }}>
-        <div style={{ fontSize: 12, fontWeight: 600, marginBottom: 6 }}>🔑 关键词过滤（可选）</div>
-        <div style={{ fontSize: 10, color: 'var(--muted)', marginBottom: 6 }}>
-          不输入关键词则按分类采集全部新闻，输入关键词仅采集包含关键词的新闻
-        </div>
-        {taskKeywords.length > 0 && (
-          <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap', marginBottom: 6 }}>
-            {taskKeywords.map((kw, i) => (
-              <span key={i} style={{ fontSize: 11, padding: '2px 8px', borderRadius: 4, background: '#a07aff18', color: '#a07aff', border: '1px solid #a07aff33' }}>
-                {kw}
-                <span style={{ cursor: 'pointer', marginLeft: 4, color: '#ff5270' }} onClick={() => removeKeyword(i)}>✕</span>
-              </span>
-            ))}
-          </div>
-        )}
-        <div style={{ display: 'flex', gap: 6 }}>
-          <input type="text" value={newKeyword} onChange={(e) => setNewKeyword(e.target.value)} placeholder="输入关键词后回车"
-            onKeyDown={(e) => { if (e.key === 'Enter') { addKeyword(); } }}
-            style={{ flex: 1, padding: '5px 10px', background: 'var(--bg)', border: '1px solid var(--line)', borderRadius: 6, color: 'var(--text)', fontSize: 11, outline: 'none' }} />
-          <button className="btn btn-g" onClick={addKeyword} style={{ fontSize: 11, padding: '4px 10px' }}>添加</button>
-        </div>
       </div>
 
       {/* Notification Config */}
@@ -1108,13 +1150,13 @@ function EditTaskModal({
   onSaved: () => void;
 }) {
   const toast = useStore((s) => s.toast);
-  const config = useStore((s) => s.subConfig);
 
-  const [name, setName] = useState(task.name);
+  // 问题1: name 字段不可修改
   const [emoji, setEmoji] = useState(task.emoji);
   const [cats, setCats] = useState<string[]>(task.categories || []);
-  const [keywords, setKeywords] = useState<string[]>(task.keywords || []);
-  const [newKw, setNewKw] = useState('');
+  // 问题6: 分类关键词
+  const [catKwMap, setCatKwMap] = useState<Record<string, string[]>>(task.categoryKeywords || {});
+  const [catNewKw, setCatNewKw] = useState<Record<string, string>>({});
   const [notiEnabled, setNotiEnabled] = useState(task.notification?.enabled || false);
   const [notiChannel, setNotiChannel] = useState(task.notification?.channel || 'feishu');
   const [notiWebhook, setNotiWebhook] = useState(task.notification?.webhook || '');
@@ -1129,29 +1171,42 @@ function EditTaskModal({
   }, []);
 
   const toggleCat = (cat: string) => {
-    setCats(prev => prev.includes(cat) ? prev.filter(c => c !== cat) : [...prev, cat]);
+    if (cats.includes(cat)) {
+      setCats(prev => prev.filter(c => c !== cat));
+      setCatKwMap(prev => { const m = { ...prev }; delete m[cat]; return m; });
+    } else {
+      setCats(prev => [...prev, cat]);
+      setCatKwMap(prev => ({ ...prev, [cat]: prev[cat] || [] }));
+    }
   };
 
-  const addKw = () => {
-    if (!newKw.trim()) return;
-    if (!keywords.includes(newKw.trim())) setKeywords([...keywords, newKw.trim()]);
-    setNewKw('');
+  const addCatKw = (cat: string) => {
+    const kw = (catNewKw[cat] || '').trim();
+    if (!kw) return;
+    setCatKwMap(prev => {
+      const arr = prev[cat] || [];
+      if (arr.includes(kw)) return prev;
+      return { ...prev, [cat]: [...arr, kw] };
+    });
+    setCatNewKw(prev => ({ ...prev, [cat]: '' }));
   };
 
-  const removeKw = (i: number) => {
-    setKeywords(keywords.filter((_, idx) => idx !== i));
+  const removeCatKw = (cat: string, idx: number) => {
+    setCatKwMap(prev => {
+      const arr = [...(prev[cat] || [])];
+      arr.splice(idx, 1);
+      return { ...prev, [cat]: arr };
+    });
   };
 
   const handleSave = async () => {
-    if (!name.trim()) { toast('卡片名称必填', 'err'); return; }
     if (!cats.length) { toast('至少选择一个分类', 'err'); return; }
     setSaving(true);
     try {
       const r = await api.updateMorningTask(task.id, {
-        name: name.trim(),
         emoji,
         categories: cats,
-        keywords,
+        categoryKeywords: catKwMap,
         notification: { enabled: notiEnabled, channel: notiChannel, webhook: notiWebhook.trim() },
       });
       if (r.ok) { toast('✅ 已保存', 'ok'); onSaved(); }
@@ -1172,7 +1227,7 @@ function EditTaskModal({
           <span style={{ cursor: 'pointer', color: 'var(--muted)' }} onClick={onClose}>✕</span>
         </div>
 
-        {/* Name + Emoji */}
+        {/* 问题1: Name 不可修改 + Emoji */}
         <div style={{ display: 'flex', gap: 8, marginBottom: 12, alignItems: 'center' }}>
           <div style={{ position: 'relative' }}>
             <span onClick={() => setShowEmojiPicker(!showEmojiPicker)}
@@ -1192,8 +1247,10 @@ function EditTaskModal({
               </div>
             )}
           </div>
-          <input type="text" value={name} onChange={(e) => setName(e.target.value)}
-            style={{ flex: 1, padding: '8px 10px', background: 'var(--bg)', border: '1px solid var(--line)', borderRadius: 6, color: 'var(--text)', fontSize: 13, outline: 'none' }} />
+          {/* 问题1: name 字段 disabled */}
+          <input type="text" value={task.name} disabled
+            style={{ flex: 1, padding: '8px 10px', background: 'var(--bg)', border: '1px solid var(--line)', borderRadius: 6, color: 'var(--muted)', fontSize: 13, outline: 'none', opacity: 0.6 }} />
+          <span style={{ fontSize: 9, color: 'var(--muted)', position: 'absolute', right: 40 }}>创建后不可修改</span>
         </div>
 
         {/* Categories */}
@@ -1219,26 +1276,40 @@ function EditTaskModal({
           </div>
         </div>
 
-        {/* Keywords */}
-        <div style={{ marginBottom: 12 }}>
-          <div style={{ fontSize: 12, fontWeight: 600, marginBottom: 6 }}>关键词</div>
-          {keywords.length > 0 && (
-            <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap', marginBottom: 6 }}>
-              {keywords.map((kw, i) => (
-                <span key={i} style={{ fontSize: 11, padding: '2px 8px', borderRadius: 4, background: '#a07aff18', color: '#a07aff', border: '1px solid #a07aff33' }}>
-                  {kw}
-                  <span style={{ cursor: 'pointer', marginLeft: 4, color: '#ff5270' }} onClick={() => removeKw(i)}>✕</span>
-                </span>
-              ))}
-            </div>
-          )}
-          <div style={{ display: 'flex', gap: 6 }}>
-            <input type="text" value={newKw} onChange={(e) => setNewKw(e.target.value)} placeholder="输入关键词后回车"
-              onKeyDown={(e) => { if (e.key === 'Enter') addKw(); }}
-              style={{ flex: 1, padding: '5px 8px', background: 'var(--bg)', border: '1px solid var(--line)', borderRadius: 6, color: 'var(--text)', fontSize: 11, outline: 'none' }} />
-            <button className="btn btn-g" onClick={addKw} style={{ fontSize: 11, padding: '4px 10px' }}>添加</button>
+        {/* 问题6: 分类关键词编辑 */}
+        {cats.length > 0 && (
+          <div style={{ marginBottom: 12 }}>
+            <div style={{ fontSize: 12, fontWeight: 600, marginBottom: 6 }}>🔑 分类关键词</div>
+            {cats.map(cat => {
+              const meta = CAT_META[cat] || { icon: '📰', color: 'var(--acc)' };
+              const kws = catKwMap[cat] || [];
+              return (
+                <div key={cat} style={{ marginBottom: 6, padding: '4px 6px', background: 'var(--bg)', borderRadius: 4 }}>
+                  <div style={{ fontSize: 10, fontWeight: 600, marginBottom: 3, color: meta.color }}>
+                    {meta.icon} {cat}
+                  </div>
+                  {kws.length > 0 && (
+                    <div style={{ display: 'flex', gap: 3, flexWrap: 'wrap', marginBottom: 3 }}>
+                      {kws.map((kw, i) => (
+                        <span key={i} style={{ fontSize: 9, padding: '1px 5px', borderRadius: 3, background: '#a07aff18', color: '#a07aff', border: '1px solid #a07aff33' }}>
+                          {kw}
+                          <span style={{ cursor: 'pointer', marginLeft: 2, color: '#ff5270' }} onClick={() => removeCatKw(cat, i)}>✕</span>
+                        </span>
+                      ))}
+                    </div>
+                  )}
+                  <div style={{ display: 'flex', gap: 3 }}>
+                    <input type="text" value={catNewKw[cat] || ''} onChange={(e) => setCatNewKw(prev => ({ ...prev, [cat]: e.target.value }))}
+                      placeholder={`${cat}关键词`}
+                      onKeyDown={(e) => { if (e.key === 'Enter') addCatKw(cat); }}
+                      style={{ flex: 1, padding: '2px 6px', background: 'var(--panel2)', border: '1px solid var(--line)', borderRadius: 3, color: 'var(--text)', fontSize: 9, outline: 'none' }} />
+                    <button className="btn btn-g" onClick={() => addCatKw(cat)} style={{ fontSize: 8, padding: '1px 6px' }}>+</button>
+                  </div>
+                </div>
+              );
+            })}
           </div>
-        </div>
+        )}
 
         {/* Notification */}
         <div style={{ marginBottom: 16 }}>
@@ -1259,14 +1330,15 @@ function EditTaskModal({
             )}
           </div>
           {notiEnabled && (
-            <input type="text" value={notiWebhook} onChange={(e) => setNotiWebhook(e.target.value)}
+            <input type="text" value={notiWebhook}
+              onChange={(e) => setNotiWebhook(e.target.value)}
               placeholder={selectedChannel?.placeholder || 'Webhook URL'}
               style={{ width: '100%', padding: '8px 10px', background: 'var(--bg)', border: '1px solid var(--line)', borderRadius: 6, color: 'var(--text)', fontSize: 12, outline: 'none' }} />
           )}
         </div>
 
         <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8 }}>
-          <button className="btn btn-g" onClick={onClose} style={{ fontSize: 12, padding: '6px 14px' }}>取消</button>
+          <button className="btn btn-g" onClick={onClose} style={{ fontSize: 12, padding: '6px 16px' }}>取消</button>
           <button className="tpl-go" onClick={handleSave} disabled={saving}
             style={{ fontSize: 12, padding: '6px 16px', opacity: saving ? 0.5 : 1 }}>
             {saving ? '⟳ 保存中…' : '💾 保存'}
