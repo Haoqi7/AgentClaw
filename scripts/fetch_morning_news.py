@@ -223,9 +223,7 @@ def main():
             enabled_cats = {'社会', '科技'}
     # 如果指定了 --categories，仅采集指定分类
     if filter_cats:
-        enabled_cats = enabled_cats & filter_cats
-        if not enabled_cats:
-            enabled_cats = filter_cats  # 兜底：使用用户指定的分类
+         enabled_cats = filter_cats
 
     # 用户自定义关键词（全局加权）+ 命令行关键词过滤
     cmd_keywords = set()
