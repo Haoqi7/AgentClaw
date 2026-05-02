@@ -4298,15 +4298,15 @@ class Handler(BaseHTTPRequestHandler):
                         all_kws = list(tk) if tk else []
                         for cat_name, cat_kws in (cat_kw or {}).items():
                             all_kws.extend(cat_kws or [])
-                        if all_kws:
-                            # 去重
-                            seen = set()
-                            unique_kws = []
-                            for k in all_kws:
-                                if k not in seen:
-                                    seen.add(k)
-                                    unique_kws.append(k)
-                            cmd.extend(['--keywords', ','.join(unique_kws)])
+                        # 去重
+                        seen = set()
+                        unique_kws = []
+                        for k in all_kws:
+                            if k not in seen:
+                                seen.add(k)
+                                unique_kws.append(k)
+                        # 始终传 --keywords：有词传词，无词传空串覆盖配置文件关键词
+                        cmd.extend(['--keywords', ','.join(unique_kws)])
                         tfu = t.get('feedUrls', [])
                         if tfu:
                             cmd.extend(['--feed-urls', ','.join(tfu)])

@@ -1280,23 +1280,23 @@ function EditTaskModal({
           <span style={{ fontSize: 9, color: 'var(--muted)', position: 'absolute', right: 40 }}>创建后不可修改</span>
         </div>
 
-        {/* Categories */}
+        {/* Categories — 创建后不可修改 */}
         <div style={{ marginBottom: 12 }}>
-          <div style={{ fontSize: 12, fontWeight: 600, marginBottom: 6 }}>分类</div>
+          <div style={{ fontSize: 12, fontWeight: 600, marginBottom: 6 }}>分类 <span style={{ fontSize: 9, color: 'var(--muted)', fontWeight: 400 }}>创建后不可修改</span></div>
           <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
-            {DEFAULT_CATS.map(cat => {
+            {cats.map(cat => {
               const meta = CAT_META[cat] || { icon: '📰', color: 'var(--acc)' };
-              const on = cats.includes(cat);
               return (
-                <div key={cat} onClick={() => toggleCat(cat)}
+                <div key={cat}
                   style={{
-                    cursor: 'pointer', padding: '4px 8px', borderRadius: 6, fontSize: 11,
-                    border: `1px solid ${on ? meta.color : 'var(--line)'}`,
-                    background: on ? `${meta.color}18` : 'transparent',
+                    padding: '4px 8px', borderRadius: 6, fontSize: 11,
+                    border: `1px solid ${meta.color}`,
+                    background: `${meta.color}18`,
                     display: 'flex', alignItems: 'center', gap: 3,
+                    opacity: 0.6, cursor: 'default',
                   }}>
                   <span>{meta.icon}</span><span>{cat}</span>
-                  {on && <span style={{ color: 'var(--ok)' }}>✓</span>}
+                  <span style={{ color: 'var(--ok)' }}>✓</span>
                 </div>
               );
             })}

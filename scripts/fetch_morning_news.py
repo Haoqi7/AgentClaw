@@ -168,7 +168,7 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('--force', action='store_true', help='强制采集，忽略幂等锁')
     parser.add_argument('--categories', type=str, default='', help='仅采集指定分类（逗号分隔，如 科技,经济）')
-    parser.add_argument('--keywords', type=str, default='', help='仅采集包含指定关键词的新闻（逗号分隔，如 AI,大模型）')
+    parser.add_argument('--keywords', type=str, default=None, help='仅采集包含指定关键词的新闻（逗号分隔，如 AI,大模型）；传空串则覆盖配置文件关键词')
     parser.add_argument('--feed-urls', type=str, default='', help='仅采集指定URL的信息源（逗号分隔）')
     parser.add_argument('--max-items', type=int, default=5, help='每个分类最多采集条数（默认5）')
     parser.add_argument('--cleanup', type=int, nargs='?', const=7, default=None,
@@ -228,11 +228,14 @@ def main():
             enabled_cats = filter_cats  # 兜底：使用用户指定的分类
 
     # 用户自定义关键词（全局加权）+ 命令行关键词过滤
-    user_keywords = [kw.lower() for kw in config.get('keywords', [])]
-    cmd_keywords = set(k.strip().lower() for k in args.keywords.split(',') if k.strip()) if args.keywords else set()
-    if cmd_keywords:
-        # 如果指定了 --keywords，仅保留包含关键词的新闻
+    cmd_keywords = set()
+    if args.keywords is not None:
+        # --keywords 被显式传入（含空串），覆盖配置文件关键词
+        cmd_keywords = set(k.strip().lower() for k in args.keywords.split(',') if k.strip())
         user_keywords = list(cmd_keywords)
+    else:
+        # 未传 --keywords，使用配置文件关键词（兼容直接运行脚本）
+        user_keywords = [kw.lower() for kw in config.get('keywords', [])]
 
     # 从配置中读取 feeds 列表，按分类分组
     merged_feeds = {}
