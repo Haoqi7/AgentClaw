@@ -107,10 +107,11 @@ def match_category(item, category):
     text = (item['title'] + ' ' + item['desc']).lower()
     return any(k in text for k in kws)
 
-def fetch_category(category, feeds, max_items=5, global_seen=None):
-    """抓取一个分类的新闻"""
+def fetch_category(category, feeds, max_items=5, global_seen=None, keywords=None):
+    """抓取一个分类的新闻。keywords: 用户关键词列表，传入后边抓边过滤（不匹配的不计入条数）"""
     seen_urls = global_seen if global_seen is not None else set()
     results = []
+    kw_lower = [k.lower() for k in (keywords or [])]
     for source_name, url in feeds:
         if len(results) >= max_items:
             break
@@ -126,6 +127,11 @@ def fetch_category(category, feeds, max_items=5, global_seen=None):
             # 军事和AI分类需要关键词过滤
             if category in CATEGORY_KEYWORDS and not match_category(item, category):
                 continue
+            # 用户关键词过滤：不匹配的不计入条数，继续找
+            if kw_lower:
+                text = (item['title'] + ' ' + (item['desc'] or '')).lower()
+                if not any(k in text for k in kw_lower):
+                    continue
             seen_urls.add(item['link'])
             results.append({
                 'title': item['title'],
@@ -183,6 +189,7 @@ def main():
     parser.add_argument('--categories', type=str, default='', help='仅采集指定分类（逗号分隔，如 科技,经济）')
     parser.add_argument('--keywords', type=str, default='', help='仅采集包含指定关键词的新闻（逗号分隔，如 AI,大模型）')
     parser.add_argument('--feed-urls', type=str, default='', help='仅采集指定URL的信息源（逗号分隔）')
+    parser.add_argument('--max-items', type=int, default=5, help='每个分类最多采集条数（默认5）')
     parser.add_argument('--cleanup', type=int, nargs='?', const=7, default=None,
                         help='独立清理模式：删除超过N天的简报（默认7天），不执行采集')
     args = parser.parse_args()
@@ -284,20 +291,17 @@ def main():
 
     for category, feeds in merged_feeds.items():
         log.info(f'  采集 {category}...')
-        items = fetch_category(category, feeds, global_seen=global_seen)
-        # Boost items matching user keywords; if --keywords specified, filter strictly
-        if user_keywords:
-            if cmd_keywords:
-                # 严格过滤：仅保留包含至少一个关键词的新闻
-                items = [item for item in items if any(kw in (item.get('title', '') + ' ' + item.get('summary', '')).lower() for kw in user_keywords)]
-            else:
-                # 加权排序：包含关键词的排前面
-                for item in items:
-                    text = (item.get('title', '') + ' ' + item.get('summary', '')).lower()
-                    item['_kw_hits'] = sum(1 for kw in user_keywords if kw in text)
-                items.sort(key=lambda x: x.get('_kw_hits', 0), reverse=True)
-                for item in items:
-                    item.pop('_kw_hits', None)
+        # 边抓边过滤：传入 keywords 和 max_items，不匹配关键词的不计入条数
+        items = fetch_category(category, feeds, max_items=args.max_items, global_seen=global_seen, keywords=user_keywords if user_keywords else None)
+        # 关键词过滤已在 fetch_category 内完成，这里只做加权排序（非严格模式）
+        if user_keywords and not cmd_keywords:
+            # 加权排序：包含关键词的排前面
+            for item in items:
+                text = (item.get('title', '') + ' ' + item.get('summary', '')).lower()
+                item['_kw_hits'] = sum(1 for kw in user_keywords if kw in text)
+            items.sort(key=lambda x: x.get('_kw_hits', 0), reverse=True)
+            for item in items:
+                item.pop('_kw_hits', None)
         result['categories'][category] = items
         log.info(f'    {category}: {len(items)} 条')
 

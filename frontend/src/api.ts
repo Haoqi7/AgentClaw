@@ -468,6 +468,7 @@ export interface SubscriptionTask {
   feedUrls: string[];
   keywords: string[];       // 任务级关键词过滤（兼容旧数据，新任务置空）
   categoryKeywords?: Record<string, string[]>;  // 分类维度关键词：{"科技": ["AI", "芯片"], "经济": ["GDP"]}
+  maxItems?: number;          // 每个分类最多采集条数，默认5
   notification: NotificationConfig;
   createdAt: string;
   updatedAt: string;

@@ -4220,6 +4220,7 @@ class Handler(BaseHTTPRequestHandler):
             feed_urls = body.get('feedUrls', [])
             keywords = body.get('keywords', [])
             category_keywords = body.get('categoryKeywords', {})
+            max_items = body.get('maxItems', 5)
             notification = body.get('notification', {'enabled': False, 'channel': 'feishu', 'webhook': ''})
             if not name:
                 self.send_json({'ok': False, 'error': '卡片名称必填'}, 400)
@@ -4244,6 +4245,7 @@ class Handler(BaseHTTPRequestHandler):
                 'feedUrls': feed_urls,
                 'keywords': keywords,
                 'categoryKeywords': category_keywords,
+                'maxItems': max_items,
                 'notification': notification,
                 'createdAt': now,
                 'updatedAt': now,
@@ -4308,6 +4310,9 @@ class Handler(BaseHTTPRequestHandler):
                         tfu = t.get('feedUrls', [])
                         if tfu:
                             cmd.extend(['--feed-urls', ','.join(tfu)])
+                        # 每分类条数
+                        max_items = t.get('maxItems', 5)
+                        cmd.extend(['--max-items', str(max_items)])
                         # 采集时触发清理过期简报
                         _cleanup_old_briefs(max_days=7)
                         env = os.environ.copy()

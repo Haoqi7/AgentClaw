@@ -809,6 +809,7 @@ function SubscribeTab({
   // 问题6: 分类维度关键词
   const [catKwMap, setCatKwMap] = useState<Record<string, string[]>>({});
   const [catNewKw, setCatNewKw] = useState<Record<string, string>>({});
+  const [taskMaxItems, setTaskMaxItems] = useState(5);
   const [taskNotiEnabled, setTaskNotiEnabled] = useState(false);
   const [taskNotiChannel, setTaskNotiChannel] = useState('feishu');
   const [taskNotiWebhook, setTaskNotiWebhook] = useState('');
@@ -906,6 +907,7 @@ function SubscribeTab({
         feedUrls: taskFeedUrls,
         keywords: [],  // 全局关键词置空
         categoryKeywords: catKwMap,  // 问题6: 传分类维度关键词
+        maxItems: taskMaxItems,
         notification: {
           enabled: taskNotiEnabled,
           channel: taskNotiChannel,
@@ -915,7 +917,7 @@ function SubscribeTab({
       if (r.ok) {
         toast(`✅ 订阅卡片「${taskEmoji} ${taskName}」已创建`, 'ok');
         setTaskName(''); setTaskEmoji('📰'); setTaskCats([]); setTaskFeedUrls([]);
-        setCatKwMap({}); setCatNewKw({});
+        setCatKwMap({}); setCatNewKw({}); setTaskMaxItems(5);
         setTaskNotiEnabled(false); setTaskNotiChannel('feishu'); setTaskNotiWebhook('');
         onRefreshTasks();
       } else {
@@ -1035,6 +1037,25 @@ function SubscribeTab({
           })}
         </div>
       )}
+
+      {/* 每分类条数 */}
+      <div style={{ marginBottom: 12 }}>
+        <div style={{ fontSize: 12, fontWeight: 600, marginBottom: 6 }}>📊 每分类条数</div>
+        <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
+          {[5, 10, 15, 20].map(n => (
+            <div key={n} onClick={() => setTaskMaxItems(n)}
+              style={{
+                cursor: 'pointer', padding: '4px 12px', borderRadius: 6, fontSize: 11,
+                border: `1px solid ${taskMaxItems === n ? 'var(--acc)' : 'var(--line)'}`,
+                background: taskMaxItems === n ? 'var(--acc)' : 'transparent',
+                color: taskMaxItems === n ? '#fff' : 'var(--text)',
+              }}>
+              {n}
+            </div>
+          ))}
+          <span style={{ fontSize: 9, color: 'var(--muted)', marginLeft: 4 }}>条/分类</span>
+        </div>
+      </div>
 
       {/* Feed Selection */}
       <div style={{ marginBottom: 12 }}>
@@ -1159,6 +1180,7 @@ function EditTaskModal({
   // 问题6: 分类关键词
   const [catKwMap, setCatKwMap] = useState<Record<string, string[]>>(task.categoryKeywords || {});
   const [catNewKw, setCatNewKw] = useState<Record<string, string>>({});
+  const [maxItems, setMaxItems] = useState(task.maxItems || 5);
   const [notiEnabled, setNotiEnabled] = useState(task.notification?.enabled || false);
   const [notiChannel, setNotiChannel] = useState(task.notification?.channel || 'feishu');
   const [notiWebhook, setNotiWebhook] = useState(task.notification?.webhook || '');
@@ -1209,6 +1231,7 @@ function EditTaskModal({
         emoji,
         categories: cats,
         categoryKeywords: catKwMap,
+        maxItems,
         notification: { enabled: notiEnabled, channel: notiChannel, webhook: notiWebhook.trim() },
       });
       if (r.ok) { toast('✅ 已保存', 'ok'); onSaved(); }
@@ -1312,6 +1335,25 @@ function EditTaskModal({
             })}
           </div>
         )}
+
+        {/* 每分类条数 */}
+        <div style={{ marginBottom: 12 }}>
+          <div style={{ fontSize: 12, fontWeight: 600, marginBottom: 6 }}>📊 每分类条数</div>
+          <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
+            {[5, 10, 15, 20].map(n => (
+              <div key={n} onClick={() => setMaxItems(n)}
+                style={{
+                  cursor: 'pointer', padding: '3px 10px', borderRadius: 5, fontSize: 10,
+                  border: `1px solid ${maxItems === n ? 'var(--acc)' : 'var(--line)'}`,
+                  background: maxItems === n ? 'var(--acc)' : 'transparent',
+                  color: maxItems === n ? '#fff' : 'var(--text)',
+                }}>
+                {n}
+              </div>
+            ))}
+            <span style={{ fontSize: 9, color: 'var(--muted)', marginLeft: 4 }}>条/分类</span>
+          </div>
+        </div>
 
         {/* Notification */}
         <div style={{ marginBottom: 16 }}>
