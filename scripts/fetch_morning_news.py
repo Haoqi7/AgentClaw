@@ -22,14 +22,6 @@ PRESET_FEEDS = [
     {'name': '少数派',   'url': 'https://sspai.com/feed', 'category': '科技', 'protected': False},
 ]
 
-# ── 关键词过滤（用于军事/AI等需要精准分类的场景）────────────────────────
-CATEGORY_KEYWORDS = {
-    '军事': ['war', 'military', 'troops', 'attack', 'missile', 'army', 'navy', 'weapons',
-              '战', '军', '导弹', '士兵', 'ukraine', 'russia', 'china sea', 'nato'],
-    'AI大模型': ['ai', 'llm', 'gpt', 'claude', 'gemini', 'openai', 'anthropic', 'deepseek',
-                'machine learning', 'neural', 'model', '大模型', '人工智能', 'chatgpt'],
-}
-
 # ── RSS 抓取 ──────────────────────────────────────────────────────────
 def curl_rss(url, timeout=15, retries=1):
     """用 urllib 抓取 RSS，支持重试。默认减少重试次数和超时防止卡死系统。"""
@@ -99,14 +91,6 @@ def parse_rss(xml_text):
         pass
     return items
 
-def match_category(item, category):
-    """判断新闻是否属于该分类（用于军事/AI过滤）"""
-    kws = CATEGORY_KEYWORDS.get(category, [])
-    if not kws:
-        return True
-    text = (item['title'] + ' ' + item['desc']).lower()
-    return any(k in text for k in kws)
-
 def fetch_category(category, feeds, max_items=5, global_seen=None, keywords=None):
     """抓取一个分类的新闻。keywords: 用户关键词列表，传入后边抓边过滤（不匹配的不计入条数）"""
     seen_urls = global_seen if global_seen is not None else set()
@@ -123,9 +107,6 @@ def fetch_category(category, feeds, max_items=5, global_seen=None, keywords=None
             if not item['title']:
                 continue
             if item['link'] in seen_urls:
-                continue
-            # 军事和AI分类需要关键词过滤
-            if category in CATEGORY_KEYWORDS and not match_category(item, category):
                 continue
             # 用户关键词过滤：不匹配的不计入条数，继续找
             if kw_lower:

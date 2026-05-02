@@ -10,9 +10,10 @@ const CAT_META: Record<string, { icon: string; color: string; desc: string }> = 
   'AI大模型': { icon: '🤖', color: '#a07aff', desc: 'AI与大模型进展' },
   '社会': { icon: '🌍', color: '#f0b429', desc: '社会热点' },
   '科技': { icon: '💡', color: '#4ecdc4', desc: '科技与创新' },
+  '综合': { icon: '📰', color: '#8899aa', desc: '综合资讯' },
 };
 
-const DEFAULT_CATS = ['社会', '科技', '政治', '军事', '经济', 'AI大模型'];
+const DEFAULT_CATS = ['综合', '社会', '科技', '政治', '军事', '经济', 'AI大模型'];
 
 const EMOJI_PRESETS: Record<string, { emoji: string; label: string }[]> = {
   '政治': [{ emoji: '🏛️', label: '政治' }, { emoji: '🇨🇳', label: '国事' }],
@@ -21,6 +22,7 @@ const EMOJI_PRESETS: Record<string, { emoji: string; label: string }[]> = {
   '科技': [{ emoji: '💡', label: '科技' }, { emoji: '🔬', label: '研究' }],
   '社会': [{ emoji: '🌍', label: '社会' }, { emoji: '📰', label: '热点' }],
   'AI大模型': [{ emoji: '🤖', label: 'AI' }, { emoji: '🧠', label: '智能' }],
+  '综合': [{ emoji: '📰', label: '综合' }, { emoji: '🌐', label: '万象' }],
 };
 const DEFAULT_EMOJIS = ['📰', '📋', '🔔', '📌', '🎯', '📡', '🌐', '💡', '⭐', '🔥'];
 
