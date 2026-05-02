@@ -4298,11 +4298,12 @@ class Handler(BaseHTTPRequestHandler):
                         all_kws = list(tk) if tk else []
                         for cat_name, cat_kws in (cat_kw or {}).items():
                             all_kws.extend(cat_kws or [])
-                        # 去重
+                        # 去重 + 防御过滤：移除分类名（如"综合"被误存为关键词会导致0结果）
+                        _ALL_CAT_NAMES = {'综合', '社会', '科技', '政治', '军事', '经济', 'AI大模型'}
                         seen = set()
                         unique_kws = []
                         for k in all_kws:
-                            if k not in seen:
+                            if k not in seen and k not in _ALL_CAT_NAMES:
                                 seen.add(k)
                                 unique_kws.append(k)
                         # 始终传 --keywords：有词传词，无词传空串覆盖配置文件关键词

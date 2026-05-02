@@ -1306,7 +1306,10 @@ function EditTaskModal({
         {/* 问题6: 分类关键词编辑 */}
         {cats.length > 0 && (
           <div style={{ marginBottom: 12 }}>
-            <div style={{ fontSize: 12, fontWeight: 600, marginBottom: 6 }}>🔑 分类关键词</div>
+            <div style={{ fontSize: 12, fontWeight: 600, marginBottom: 6 }}>🔑 分类关键词（可选）</div>
+            <div style={{ fontSize: 10, color: 'var(--muted)', marginBottom: 6 }}>
+              不设置则采集该分类全部新闻
+            </div>
             {cats.map(cat => {
               const meta = CAT_META[cat] || { icon: '📰', color: 'var(--acc)' };
               const kws = catKwMap[cat] || [];
