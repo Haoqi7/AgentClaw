@@ -4282,6 +4282,12 @@ class Handler(BaseHTTPRequestHandler):
                 task_keywords = task.get('keywords', [])
                 def do_task_collect(t=task, tc=task_cats, tk=task_keywords):
                     try:
+                        # 采集前删除旧的任务专属latest文件，防止轮询命中旧数据
+                        tid = t.get('id', '')
+                        if tid:
+                            old_latest = DATA / f'morning_brief_task_{tid}_latest.json'
+                            if old_latest.exists():
+                                old_latest.unlink()
                         cmd = ['python3', str(SCRIPTS / 'fetch_morning_news.py'), '--force']
                         if tc:
                             cmd.extend(['--categories', ','.join(tc)])

@@ -118,7 +118,7 @@ export default function MorningPanel() {
   useEffect(() => { loadAllTaskBriefs(); }, [loadAllTaskBriefs]);
 
   // 问题7: 智能轮询 — 采集后轮询检测任务专属数据
-  const pollForTaskData = (taskId: string, maxAttempts = 6, interval = 3000) => {
+  const pollForTaskData = (taskId: string, maxAttempts = 20, interval = 3000) => {
     let attempts = 0;
     const timer = setInterval(async () => {
       attempts++;
@@ -144,6 +144,8 @@ export default function MorningPanel() {
     // 问题7: 并发采集 — 使用 Set
     setCollectingTaskIds(prev => new Set(prev).add(task.id));
     setCollectingProgress(prev => ({ ...prev, [task.id]: '采集中…' }));
+    // 立即清空该任务的旧数据，避免轮询前短暂显示旧内容
+    setTaskBriefMap(prev => { const n = { ...prev }; delete n[task.id]; return n; });
     try {
       const r = await api.collectTask(task.id);
       if (r.ok) {
